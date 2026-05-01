@@ -1,4 +1,5 @@
 import os
+import requests
 
 from fastapi import FastAPI, HTTPException, Security
 from fastapi.security import APIKeyHeader
@@ -20,6 +21,9 @@ app = FastAPI(
 
 
 API_KEY = os.getenv("API_KEY", "dev-key")
+
+COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
+COMPOSIO_BASE_URL = "https://backend.composio.dev/api/v3.1"
 
 
 api_key_header = APIKeyHeader(
@@ -75,6 +79,134 @@ class ReportBriefResponse(BaseModel):
     recommended_close: str
     do_not_include: List[str]
 
+class ToolInfo(BaseModel):
+    slug: str
+    name: str | None = None
+    toolkit: str | None = None
+    description: str | None = None
+
+
+class ToolkitStatus(BaseModel):
+    toolkit: str
+    available: bool
+    tool_count: int
+    sample_tools: List[str]
+    error: Optional[str] = None
+
+
+class ToolsStatusResponse(BaseModel):
+    composio_configured: bool
+    checked_toolkits: List[ToolkitStatus]
+    recommendation: str
+
+
+class ToolsSearchRequest(BaseModel):
+    query: str = Field(..., description="Texto para buscar herramientas, por ejemplo: instagram scraper, google sheets, apify")
+    toolkit_slug: Optional[str] = Field(None, description="Toolkit específico, por ejemplo: apify, google_sheets, semrush")
+    limit: int = Field(10, description="Cantidad máxima de herramientas a devolver")
+
+
+class ToolsSearchResponse(BaseModel):
+    query: str
+    toolkit_slug: Optional[str]
+    results: List[ToolInfo]
+
+def get_composio_headers():
+    if not COMPOSIO_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="COMPOSIO_API_KEY no está configurada en el servidor"
+        )
+
+    return {
+        "x-api-key": COMPOSIO_API_KEY,
+        "accept": "application/json"
+    }
+
+
+def composio_get(path: str, params: Optional[dict] = None):
+    try:
+        response = requests.get(
+            f"{COMPOSIO_BASE_URL}{path}",
+            headers=get_composio_headers(),
+            params=params or {},
+            timeout=20
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"No se pudo conectar con Composio: {str(exc)}"
+        )
+
+    if response.status_code == 401:
+        raise HTTPException(
+            status_code=401,
+            detail="Composio rechazó la API key. Revisá COMPOSIO_API_KEY."
+        )
+
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=response.text
+        )
+
+    return response.json()
+
+
+def extract_tools_list(composio_response):
+    if isinstance(composio_response, list):
+        return composio_response
+
+    if isinstance(composio_response, dict):
+        if isinstance(composio_response.get("items"), list):
+            return composio_response["items"]
+
+        if isinstance(composio_response.get("tools"), list):
+            return composio_response["tools"]
+
+        if isinstance(composio_response.get("data"), list):
+            return composio_response["data"]
+
+    return []
+
+
+def normalize_tool(tool: dict) -> ToolInfo:
+    slug = (
+        tool.get("slug")
+        or tool.get("name")
+        or tool.get("tool_slug")
+        or tool.get("id")
+        or "unknown"
+    )
+
+    name = tool.get("name") or tool.get("display_name") or slug
+    toolkit = tool.get("toolkit_slug") or tool.get("toolkit") or tool.get("app")
+
+    description = (
+        tool.get("description")
+        or tool.get("summary")
+        or tool.get("display_description")
+    )
+
+    return ToolInfo(
+        slug=str(slug),
+        name=str(name) if name else None,
+        toolkit=str(toolkit) if toolkit else None,
+        description=str(description) if description else None
+    )
+
+
+def tool_matches_query(tool: dict, query: str) -> bool:
+    text = " ".join([
+        str(tool.get("slug", "")),
+        str(tool.get("name", "")),
+        str(tool.get("display_name", "")),
+        str(tool.get("description", "")),
+        str(tool.get("toolkit_slug", "")),
+        str(tool.get("toolkit", "")),
+    ]).casefold()
+
+    return query.casefold() in text
 
 @app.get("/")
 def root():
@@ -290,4 +422,120 @@ def create_report_brief(request: ReportBriefRequest):
             "presupuesto táctico completo",
             "implementación paso a paso"
         ]
+    )
+
+@app.get(
+    "/tools/status",
+    response_model=ToolsStatusResponse,
+    operation_id="getToolsStatus",
+    summary="Check available Composio toolkits",
+    description="Verifica si Composio está configurado y revisa herramientas disponibles para toolkits relevantes.",
+    dependencies=[Security(verify_api_key)]
+)
+def get_tools_status():
+    toolkits_to_check = [
+        "apify",
+        "browser_tool",
+        "composio_search",
+        "semrush",
+        "similarweb",
+        "google_sheets",
+        "google_drive"
+    ]
+
+    if not COMPOSIO_API_KEY:
+        return ToolsStatusResponse(
+            composio_configured=False,
+            checked_toolkits=[],
+            recommendation="COMPOSIO_API_KEY no está configurada. Agregala como variable de entorno antes de usar herramientas externas."
+        )
+
+    checked = []
+
+    for toolkit in toolkits_to_check:
+        try:
+            data = composio_get(
+                "/tools",
+                params={
+                    "toolkit_slug": toolkit,
+                    "limit": 20
+                }
+            )
+
+            tools = extract_tools_list(data)
+            sample_tools = []
+
+            for tool in tools[:5]:
+                normalized = normalize_tool(tool)
+                sample_tools.append(normalized.slug)
+
+            checked.append(
+                ToolkitStatus(
+                    toolkit=toolkit,
+                    available=len(tools) > 0,
+                    tool_count=len(tools),
+                    sample_tools=sample_tools
+                )
+            )
+
+        except Exception as exc:
+            checked.append(
+                ToolkitStatus(
+                    toolkit=toolkit,
+                    available=False,
+                    tool_count=0,
+                    sample_tools=[],
+                    error=str(exc)
+                )
+            )
+
+    essential = ["apify", "browser_tool", "composio_search"]
+    available_essential = [
+        item.toolkit for item in checked
+        if item.toolkit in essential and item.available
+    ]
+
+    if len(available_essential) == len(essential):
+        recommendation = "Herramientas esenciales disponibles. Se puede avanzar a recolección de datos públicos."
+    elif available_essential:
+        recommendation = "Hay algunas herramientas esenciales disponibles, pero conviene conectar las faltantes antes de una auditoría completa."
+    else:
+        recommendation = "No se detectaron herramientas esenciales. Primero conectá o verificá Apify, Browser Tool o Composio Search."
+
+    return ToolsStatusResponse(
+        composio_configured=True,
+        checked_toolkits=checked,
+        recommendation=recommendation
+    )
+
+
+@app.post(
+    "/tools/search",
+    response_model=ToolsSearchResponse,
+    operation_id="searchComposioTools",
+    summary="Search Composio tools",
+    description="Busca herramientas disponibles en Composio usando texto libre y, opcionalmente, un toolkit específico.",
+    dependencies=[Security(verify_api_key)]
+)
+def search_composio_tools(request: ToolsSearchRequest):
+    params = {
+        "limit": 100
+    }
+
+    if request.toolkit_slug:
+        params["toolkit_slug"] = request.toolkit_slug
+
+    data = composio_get("/tools", params=params)
+    tools = extract_tools_list(data)
+
+    matches = [
+        normalize_tool(tool)
+        for tool in tools
+        if tool_matches_query(tool, request.query)
+    ]
+
+    return ToolsSearchResponse(
+        query=request.query,
+        toolkit_slug=request.toolkit_slug,
+        results=matches[:request.limit]
     )
