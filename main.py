@@ -1,8 +1,11 @@
 import os
+import html
+import uuid
 from typing import Any, Dict, List, Optional
 
 import requests
 from fastapi import FastAPI, HTTPException, Security
+from fastapi.responses import HTMLResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
@@ -23,6 +26,8 @@ app = FastAPI(
 API_KEY = os.getenv("API_KEY", "dev-key")
 COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
 COMPOSIO_BASE_URL = "https://backend.composio.dev/api/v3.1"
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com")
+VISUAL_REPORT_STORE: Dict[str, str] = {}
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
@@ -288,6 +293,18 @@ class ProspectWithResearchResponse(BaseModel):
     do_not_give_for_free: List[str]
     next_step: str
     raw_sources_count: int
+
+
+class VisualReportResponse(BaseModel):
+    company_name: str
+    report_id: str
+    report_url: str
+    awareness_funnel_svg: str
+    temperature_heatmap_svg: str
+    funnel_blueprint_svg: str
+    score_chart_svg: str
+    report_html: str
+    report_markdown: str
 
 
 def get_composio_headers() -> Dict[str, str]:
@@ -1161,6 +1178,475 @@ Resumen:
 ## 12. Límites de esta entrega
 No incluye calendario completo de contenido, copys finales, segmentaciones detalladas, arquitectura completa de funnel ni implementación paso a paso.
 """
+
+
+def h(value: Optional[str]) -> str:
+    return html.escape(str(value or ""), quote=True)
+
+
+def green_scale(value: int) -> str:
+    value = max(0, min(int(value), 100))
+    if value >= 80:
+        return "#22c55e"
+    if value >= 60:
+        return "#86efac"
+    if value >= 40:
+        return "#bbf7d0"
+    if value >= 20:
+        return "#dcfce7"
+    return "#f3f4f6"
+
+
+def render_awareness_funnel_svg(locator: AwarenessFunnelLocator) -> str:
+    width = 760
+    height = 430
+    cx = width / 2
+    top_y = 50
+    segment_h = 54
+    gap = 10
+    top_w = 640
+    shrink = 86
+
+    polygons = []
+    stages = locator.stage_distribution
+
+    for index, stage in enumerate(stages):
+        y1 = top_y + index * (segment_h + gap)
+        y2 = y1 + segment_h
+        w1 = top_w - index * shrink
+        w2 = top_w - (index + 1) * shrink
+
+        x1 = cx - w1 / 2
+        x2 = cx + w1 / 2
+        x3 = cx + w2 / 2
+        x4 = cx - w2 / 2
+
+        if stage.state == "dominant":
+            fill = "#22c55e"
+            stroke = "#15803d"
+            text_color = "#ffffff"
+            badge = "GRUESO DEL PÚBLICO"
+        elif stage.state == "blocked":
+            fill = "#fef3c7"
+            stroke = "#d97706"
+            text_color = "#111827"
+            badge = "ETAPA BLOQUEADA"
+        elif stage.state == "secondary":
+            fill = "#e5e7eb"
+            stroke = "#9ca3af"
+            text_color = "#111827"
+            badge = "SECUNDARIO"
+        else:
+            fill = "#f5f5f4"
+            stroke = "#d6d3d1"
+            text_color = "#374151"
+            badge = "NEUTRO"
+
+        points = f"{x1},{y1} {x2},{y1} {x3},{y2} {x4},{y2}"
+        label_y = y1 + 24
+        sub_y = y1 + 43
+
+        polygons.append(f'''
+        <polygon points="{points}" fill="{fill}" stroke="{stroke}" stroke-width="2"/>
+        <text x="{cx}" y="{label_y}" text-anchor="middle" font-size="18" font-weight="700" fill="{text_color}">{h(stage.stage)} · {stage.weight}%</text>
+        <text x="{cx}" y="{sub_y}" text-anchor="middle" font-size="11" font-weight="600" fill="{text_color}">{badge}</text>
+        ''')
+
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Awareness funnel locator">
+    <rect width="{width}" height="{height}" rx="22" fill="#fafaf9"/>
+    <text x="{cx}" y="28" text-anchor="middle" font-size="22" font-weight="800" fill="#111827">Awareness Funnel Locator</text>
+    {''.join(polygons)}
+    <text x="{cx}" y="390" text-anchor="middle" font-size="15" font-weight="700" fill="#111827">Dominante: {h(locator.dominant_stage)} · Bloqueada: {h(locator.blocked_stage)}</text>
+    <text x="{cx}" y="414" text-anchor="middle" font-size="12" fill="#4b5563">Verde = concentración principal del público. Neutros = etapas no dominantes.</text>
+</svg>'''
+
+
+def render_temperature_heatmap_svg(heatmap: TemperatureHeatmap) -> str:
+    cols = [
+        ("attention", "Atención"),
+        ("interest", "Interés"),
+        ("intent", "Intención"),
+        ("trust", "Confianza"),
+        ("action", "Acción"),
+        ("average", "Promedio"),
+    ]
+
+    cell_w = 96
+    cell_h = 46
+    left_w = 120
+    top_h = 70
+    width = left_w + cell_w * len(cols) + 40
+    height = top_h + cell_h * len(heatmap.rows) + 84
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Customer temperature heatmap">',
+        f'<rect width="{width}" height="{height}" rx="22" fill="#fafaf9"/>',
+        f'<text x="{width/2}" y="30" text-anchor="middle" font-size="22" font-weight="800" fill="#111827">Customer Temperature Heatmap</text>',
+        f'<text x="{width/2}" y="54" text-anchor="middle" font-size="13" fill="#4b5563">Temperatura promedio: {h(heatmap.average_temperature)}</text>',
+    ]
+
+    for col_index, (_, label) in enumerate(cols):
+        x = left_w + col_index * cell_w
+        parts.append(f'<text x="{x + cell_w/2}" y="{top_h - 12}" text-anchor="middle" font-size="12" font-weight="700" fill="#374151">{h(label)}</text>')
+
+    for row_index, row in enumerate(heatmap.rows):
+        y = top_h + row_index * cell_h
+        is_dominant = row.temperature == heatmap.average_temperature
+        row_fill = "#ecfdf5" if is_dominant else "#f5f5f4"
+        row_stroke = "#22c55e" if is_dominant else "#d6d3d1"
+
+        parts.append(f'<rect x="18" y="{y}" width="{left_w-24}" height="{cell_h-6}" rx="8" fill="{row_fill}" stroke="{row_stroke}" stroke-width="1.5"/>')
+        parts.append(f'<text x="{left_w/2}" y="{y + 28}" text-anchor="middle" font-size="13" font-weight="800" fill="#111827">{h(row.temperature)}</text>')
+
+        values = row.values
+        data = {
+            "attention": values.attention,
+            "interest": values.interest,
+            "intent": values.intent,
+            "trust": values.trust,
+            "action": values.action,
+            "average": values.average,
+        }
+
+        for col_index, (key, _) in enumerate(cols):
+            value = data[key]
+            x = left_w + col_index * cell_w
+            fill = green_scale(value)
+            stroke = "#15803d" if is_dominant and key == "average" else "#d1d5db"
+            parts.append(f'<rect x="{x+5}" y="{y}" width="{cell_w-10}" height="{cell_h-6}" rx="8" fill="{fill}" stroke="{stroke}" stroke-width="1"/>')
+            parts.append(f'<text x="{x + cell_w/2}" y="{y + 28}" text-anchor="middle" font-size="13" font-weight="800" fill="#111827">{value}</text>')
+
+    parts.append(f'<text x="{width/2}" y="{height-32}" text-anchor="middle" font-size="12" fill="#4b5563">Mayor intensidad verde = señal más fuerte. La fila dominante representa la temperatura promedio inferida.</text>')
+    parts.append('</svg>')
+    return ''.join(parts)
+
+
+def render_score_chart_svg(score: CommercialScore) -> str:
+    rows = [
+        ("Propuesta de valor", score.value_proposition),
+        ("Presencia pública", score.public_presence),
+        ("Diferenciación", score.differentiation),
+        ("CTA / conversión", score.cta_strength),
+        ("Confianza", score.trust_signals),
+        ("Presión competitiva", score.competitive_pressure),
+    ]
+
+    width = 760
+    row_h = 46
+    height = 94 + len(rows) * row_h
+    label_x = 36
+    bar_x = 250
+    bar_w = 410
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Commercial score chart">',
+        f'<rect width="{width}" height="{height}" rx="22" fill="#fafaf9"/>',
+        f'<text x="{width/2}" y="30" text-anchor="middle" font-size="22" font-weight="800" fill="#111827">Commercial Score</text>',
+        f'<text x="{width/2}" y="56" text-anchor="middle" font-size="15" font-weight="700" fill="#15803d">Score general: {score.overall}/10</text>',
+    ]
+
+    for i, (label, value) in enumerate(rows):
+        y = 82 + i * row_h
+        fill_w = bar_w * (value / 10)
+        fill = "#22c55e" if value >= 7 else "#84cc16" if value >= 5 else "#f59e0b" if value >= 4 else "#ef4444"
+        parts.append(f'<text x="{label_x}" y="{y+20}" font-size="13" font-weight="700" fill="#111827">{h(label)}</text>')
+        parts.append(f'<rect x="{bar_x}" y="{y}" width="{bar_w}" height="24" rx="12" fill="#e5e7eb"/>')
+        parts.append(f'<rect x="{bar_x}" y="{y}" width="{fill_w}" height="24" rx="12" fill="{fill}"/>')
+        parts.append(f'<text x="{bar_x + bar_w + 20}" y="{y+18}" font-size="13" font-weight="800" fill="#111827">{value}/10</text>')
+
+    parts.append('</svg>')
+    return ''.join(parts)
+
+
+def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
+    width = 980
+    col_w = 270
+    gap = 55
+    left_x = 40
+    mid_x = left_x + col_w + gap
+    right_x = mid_x + col_w + gap
+
+    max_items = max(len(blueprint.current_flow), len(blueprint.breakpoints), len(blueprint.recommended_flow))
+    box_h = 46
+    box_gap = 16
+    top_y = 88
+    height = top_y + max_items * (box_h + box_gap) + 96
+
+    def draw_column(items: List[str], x: int, title: str, fill: str, stroke: str, title_fill: str) -> str:
+        col_parts = [
+            f'<text x="{x + col_w/2}" y="48" text-anchor="middle" font-size="18" font-weight="800" fill="{title_fill}">{h(title)}</text>'
+        ]
+        for i, item in enumerate(items):
+            y = top_y + i * (box_h + box_gap)
+            col_parts.append(f'<rect x="{x}" y="{y}" width="{col_w}" height="{box_h}" rx="12" fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>')
+            col_parts.append(f'<text x="{x + col_w/2}" y="{y+28}" text-anchor="middle" font-size="12" font-weight="700" fill="#111827">{h(item[:42])}</text>')
+            if i < len(items) - 1:
+                arrow_x = x + col_w/2
+                y1 = y + box_h
+                y2 = y + box_h + box_gap - 4
+                col_parts.append(f'<line x1="{arrow_x}" y1="{y1}" x2="{arrow_x}" y2="{y2}" stroke="{stroke}" stroke-width="2"/>')
+                col_parts.append(f'<polygon points="{arrow_x-5},{y2-1} {arrow_x+5},{y2-1} {arrow_x},{y2+7}" fill="{stroke}"/>')
+        return ''.join(col_parts)
+
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Funnel blueprint system map">',
+        f'<rect width="{width}" height="{height}" rx="22" fill="#fafaf9"/>',
+        f'<text x="{width/2}" y="28" text-anchor="middle" font-size="22" font-weight="800" fill="#111827">Funnel Blueprint / System Map</text>',
+        draw_column(blueprint.current_flow, left_x, "Flujo actual", "#f5f5f4", "#a8a29e", "#44403c"),
+        draw_column(blueprint.breakpoints, mid_x, "Puntos de ruptura", "#fef3c7", "#d97706", "#92400e"),
+        draw_column(blueprint.recommended_flow, right_x, "Flujo recomendado", "#dcfce7", "#16a34a", "#166534"),
+        f'<line x1="{left_x+col_w+12}" y1="{top_y + 25}" x2="{mid_x-12}" y2="{top_y + 25}" stroke="#6b7280" stroke-width="2" stroke-dasharray="6 6"/>',
+        f'<polygon points="{mid_x-12},{top_y+25} {mid_x-24},{top_y+18} {mid_x-24},{top_y+32}" fill="#6b7280"/>',
+        f'<line x1="{mid_x+col_w+12}" y1="{top_y + 25}" x2="{right_x-12}" y2="{top_y + 25}" stroke="#6b7280" stroke-width="2" stroke-dasharray="6 6"/>',
+        f'<polygon points="{right_x-12},{top_y+25} {right_x-24},{top_y+18} {right_x-24},{top_y+32}" fill="#6b7280"/>',
+        f'<text x="{width/2}" y="{height-38}" text-anchor="middle" font-size="13" fill="#4b5563">{h(blueprint.summary[:145])}</text>',
+        '</svg>',
+    ]
+
+    return ''.join(svg)
+
+
+def build_visual_report_html(
+    result: ProspectWithResearchResponse,
+    awareness_svg: str,
+    temperature_svg: str,
+    blueprint_svg: str,
+    score_svg: str,
+) -> str:
+    sources = ''.join([
+        f'''
+        <tr>
+          <td>{h(source.category)}</td>
+          <td>{h(source.title)}</td>
+          <td><a href="{h(source.url)}" target="_blank" rel="noopener">Abrir fuente</a></td>
+          <td>{h(source.signal)}</td>
+        </tr>
+        '''
+        for source in result.public_sources_summary
+    ])
+
+    actions = ''.join([
+        f'''
+        <div class="action-card">
+          <h3>{h(action.issue)}</h3>
+          <p><strong>Evidencia:</strong> {h(action.evidence)}</p>
+          <p><strong>Acción:</strong> {h(action.recommended_action)}</p>
+          <p><strong>Prioridad:</strong> {h(action.priority)} · <strong>Esfuerzo:</strong> {h(action.effort)}</p>
+          <p><strong>Impacto esperado:</strong> {h(action.expected_impact)}</p>
+          <p><strong>Validación:</strong> {h(action.verification_metric)}</p>
+        </div>
+        '''
+        for action in result.corrective_action_plan
+    ])
+
+    return f'''<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Reporte visual — {h(result.company_name)}</title>
+  <style>
+    body {{
+      margin: 0;
+      background: #f4f1eb;
+      color: #111827;
+      font-family: Arial, Helvetica, sans-serif;
+    }}
+    .page {{
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }}
+    .hero {{
+      background: #111827;
+      color: white;
+      border-radius: 24px;
+      padding: 32px;
+      margin-bottom: 22px;
+    }}
+    .hero h1 {{
+      margin: 0 0 10px;
+      font-size: 34px;
+      letter-spacing: -0.04em;
+    }}
+    .hero p {{
+      margin: 0 0 8px;
+      color: #d1d5db;
+      max-width: 850px;
+      line-height: 1.5;
+    }}
+    .grid {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }}
+    .card {{
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 24px;
+      padding: 22px;
+      box-shadow: 0 12px 30px rgba(17, 24, 39, 0.08);
+      margin-bottom: 20px;
+      overflow: hidden;
+    }}
+    .card h2 {{
+      margin: 0 0 14px;
+      font-size: 21px;
+      letter-spacing: -0.03em;
+    }}
+    .full {{
+      grid-column: 1 / -1;
+    }}
+    .table-wrap {{
+      overflow-x: auto;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }}
+    th, td {{
+      border-bottom: 1px solid #e5e7eb;
+      text-align: left;
+      vertical-align: top;
+      padding: 10px;
+    }}
+    th {{
+      background: #f9fafb;
+    }}
+    .action-card {{
+      border: 1px solid #e5e7eb;
+      border-left: 5px solid #22c55e;
+      border-radius: 16px;
+      padding: 16px;
+      margin: 12px 0;
+      background: #fcfcfc;
+    }}
+    .action-card h3 {{
+      margin: 0 0 8px;
+    }}
+    .action-card p {{
+      margin: 6px 0;
+      line-height: 1.45;
+    }}
+    .muted {{
+      color: #6b7280;
+    }}
+    @media print {{
+      body {{ background: white; }}
+      .card, .hero {{ box-shadow: none; break-inside: avoid; }}
+    }}
+    @media (max-width: 900px) {{
+      .grid {{ grid-template-columns: 1fr; }}
+    }}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <h1>Reporte visual de auditoría comercial</h1>
+      <p><strong>{h(result.company_name)}</strong> · Confianza de investigación: {h(result.research_confidence)} · Tipo: {h(result.audit_type)}</p>
+      <p>{h(result.diagnosis_initial)}</p>
+    </section>
+
+    <section class="grid">
+      <div class="card">{score_svg}</div>
+      <div class="card">{awareness_svg}</div>
+      <div class="card full">{temperature_svg}</div>
+      <div class="card full">{blueprint_svg}</div>
+
+      <div class="card full">
+        <h2>Fuentes públicas revisadas</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Categoría</th>
+                <th>Título</th>
+                <th>URL</th>
+                <th>Señal</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sources or '<tr><td colspan="4">No se detectaron fuentes públicas suficientemente fuertes.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card full">
+        <h2>Plan de acción recomendado</h2>
+        {actions}
+      </div>
+
+      <div class="card full">
+        <h2>Próximo paso comercial</h2>
+        <p>{h(result.next_step)}</p>
+        <p class="muted">Límite de esta entrega: no incluye calendario completo, copys finales, segmentaciones detalladas, arquitectura completa de funnel ni implementación paso a paso.</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>'''
+
+
+@app.post(
+    "/deliverables/visual-report",
+    response_model=VisualReportResponse,
+    operation_id="createVisualAuditReport",
+    summary="Create a visual audit report",
+    description="Ejecuta la auditoría integrada y genera un reporte visual con embudo, heatmap, blueprint y score chart en SVG/HTML.",
+    dependencies=[Security(verify_api_key)],
+)
+def create_visual_audit_report(request: ProspectWithResearchRequest):
+    result = audit_prospect_with_research(request)
+
+    awareness_svg = render_awareness_funnel_svg(result.awareness_funnel_locator)
+    temperature_svg = render_temperature_heatmap_svg(result.temperature_heatmap)
+    blueprint_svg = render_funnel_blueprint_svg(result.funnel_blueprint)
+    score_svg = render_score_chart_svg(result.commercial_score)
+
+    report_html = build_visual_report_html(
+        result=result,
+        awareness_svg=awareness_svg,
+        temperature_svg=temperature_svg,
+        blueprint_svg=blueprint_svg,
+        score_svg=score_svg,
+    )
+
+    report_id = uuid.uuid4().hex
+    VISUAL_REPORT_STORE[report_id] = report_html
+    report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
+
+    return VisualReportResponse(
+        company_name=result.company_name,
+        report_id=report_id,
+        report_url=report_url,
+        awareness_funnel_svg=awareness_svg,
+        temperature_heatmap_svg=temperature_svg,
+        funnel_blueprint_svg=blueprint_svg,
+        score_chart_svg=score_svg,
+        report_html=report_html,
+        report_markdown=result.report_ready_markdown,
+    )
+
+
+@app.get(
+    "/deliverables/report/{report_id}",
+    response_class=HTMLResponse,
+    operation_id="getVisualAuditReport",
+    summary="Open a generated visual audit report",
+)
+def get_visual_audit_report(report_id: str):
+    report_html = VISUAL_REPORT_STORE.get(report_id)
+
+    if not report_html:
+        raise HTTPException(
+            status_code=404,
+            detail="Reporte no encontrado o expirado. Generá un nuevo visual report.",
+        )
+
+    return HTMLResponse(content=report_html)
 
 
 @app.get("/")
