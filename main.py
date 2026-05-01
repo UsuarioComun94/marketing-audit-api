@@ -192,6 +192,39 @@ class IntegratedAuditBlock(BaseModel):
     confidence: str
 
 
+class AwarenessStage(BaseModel):
+    stage: str
+    weight: int
+    state: str
+
+
+class AwarenessFunnelLocator(BaseModel):
+    dominant_stage: str
+    blocked_stage: str
+    stage_distribution: List[AwarenessStage]
+    explanation: str
+
+
+class TemperatureHeatmapValues(BaseModel):
+    attention: int
+    interest: int
+    intent: int
+    trust: int
+    action: int
+    average: int
+
+
+class TemperatureHeatmapRow(BaseModel):
+    temperature: str
+    values: TemperatureHeatmapValues
+
+
+class TemperatureHeatmap(BaseModel):
+    average_temperature: str
+    rows: List[TemperatureHeatmapRow]
+    summary: str
+
+
 class CommercialScore(BaseModel):
     overall: float
     value_proposition: int
@@ -212,7 +245,9 @@ class ScoreInterpretation(BaseModel):
 class FunnelBlueprint(BaseModel):
     current_flow: List[str]
     missing_links: List[str]
+    breakpoints: List[str]
     recommended_flow: List[str]
+    summary: str
 
 
 class CorrectiveActionItem(BaseModel):
@@ -242,6 +277,8 @@ class ProspectWithResearchResponse(BaseModel):
     audit: IntegratedAuditBlock
     commercial_score: CommercialScore
     score_interpretation: ScoreInterpretation
+    awareness_funnel_locator: AwarenessFunnelLocator
+    temperature_heatmap: TemperatureHeatmap
     visual_diagram_mermaid: str
     funnel_blueprint: FunnelBlueprint
     corrective_action_plan: List[CorrectiveActionItem]
@@ -611,6 +648,174 @@ def build_score_interpretation(
     )
 
 
+
+def build_awareness_funnel_locator(
+    audit: ProspectAuditResponse,
+    score: CommercialScore,
+    request: ProspectWithResearchRequest,
+) -> AwarenessFunnelLocator:
+    stage_map = {
+        "unaware": "Unaware",
+        "problem-aware": "Problem Aware",
+        "solution-aware": "Solution Aware",
+        "product-aware": "Product Aware",
+        "most-aware": "Most Aware",
+    }
+
+    dominant_stage = stage_map.get(audit.awareness_level, "Problem Aware")
+
+    if dominant_stage == "Unaware":
+        blocked_stage = "Problem Aware"
+        weights = [45, 30, 15, 7, 3]
+    elif dominant_stage == "Problem Aware":
+        blocked_stage = "Solution Aware"
+        weights = [10, 45, 25, 15, 5]
+    elif dominant_stage == "Solution Aware":
+        blocked_stage = "Product Aware"
+        weights = [5, 20, 40, 25, 10]
+    elif dominant_stage == "Product Aware":
+        blocked_stage = "Most Aware"
+        weights = [3, 12, 25, 40, 20]
+    else:
+        blocked_stage = "Purchase / Conversion"
+        weights = [2, 8, 15, 25, 50]
+
+    stages = ["Unaware", "Problem Aware", "Solution Aware", "Product Aware", "Most Aware"]
+
+    distribution = []
+    for stage, weight in zip(stages, weights):
+        if stage == dominant_stage:
+            state = "dominant"
+        elif stage == blocked_stage:
+            state = "blocked"
+        elif weight >= 20:
+            state = "secondary"
+        else:
+            state = "neutral"
+
+        distribution.append(
+            AwarenessStage(
+                stage=stage,
+                weight=weight,
+                state=state,
+            )
+        )
+
+    if audit.primary_bottleneck == "propuesta de valor":
+        explanation = (
+            "El grueso del público reconoce la necesidad o la categoría, pero todavía no percibe "
+            "una razón clara para elegir esta marca frente a otras alternativas."
+        )
+    elif audit.primary_bottleneck == "conversión":
+        explanation = (
+            "El público puede estar más cerca de decidir, pero la acción comercial no está suficientemente "
+            "clara para convertir interés en consulta."
+        )
+    elif audit.primary_bottleneck == "funnel":
+        explanation = (
+            "Hay señales de recorrido incompleto: el público puede avanzar parcialmente, pero falta una "
+            "secuencia clara desde interés hasta oportunidad comercial."
+        )
+    elif audit.primary_bottleneck == "posicionamiento":
+        explanation = (
+            "El público compara alternativas, pero la marca no ocupa una posición suficientemente distinta "
+            "en la mente del mercado."
+        )
+    else:
+        explanation = (
+            "El público muestra señales de consciencia inicial, pero todavía falta construir preferencia "
+            "y dirección comercial."
+        )
+
+    return AwarenessFunnelLocator(
+        dominant_stage=dominant_stage,
+        blocked_stage=blocked_stage,
+        stage_distribution=distribution,
+        explanation=explanation,
+    )
+
+
+def build_temperature_heatmap(
+    audit: ProspectAuditResponse,
+    score: CommercialScore,
+) -> TemperatureHeatmap:
+    # Valores 0-100. No son métricas reales; son un mapa diagnóstico inferido desde señales públicas y score.
+    if audit.primary_bottleneck in ["propuesta de valor", "posicionamiento"]:
+        average_temperature = "Templado"
+        rows_data = [
+            ("Frío", 75, 35, 15, 20, 10),
+            ("Tibio", 65, 50, 25, 30, 15),
+            ("Templado", 55, 68, 45, 38, 25),
+            ("Caliente", 25, 40, 45, 35, 28),
+            ("Muy caliente", 10, 20, 25, 20, 15),
+        ]
+        summary = (
+            "Predomina un cliente templado: hay interés inicial, pero todavía falta confianza, "
+            "diferenciación percibida y dirección clara hacia la acción."
+        )
+    elif audit.primary_bottleneck == "conversión":
+        average_temperature = "Caliente"
+        rows_data = [
+            ("Frío", 45, 25, 10, 15, 5),
+            ("Tibio", 55, 45, 25, 25, 15),
+            ("Templado", 50, 60, 45, 40, 25),
+            ("Caliente", 35, 60, 70, 55, 38),
+            ("Muy caliente", 15, 35, 55, 45, 30),
+        ]
+        summary = (
+            "El cliente puede mostrar intención, pero la conversión se enfría porque el CTA, "
+            "la confianza o el siguiente paso no están suficientemente resueltos."
+        )
+    elif audit.primary_bottleneck == "awareness":
+        average_temperature = "Frío"
+        rows_data = [
+            ("Frío", 65, 25, 8, 10, 5),
+            ("Tibio", 40, 30, 15, 15, 8),
+            ("Templado", 25, 25, 20, 18, 10),
+            ("Caliente", 10, 15, 15, 12, 8),
+            ("Muy caliente", 5, 8, 10, 8, 5),
+        ]
+        summary = (
+            "Predomina un cliente frío: hay poca presencia mental o baja activación del problema."
+        )
+    else:
+        average_temperature = "Tibio"
+        rows_data = [
+            ("Frío", 65, 30, 10, 15, 8),
+            ("Tibio", 60, 50, 25, 25, 15),
+            ("Templado", 45, 55, 35, 30, 20),
+            ("Caliente", 20, 35, 40, 35, 22),
+            ("Muy caliente", 8, 18, 22, 20, 12),
+        ]
+        summary = (
+            "Predomina un cliente tibio/templado: existe atención, pero el recorrido comercial todavía "
+            "no empuja con suficiente fuerza hacia conversión."
+        )
+
+    rows = []
+    for temperature, attention, interest, intent, trust, action in rows_data:
+        average = round((attention + interest + intent + trust + action) / 5)
+        rows.append(
+            TemperatureHeatmapRow(
+                temperature=temperature,
+                values=TemperatureHeatmapValues(
+                    attention=attention,
+                    interest=interest,
+                    intent=intent,
+                    trust=trust,
+                    action=action,
+                    average=average,
+                ),
+            )
+        )
+
+    return TemperatureHeatmap(
+        average_temperature=average_temperature,
+        rows=rows,
+        summary=summary,
+    )
+
+
 def build_visual_diagram_mermaid(audit: ProspectAuditResponse) -> str:
     bottleneck_label = audit.primary_bottleneck.capitalize()
 
@@ -626,23 +831,56 @@ H --> I[Reunión / oportunidad comercial]"""
 
 
 def build_funnel_blueprint(audit: ProspectAuditResponse) -> FunnelBlueprint:
-    missing_links = ["Diferenciación explícita", "CTA específico", "Prueba social visible"]
+    breakpoints = ["CTA débil o poco específico", "Prueba social insuficiente"]
 
     if audit.primary_bottleneck == "propuesta de valor":
-        missing_links.insert(0, "Promesa comercial clara")
-    if audit.primary_bottleneck == "conversión":
-        missing_links.insert(0, "Llamada a la acción orientada a consulta")
-    if audit.primary_bottleneck == "funnel":
-        missing_links.insert(0, "Recorrido desde interés hasta reunión")
+        breakpoints.insert(0, "Propuesta de valor poco clara")
+        summary = (
+            "El recorrido se rompe entre interés y consideración: la marca muestra presencia u oferta, "
+            "pero no construye una razón clara de elección."
+        )
+    elif audit.primary_bottleneck == "conversión":
+        breakpoints.insert(0, "Falta de acción comercial clara")
+        summary = (
+            "El recorrido se rompe al final del funnel: puede existir interés, pero el siguiente paso "
+            "no está suficientemente claro o convincente."
+        )
+    elif audit.primary_bottleneck == "funnel":
+        breakpoints.insert(0, "Recorrido comercial incompleto")
+        summary = (
+            "El recorrido se rompe porque los puntos de contacto no están conectados en una secuencia "
+            "clara desde atención hasta oportunidad comercial."
+        )
+    elif audit.primary_bottleneck == "posicionamiento":
+        breakpoints.insert(0, "Diferenciación insuficiente frente a competidores")
+        summary = (
+            "El recorrido se rompe durante la comparación: la marca no ocupa una posición distintiva "
+            "suficiente para ganar preferencia."
+        )
+    else:
+        breakpoints.insert(0, "Falta de claridad estratégica en el recorrido")
+        summary = (
+            "La presencia pública existe, pero todavía no se traduce en un recorrido comercial defendible."
+        )
+
+    missing_links = list(dict.fromkeys([
+        "Mensaje diferencial",
+        "Contenido que eduque criterio de elección",
+        "Prueba social visible",
+        "CTA específico",
+        "Seguimiento comercial",
+    ]))
 
     return FunnelBlueprint(
         current_flow=[
             "Presencia pública",
             "Contenido o catálogo",
             "Interés inicial",
+            "Comparación con competidores",
             "Consulta débil o poco calificada",
         ],
-        missing_links=list(dict.fromkeys(missing_links)),
+        missing_links=missing_links,
+        breakpoints=list(dict.fromkeys(breakpoints)),
         recommended_flow=[
             "Mensaje diferencial",
             "Contenido que explique criterio y valor",
@@ -650,6 +888,7 @@ def build_funnel_blueprint(audit: ProspectAuditResponse) -> FunnelBlueprint:
             "CTA a diagnóstico / consulta / reunión",
             "Seguimiento comercial",
         ],
+        summary=summary,
     )
 
 
@@ -747,6 +986,9 @@ def build_report_pages(
     interpretation: ScoreInterpretation,
     public_sources: List[ReviewedPublicSource],
     corrective_actions: List[CorrectiveActionItem],
+    awareness_locator: AwarenessFunnelLocator,
+    temperature_heatmap: TemperatureHeatmap,
+    funnel_blueprint: FunnelBlueprint,
 ) -> List[ReportPage]:
     sources_text = "\\n".join([
         f"- {source.title or 'Fuente pública'}: {source.signal}"
@@ -773,24 +1015,31 @@ def build_report_pages(
         ),
         ReportPage(
             page=3,
-            title="Mapa de awareness",
+            title="Awareness funnel locator",
             content=(
-                f"Nivel probable: {audit.awareness_level}. El mercado puede reconocer la necesidad, "
-                "pero todavía necesita una razón clara para elegir esta marca."
+                f"Etapa dominante: {awareness_locator.dominant_stage}. "
+                f"Etapa bloqueada: {awareness_locator.blocked_stage}. "
+                f"{awareness_locator.explanation}"
             ),
-            visual_element="awareness_map",
+            visual_element="awareness_funnel",
         ),
         ReportPage(
             page=4,
-            title="Blueprint de conversión",
+            title="Customer temperature heatmap",
             content=(
-                "El recorrido actual parece depender de presencia y catálogo. El recorrido recomendado "
-                "debe conectar mensaje diferencial, prueba social, CTA y seguimiento comercial."
+                f"Temperatura promedio: {temperature_heatmap.average_temperature}. "
+                f"{temperature_heatmap.summary}"
             ),
-            visual_element="mermaid_diagram",
+            visual_element="temperature_heatmap",
         ),
         ReportPage(
             page=5,
+            title="Funnel blueprint",
+            content=funnel_blueprint.summary,
+            visual_element="system_blueprint",
+        ),
+        ReportPage(
+            page=6,
             title="Plan de acción recomendado",
             content=actions_text,
             visual_element="priority_matrix",
@@ -805,6 +1054,8 @@ def build_report_ready_markdown(
     diagnosis_initial: str,
     commercial_score: CommercialScore,
     score_interpretation: ScoreInterpretation,
+    awareness_locator: AwarenessFunnelLocator,
+    temperature_heatmap: TemperatureHeatmap,
     visual_diagram_mermaid: str,
     funnel_blueprint: FunnelBlueprint,
     corrective_action_plan: List[CorrectiveActionItem],
@@ -855,25 +1106,37 @@ Score general: {commercial_score.overall}/10.
 
 Lectura: {score_interpretation.summary}
 
-## 4. Mapa de awareness
-Nivel probable: {audit.awareness_level}.
+## 4. Awareness funnel locator
+Etapa dominante: {awareness_locator.dominant_stage}.
+Etapa bloqueada: {awareness_locator.blocked_stage}.
 
-La lectura estratégica es que el mercado puede reconocer la necesidad o la categoría, pero no necesariamente percibir una diferencia clara para elegir esta marca.
+Distribución estimada:
+{chr(10).join([f"- {stage.stage}: {stage.weight}% ({stage.state})" for stage in awareness_locator.stage_distribution])}
 
-## 5. Problema comercial principal
+Lectura:
+{awareness_locator.explanation}
+
+## 5. Customer temperature heatmap
+Temperatura promedio: {temperature_heatmap.average_temperature}.
+
+Heatmap diagnóstico:
+{chr(10).join([f"- {row.temperature}: atención {row.values.attention}, interés {row.values.interest}, intención {row.values.intent}, confianza {row.values.trust}, acción {row.values.action}, promedio {row.values.average}" for row in temperature_heatmap.rows])}
+
+Lectura:
+{temperature_heatmap.summary}
+
+## 6. Problema comercial principal
 {audit.primary_bottleneck}.
 
-## 6. Riesgo comercial
+## 7. Riesgo comercial
 {audit.commercial_risk}
 
-## 7. Blueprint visual
-```mermaid
-{visual_diagram_mermaid}
-```
-
-## 8. Blueprint de funnel
+## 8. Funnel blueprint / system map
 Flujo actual:
 {chr(10).join([f"- {item}" for item in funnel_blueprint.current_flow])}
+
+Puntos de ruptura:
+{chr(10).join([f"- {item}" for item in funnel_blueprint.breakpoints])}
 
 Eslabones faltantes:
 {chr(10).join([f"- {item}" for item in funnel_blueprint.missing_links])}
@@ -881,13 +1144,21 @@ Eslabones faltantes:
 Flujo recomendado:
 {chr(10).join([f"- {item}" for item in funnel_blueprint.recommended_flow])}
 
-## 9. Plan de acción recomendado
+Resumen:
+{funnel_blueprint.summary}
+
+## 9. Blueprint diagram
+```mermaid
+{visual_diagram_mermaid}
+```
+
+## 10. Plan de acción recomendado
 {actions_block}
 
-## 10. Próximo paso recomendado
+## 11. Próximo paso recomendado
 {audit.next_step}
 
-## 11. Límites de esta entrega
+## 12. Límites de esta entrega
 No incluye calendario completo de contenido, copys finales, segmentaciones detalladas, arquitectura completa de funnel ni implementación paso a paso.
 """
 
@@ -1375,6 +1646,17 @@ def audit_prospect_with_research(request: ProspectWithResearchRequest):
         audit=audit,
     )
 
+    awareness_funnel_locator = build_awareness_funnel_locator(
+        audit=audit,
+        score=commercial_score,
+        request=request,
+    )
+
+    temperature_heatmap = build_temperature_heatmap(
+        audit=audit,
+        score=commercial_score,
+    )
+
     visual_diagram_mermaid = build_visual_diagram_mermaid(audit)
     funnel_blueprint = build_funnel_blueprint(audit)
 
@@ -1392,6 +1674,9 @@ def audit_prospect_with_research(request: ProspectWithResearchRequest):
         interpretation=score_interpretation,
         public_sources=public_sources_summary,
         corrective_actions=corrective_action_plan,
+        awareness_locator=awareness_funnel_locator,
+        temperature_heatmap=temperature_heatmap,
+        funnel_blueprint=funnel_blueprint,
     )
 
     report_ready_markdown = build_report_ready_markdown(
@@ -1401,6 +1686,8 @@ def audit_prospect_with_research(request: ProspectWithResearchRequest):
         diagnosis_initial=diagnosis_initial,
         commercial_score=commercial_score,
         score_interpretation=score_interpretation,
+        awareness_locator=awareness_funnel_locator,
+        temperature_heatmap=temperature_heatmap,
         visual_diagram_mermaid=visual_diagram_mermaid,
         funnel_blueprint=funnel_blueprint,
         corrective_action_plan=corrective_action_plan,
@@ -1410,11 +1697,12 @@ def audit_prospect_with_research(request: ProspectWithResearchRequest):
         "Diagnóstico inicial",
         "Fuentes públicas revisadas",
         "Score comercial",
-        "Mapa de awareness",
+        "Awareness funnel locator",
+        "Customer temperature heatmap",
         "Problema comercial principal",
         "Riesgo comercial",
-        "Blueprint visual",
-        "Blueprint de funnel",
+        "Funnel blueprint / system map",
+        "Blueprint diagram",
         "Plan de acción recomendado",
         "Próximo paso recomendado",
         "Límites de esta entrega",
@@ -1436,6 +1724,8 @@ def audit_prospect_with_research(request: ProspectWithResearchRequest):
         ),
         commercial_score=commercial_score,
         score_interpretation=score_interpretation,
+        awareness_locator=awareness_funnel_locator,
+        temperature_heatmap=temperature_heatmap,
         visual_diagram_mermaid=visual_diagram_mermaid,
         funnel_blueprint=funnel_blueprint,
         corrective_action_plan=corrective_action_plan,
