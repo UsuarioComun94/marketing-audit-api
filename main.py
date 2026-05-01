@@ -9,9 +9,14 @@ from typing import Optional, List
 app = FastAPI(
     title="Marketing Audit API",
     description="API para auditar prospectos y devolver información estructurada a un Custom GPT.",
-    version="1.0.0"
+    version="1.0.0",
+    servers=[
+        {
+            "url": "https://marketing-audit-api.onrender.com",
+            "description": "Render production server"
+        }
+    ]
 )
-
 
 API_KEY = os.getenv("API_KEY", "dev-key")
 
