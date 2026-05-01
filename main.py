@@ -230,6 +230,27 @@ class TemperatureHeatmap(BaseModel):
     summary: str
 
 
+class DensityPoint(BaseModel):
+    x: str
+    y: str
+    value: int
+
+
+class DensityZone(BaseModel):
+    x: str
+    y: str
+    label: str
+
+
+class CustomerIntentDensityMap(BaseModel):
+    x_axis: List[str]
+    y_axis: List[str]
+    density_points: List[DensityPoint]
+    dominant_zone: DensityZone
+    blocked_zone: DensityZone
+    interpretation: str
+
+
 class CommercialScore(BaseModel):
     overall: float
     value_proposition: int
@@ -284,6 +305,7 @@ class ProspectWithResearchResponse(BaseModel):
     score_interpretation: ScoreInterpretation
     awareness_funnel_locator: AwarenessFunnelLocator
     temperature_heatmap: TemperatureHeatmap
+    customer_intent_density_map: CustomerIntentDensityMap
     visual_diagram_mermaid: str
     funnel_blueprint: FunnelBlueprint
     corrective_action_plan: List[CorrectiveActionItem]
@@ -301,6 +323,7 @@ class VisualReportResponse(BaseModel):
     report_url: str
     awareness_funnel_svg: str
     temperature_heatmap_svg: str
+    customer_intent_density_svg: str
     funnel_blueprint_svg: str
     score_chart_svg: str
     report_html: str
@@ -833,6 +856,111 @@ def build_temperature_heatmap(
     )
 
 
+
+def build_customer_intent_density_map(
+    awareness_funnel_locator: AwarenessFunnelLocator,
+    heatmap: TemperatureHeatmap,
+    audit: ProspectAuditResponse,
+) -> CustomerIntentDensityMap:
+    x_axis = ["Awareness", "Interest", "Consideration", "Conversion"]
+    y_axis = ["Frío", "Tibio", "Templado", "Caliente"]
+
+    stage_to_x = {
+        "Unaware": "Awareness",
+        "Problem Aware": "Interest",
+        "Solution Aware": "Consideration",
+        "Product Aware": "Consideration",
+        "Most Aware": "Conversion",
+    }
+
+    dominant_x = stage_to_x.get(awareness_funnel_locator.dominant_stage, "Interest")
+    blocked_x = stage_to_x.get(awareness_funnel_locator.blocked_stage, "Consideration")
+
+    temp = heatmap.average_temperature
+    dominant_y = "Caliente" if temp == "Muy caliente" else temp if temp in y_axis else "Templado"
+
+    if audit.primary_bottleneck in ["propuesta de valor", "posicionamiento"]:
+        blocked_y = dominant_y
+    elif audit.primary_bottleneck == "conversión":
+        blocked_y = "Caliente"
+    elif audit.primary_bottleneck == "awareness":
+        blocked_y = "Tibio"
+    else:
+        blocked_y = dominant_y
+
+    values = {}
+    for y in y_axis:
+        for x in x_axis:
+            values[(x, y)] = 12
+
+    def set_value(x: str, y: str, value: int):
+        values[(x, y)] = max(values.get((x, y), 0), max(0, min(int(value), 100)))
+
+    set_value(dominant_x, dominant_y, 92)
+    set_value(blocked_x, blocked_y, 72)
+
+    x_index = x_axis.index(dominant_x)
+    y_index = y_axis.index(dominant_y)
+
+    for dx, dy, value in [
+        (-1, 0, 64),
+        (1, 0, 58),
+        (0, -1, 55),
+        (0, 1, 62),
+        (-1, -1, 42),
+        (1, 1, 46),
+        (1, -1, 36),
+        (-1, 1, 38),
+    ]:
+        nx = x_index + dx
+        ny = y_index + dy
+        if 0 <= nx < len(x_axis) and 0 <= ny < len(y_axis):
+            set_value(x_axis[nx], y_axis[ny], value)
+
+    if audit.primary_bottleneck in ["propuesta de valor", "posicionamiento"]:
+        set_value("Conversion", "Caliente", 18)
+        set_value("Conversion", "Templado", 24)
+        set_value("Consideration", "Templado", max(values[("Consideration", "Templado")], 68))
+    elif audit.primary_bottleneck == "conversión":
+        set_value("Conversion", "Caliente", 78)
+        set_value("Conversion", "Templado", 60)
+    elif audit.primary_bottleneck == "awareness":
+        set_value("Awareness", "Frío", 82)
+        set_value("Interest", "Tibio", 45)
+
+    density_points = [
+        DensityPoint(x=x, y=y, value=values[(x, y)])
+        for y in y_axis
+        for x in x_axis
+    ]
+
+    interpretation = (
+        f"La mayor concentración diagnóstica aparece en {dominant_x} / {dominant_y}. "
+        f"La zona de fricción aparece en {blocked_x} / {blocked_y}. "
+        "Este mapa no representa comportamiento medido por analítica web; representa una inferencia comercial "
+        "a partir de fuentes públicas, awareness, temperatura y cuello de botella detectado."
+    )
+
+    return CustomerIntentDensityMap(
+        x_axis=x_axis,
+        y_axis=y_axis,
+        density_points=density_points,
+        dominant_zone=DensityZone(
+            x=dominant_x,
+            y=dominant_y,
+            label="Mayor concentración del público",
+        ),
+        blocked_zone=DensityZone(
+            x=blocked_x,
+            y=blocked_y,
+            label="Zona de bloqueo / pérdida de avance",
+        ),
+        interpretation=interpretation,
+    )
+
+
+
+
 def build_visual_diagram_mermaid(audit: ProspectAuditResponse) -> str:
     bottleneck_label = audit.primary_bottleneck.capitalize()
 
@@ -1073,6 +1201,7 @@ def build_report_ready_markdown(
     score_interpretation: ScoreInterpretation,
     awareness_funnel_locator: AwarenessFunnelLocator,
     temperature_heatmap: TemperatureHeatmap,
+    customer_intent_density_map: CustomerIntentDensityMap,
     visual_diagram_mermaid: str,
     funnel_blueprint: FunnelBlueprint,
     corrective_action_plan: List[CorrectiveActionItem],
@@ -1142,13 +1271,19 @@ Heatmap diagnóstico:
 Lectura:
 {temperature_heatmap.summary}
 
-## 6. Problema comercial principal
+## 6. Customer intent density map
+{customer_intent_density_map.interpretation}
+
+Zona dominante: {customer_intent_density_map.dominant_zone.x} / {customer_intent_density_map.dominant_zone.y}.
+Zona bloqueada: {customer_intent_density_map.blocked_zone.x} / {customer_intent_density_map.blocked_zone.y}.
+
+## 7. Problema comercial principal
 {audit.primary_bottleneck}.
 
-## 7. Riesgo comercial
+## 8. Riesgo comercial
 {audit.commercial_risk}
 
-## 8. Funnel blueprint / system map
+## 9. Funnel blueprint / system map
 Flujo actual:
 {chr(10).join([f"- {item}" for item in funnel_blueprint.current_flow])}
 
@@ -1164,18 +1299,18 @@ Flujo recomendado:
 Resumen:
 {funnel_blueprint.summary}
 
-## 9. Blueprint diagram
+## 10. Blueprint diagram
 ```mermaid
 {visual_diagram_mermaid}
 ```
 
-## 10. Plan de acción recomendado
+## 11. Plan de acción recomendado
 {actions_block}
 
-## 11. Próximo paso recomendado
+## 12. Próximo paso recomendado
 {audit.next_step}
 
-## 12. Límites de esta entrega
+## 13. Límites de esta entrega
 No incluye calendario completo de contenido, copys finales, segmentaciones detalladas, arquitectura completa de funnel ni implementación paso a paso.
 """
 
@@ -1274,7 +1409,7 @@ def render_temperature_heatmap_svg(heatmap: TemperatureHeatmap) -> str:
     cell_w = 96
     cell_h = 46
     left_w = 120
-    top_h = 70
+    top_h = 96
     width = left_w + cell_w * len(cols) + 40
     height = top_h + cell_h * len(heatmap.rows) + 84
 
@@ -1282,7 +1417,7 @@ def render_temperature_heatmap_svg(heatmap: TemperatureHeatmap) -> str:
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Customer temperature heatmap">',
         f'<rect width="{width}" height="{height}" rx="22" fill="#fafaf9"/>',
         f'<text x="{width/2}" y="30" text-anchor="middle" font-size="22" font-weight="800" fill="#111827">Customer Temperature Heatmap</text>',
-        f'<text x="{width/2}" y="54" text-anchor="middle" font-size="13" fill="#4b5563">Temperatura promedio: {h(heatmap.average_temperature)}</text>',
+        f'<text x="{width/2}" y="58" text-anchor="middle" font-size="13" fill="#4b5563">Temperatura promedio: {h(heatmap.average_temperature)}</text>',
     ]
 
     for col_index, (_, label) in enumerate(cols):
@@ -1406,10 +1541,126 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
     return ''.join(svg)
 
 
+
+def density_color(value: int) -> str:
+    value = max(0, min(int(value), 100))
+
+    # Cold -> warm gradient:
+    # 0 blue, 35 cyan, 55 yellow-green, 75 amber, 100 red.
+    stops = [
+        (0, (37, 99, 235)),
+        (35, (14, 165, 233)),
+        (55, (132, 204, 22)),
+        (75, (245, 158, 11)),
+        (100, (239, 68, 68)),
+    ]
+
+    for index in range(len(stops) - 1):
+        left_value, left_rgb = stops[index]
+        right_value, right_rgb = stops[index + 1]
+
+        if left_value <= value <= right_value:
+            ratio = (value - left_value) / (right_value - left_value)
+            rgb = tuple(
+                round(left_rgb[channel] + (right_rgb[channel] - left_rgb[channel]) * ratio)
+                for channel in range(3)
+            )
+            return f"rgb({rgb[0]}, {rgb[1]}, {rgb[2]})"
+
+    return "rgb(239, 68, 68)"
+
+
+def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) -> str:
+    x_axis = density_map.x_axis
+    y_axis = density_map.y_axis
+
+    cell_w = 150
+    cell_h = 76
+    left_w = 135
+    top_h = 92
+    width = left_w + cell_w * len(x_axis) + 48
+    height = top_h + cell_h * len(y_axis) + 118
+
+    value_lookup = {
+        (point.x, point.y): point.value
+        for point in density_map.density_points
+    }
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Customer intent density map">',
+        '<defs>',
+        '  <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">',
+        '    <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#111827" flood-opacity="0.18"/>',
+        '  </filter>',
+        '  <linearGradient id="legendGradient" x1="0%" x2="100%" y1="0%" y2="0%">',
+        '    <stop offset="0%" stop-color="#2563eb"/>',
+        '    <stop offset="35%" stop-color="#0ea5e9"/>',
+        '    <stop offset="55%" stop-color="#84cc16"/>',
+        '    <stop offset="75%" stop-color="#f59e0b"/>',
+        '    <stop offset="100%" stop-color="#ef4444"/>',
+        '  </linearGradient>',
+        '</defs>',
+        f'<rect width="{width}" height="{height}" rx="24" fill="#111827"/>',
+        f'<text x="{width/2}" y="34" text-anchor="middle" font-size="24" font-weight="850" fill="#f9fafb">Customer Intent Density Map</text>',
+        f'<text x="{width/2}" y="58" text-anchor="middle" font-size="13" fill="#d1d5db">Azul = frío · Verde/amarillo = templado · Rojo = caliente</text>',
+    ]
+
+    for col_index, label in enumerate(x_axis):
+        x = left_w + col_index * cell_w
+        parts.append(f'<text x="{x + cell_w/2}" y="{top_h - 18}" text-anchor="middle" font-size="13" font-weight="800" fill="#f9fafb">{h(label)}</text>')
+
+    for row_index, y_label in enumerate(y_axis):
+        y = top_h + row_index * cell_h
+        parts.append(f'<text x="{left_w - 20}" y="{y + cell_h/2 + 5}" text-anchor="end" font-size="14" font-weight="800" fill="#f9fafb">{h(y_label)}</text>')
+
+        for col_index, x_label in enumerate(x_axis):
+            x = left_w + col_index * cell_w
+            value = value_lookup.get((x_label, y_label), 0)
+            fill = density_color(value)
+
+            is_dominant = (
+                x_label == density_map.dominant_zone.x
+                and y_label == density_map.dominant_zone.y
+            )
+            is_blocked = (
+                x_label == density_map.blocked_zone.x
+                and y_label == density_map.blocked_zone.y
+            )
+
+            stroke = "#f9fafb" if is_dominant else "#fbbf24" if is_blocked else "#374151"
+            stroke_w = 4 if is_dominant else 3 if is_blocked else 1
+            opacity = 0.96 if value >= 55 else 0.78 if value >= 30 else 0.5
+
+            parts.append(f'<rect x="{x+8}" y="{y+8}" width="{cell_w-16}" height="{cell_h-16}" rx="16" fill="{fill}" opacity="{opacity}" stroke="{stroke}" stroke-width="{stroke_w}" filter="url(#softShadow)"/>')
+            parts.append(f'<text x="{x + cell_w/2}" y="{y + cell_h/2 + 6}" text-anchor="middle" font-size="18" font-weight="900" fill="#ffffff">{value}</text>')
+
+            if is_dominant:
+                parts.append(f'<text x="{x + cell_w/2}" y="{y + cell_h - 10}" text-anchor="middle" font-size="10" font-weight="800" fill="#ffffff">DOMINANTE</text>')
+            elif is_blocked:
+                parts.append(f'<text x="{x + cell_w/2}" y="{y + cell_h - 10}" text-anchor="middle" font-size="10" font-weight="800" fill="#ffffff">BLOQUEO</text>')
+
+    legend_x = left_w
+    legend_y = height - 72
+    legend_w = cell_w * len(x_axis)
+    parts.extend([
+        f'<rect x="{legend_x}" y="{legend_y}" width="{legend_w}" height="14" rx="7" fill="url(#legendGradient)"/>',
+        f'<text x="{legend_x}" y="{legend_y + 36}" text-anchor="start" font-size="12" fill="#d1d5db">Frío</text>',
+        f'<text x="{legend_x + legend_w/2}" y="{legend_y + 36}" text-anchor="middle" font-size="12" fill="#d1d5db">Templado</text>',
+        f'<text x="{legend_x + legend_w}" y="{legend_y + 36}" text-anchor="end" font-size="12" fill="#d1d5db">Caliente</text>',
+        f'<text x="{width/2}" y="{height - 18}" text-anchor="middle" font-size="12" fill="#9ca3af">{h(density_map.interpretation[:160])}</text>',
+        '</svg>',
+    ])
+
+    return ''.join(parts)
+
+
+
+
 def build_visual_report_html(
     result: ProspectWithResearchResponse,
     awareness_svg: str,
     temperature_svg: str,
+    density_svg: str,
     blueprint_svg: str,
     score_svg: str,
 ) -> str:
@@ -1552,6 +1803,7 @@ def build_visual_report_html(
     <section class="grid">
       <div class="card">{score_svg}</div>
       <div class="card">{awareness_svg}</div>
+      <div class="card full">{density_svg}</div>
       <div class="card full">{temperature_svg}</div>
       <div class="card full">{blueprint_svg}</div>
 
@@ -1603,6 +1855,7 @@ def create_visual_audit_report(request: ProspectWithResearchRequest):
 
     awareness_svg = render_awareness_funnel_svg(result.awareness_funnel_locator)
     temperature_svg = render_temperature_heatmap_svg(result.temperature_heatmap)
+    density_svg = render_customer_intent_density_svg(result.customer_intent_density_map)
     blueprint_svg = render_funnel_blueprint_svg(result.funnel_blueprint)
     score_svg = render_score_chart_svg(result.commercial_score)
 
@@ -1610,6 +1863,7 @@ def create_visual_audit_report(request: ProspectWithResearchRequest):
         result=result,
         awareness_svg=awareness_svg,
         temperature_svg=temperature_svg,
+        density_svg=density_svg,
         blueprint_svg=blueprint_svg,
         score_svg=score_svg,
     )
@@ -1624,6 +1878,7 @@ def create_visual_audit_report(request: ProspectWithResearchRequest):
         report_url=report_url,
         awareness_funnel_svg=awareness_svg,
         temperature_heatmap_svg=temperature_svg,
+        customer_intent_density_svg=density_svg,
         funnel_blueprint_svg=blueprint_svg,
         score_chart_svg=score_svg,
         report_html=report_html,
@@ -2143,6 +2398,12 @@ def audit_prospect_with_research(request: ProspectWithResearchRequest):
         score=commercial_score,
     )
 
+    customer_intent_density_map = build_customer_intent_density_map(
+        awareness_funnel_locator=awareness_funnel_locator,
+        heatmap=temperature_heatmap,
+        audit=audit,
+    )
+
     visual_diagram_mermaid = build_visual_diagram_mermaid(audit)
     funnel_blueprint = build_funnel_blueprint(audit)
 
@@ -2174,6 +2435,7 @@ def audit_prospect_with_research(request: ProspectWithResearchRequest):
         score_interpretation=score_interpretation,
         awareness_funnel_locator=awareness_funnel_locator,
         temperature_heatmap=temperature_heatmap,
+        customer_intent_density_map=customer_intent_density_map,
         visual_diagram_mermaid=visual_diagram_mermaid,
         funnel_blueprint=funnel_blueprint,
         corrective_action_plan=corrective_action_plan,
@@ -2185,6 +2447,7 @@ def audit_prospect_with_research(request: ProspectWithResearchRequest):
         "Score comercial",
         "Awareness funnel locator",
         "Customer temperature heatmap",
+        "Customer intent density map",
         "Problema comercial principal",
         "Riesgo comercial",
         "Funnel blueprint / system map",
@@ -2212,6 +2475,7 @@ def audit_prospect_with_research(request: ProspectWithResearchRequest):
         score_interpretation=score_interpretation,
         awareness_funnel_locator=awareness_funnel_locator,
         temperature_heatmap=temperature_heatmap,
+        customer_intent_density_map=customer_intent_density_map,
         visual_diagram_mermaid=visual_diagram_mermaid,
         funnel_blueprint=funnel_blueprint,
         corrective_action_plan=corrective_action_plan,
