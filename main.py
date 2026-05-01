@@ -9,47 +9,35 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(
     title="Marketing Audit API",
-    description="API para auditar prospectos y devolver información estructurada a un Custom GPT.",
-    version="1.2.0",
+    description="API para auditar prospectos, investigar presencia pública y devolver información estructurada a un Custom GPT.",
+    version="1.3.0",
     servers=[
         {
             "url": "https://marketing-audit-api.onrender.com",
-            "description": "Render production server"
+            "description": "Render production server",
         }
-    ]
+    ],
 )
 
 
 API_KEY = os.getenv("API_KEY", "dev-key")
-
 COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
 COMPOSIO_BASE_URL = "https://backend.composio.dev/api/v3.1"
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
     "SEARCH_API_LOCATIONS",
-    "COMPOSIO_SEARCH_DUCK_DUCK_GO_SEARCH"
+    "COMPOSIO_SEARCH_DUCK_DUCK_GO_SEARCH",
 }
 
-
-api_key_header = APIKeyHeader(
-    name="x-api-key",
-    auto_error=False
-)
+api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
 
 
 def verify_api_key(api_key: str = Security(api_key_header)):
     if api_key != API_KEY:
-        raise HTTPException(
-            status_code=401,
-            detail="API key inválida o ausente"
-        )
+        raise HTTPException(status_code=401, detail="API key inválida o ausente")
     return api_key
 
-
-# =========================
-# MODELOS DE AUDITORÍA
-# =========================
 
 class ProspectAuditRequest(BaseModel):
     company_name: str = Field(..., description="Nombre de la empresa o prospecto")
@@ -90,10 +78,6 @@ class ReportBriefResponse(BaseModel):
     do_not_include: List[str]
 
 
-# =========================
-# MODELOS DE TOOLS / COMPOSIO
-# =========================
-
 class ToolInfo(BaseModel):
     slug: str
     name: Optional[str] = None
@@ -116,14 +100,8 @@ class ToolsStatusResponse(BaseModel):
 
 
 class ToolsSearchRequest(BaseModel):
-    query: str = Field(
-        ...,
-        description="Texto para buscar herramientas, por ejemplo: search api, google, apify, sheets"
-    )
-    toolkit_slug: Optional[str] = Field(
-        None,
-        description="Toolkit específico, por ejemplo: search_api, apify, google_sheets"
-    )
+    query: str = Field(..., description="Texto para buscar herramientas")
+    toolkit_slug: Optional[str] = Field(None, description="Toolkit específico")
     limit: int = Field(10, description="Cantidad máxima de herramientas a devolver")
 
 
@@ -139,22 +117,10 @@ class ToolDetailsResponse(BaseModel):
 
 
 class ToolExecuteRequest(BaseModel):
-    tool_slug: str = Field(
-        ...,
-        description="Slug exacto de la herramienta de Composio, por ejemplo SEARCH_API_SEARCH"
-    )
-    arguments: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Argumentos estructurados para la herramienta"
-    )
-    text: Optional[str] = Field(
-        None,
-        description="Instrucción en lenguaje natural para ejecutar la herramienta"
-    )
-    user_id: str = Field(
-        "default",
-        description="Identificador del usuario en Composio"
-    )
+    tool_slug: str = Field(..., description="Slug exacto de la herramienta de Composio")
+    arguments: Optional[Dict[str, Any]] = Field(None, description="Argumentos estructurados")
+    text: Optional[str] = Field(None, description="Instrucción en lenguaje natural")
+    user_id: str = Field("default", description="Identificador del usuario en Composio")
 
 
 class ToolExecuteResponse(BaseModel):
@@ -165,21 +131,42 @@ class ToolExecuteResponse(BaseModel):
     raw_response: Dict[str, Any]
 
 
-# =========================
-# HELPERS COMPOSIO
-# =========================
+class PublicPresenceRequest(BaseModel):
+    company_name: str = Field(..., description="Nombre de la empresa a investigar")
+    industry: Optional[str] = Field(None, description="Rubro o industria")
+    city: Optional[str] = Field(None, description="Ciudad o zona principal")
+    country: Optional[str] = Field("Argentina", description="País de referencia")
+    website: Optional[str] = Field(None, description="Sitio web conocido")
+    instagram: Optional[str] = Field(None, description="Perfil de Instagram conocido")
+    linkedin: Optional[str] = Field(None, description="Perfil de LinkedIn conocido")
+    num_results_per_query: int = Field(5, description="Cantidad de resultados por búsqueda")
 
-def get_composio_headers():
+
+class PublicSourceResult(BaseModel):
+    category: str
+    query: str
+    title: Optional[str] = None
+    url: Optional[str] = None
+    displayed_url: Optional[str] = None
+    snippet: Optional[str] = None
+    source: str = "search_api"
+
+
+class PublicPresenceResponse(BaseModel):
+    company_name: str
+    research_type: str
+    queries_used: List[str]
+    sources_found: List[PublicSourceResult]
+    presence_summary: str
+    research_confidence: str
+    next_step: str
+    raw_result_count: int
+
+
+def get_composio_headers() -> Dict[str, str]:
     if not COMPOSIO_API_KEY:
-        raise HTTPException(
-            status_code=500,
-            detail="COMPOSIO_API_KEY no está configurada en el servidor"
-        )
-
-    return {
-        "x-api-key": COMPOSIO_API_KEY,
-        "accept": "application/json"
-    }
+        raise HTTPException(status_code=500, detail="COMPOSIO_API_KEY no está configurada en el servidor")
+    return {"x-api-key": COMPOSIO_API_KEY, "accept": "application/json"}
 
 
 def composio_get(path: str, params: Optional[dict] = None):
@@ -188,26 +175,15 @@ def composio_get(path: str, params: Optional[dict] = None):
             f"{COMPOSIO_BASE_URL}{path}",
             headers=get_composio_headers(),
             params=params or {},
-            timeout=20
+            timeout=20,
         )
     except requests.RequestException as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"No se pudo conectar con Composio: {str(exc)}"
-        )
+        raise HTTPException(status_code=502, detail=f"No se pudo conectar con Composio: {str(exc)}")
 
     if response.status_code == 401:
-        raise HTTPException(
-            status_code=401,
-            detail="Composio rechazó la API key. Revisá COMPOSIO_API_KEY."
-        )
-
+        raise HTTPException(status_code=401, detail="Composio rechazó la API key. Revisá COMPOSIO_API_KEY.")
     if response.status_code >= 400:
-        raise HTTPException(
-            status_code=response.status_code,
-            detail=response.text
-        )
-
+        raise HTTPException(status_code=response.status_code, detail=response.text)
     return response.json()
 
 
@@ -215,74 +191,40 @@ def composio_post(path: str, payload: Optional[dict] = None):
     try:
         response = requests.post(
             f"{COMPOSIO_BASE_URL}{path}",
-            headers={
-                **get_composio_headers(),
-                "Content-Type": "application/json"
-            },
+            headers={**get_composio_headers(), "Content-Type": "application/json"},
             json=payload or {},
-            timeout=45
+            timeout=60,
         )
     except requests.RequestException as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"No se pudo conectar con Composio: {str(exc)}"
-        )
+        raise HTTPException(status_code=502, detail=f"No se pudo conectar con Composio: {str(exc)}")
 
     if response.status_code == 401:
-        raise HTTPException(
-            status_code=401,
-            detail="Composio rechazó la API key. Revisá COMPOSIO_API_KEY."
-        )
-
+        raise HTTPException(status_code=401, detail="Composio rechazó la API key. Revisá COMPOSIO_API_KEY.")
     if response.status_code >= 400:
-        raise HTTPException(
-            status_code=response.status_code,
-            detail=response.text
-        )
-
+        raise HTTPException(status_code=response.status_code, detail=response.text)
     return response.json()
 
 
 def extract_tools_list(composio_response):
     if isinstance(composio_response, list):
         return composio_response
-
     if isinstance(composio_response, dict):
-        if isinstance(composio_response.get("items"), list):
-            return composio_response["items"]
-
-        if isinstance(composio_response.get("tools"), list):
-            return composio_response["tools"]
-
-        if isinstance(composio_response.get("data"), list):
-            return composio_response["data"]
-
+        for key in ["items", "tools", "data"]:
+            if isinstance(composio_response.get(key), list):
+                return composio_response[key]
     return []
 
 
 def normalize_tool(tool: dict) -> ToolInfo:
-    slug = (
-        tool.get("slug")
-        or tool.get("name")
-        or tool.get("tool_slug")
-        or tool.get("id")
-        or "unknown"
-    )
-
+    slug = tool.get("slug") or tool.get("name") or tool.get("tool_slug") or tool.get("id") or "unknown"
     name = tool.get("name") or tool.get("display_name") or slug
     toolkit = tool.get("toolkit_slug") or tool.get("toolkit") or tool.get("app")
-
-    description = (
-        tool.get("description")
-        or tool.get("summary")
-        or tool.get("display_description")
-    )
-
+    description = tool.get("description") or tool.get("summary") or tool.get("display_description")
     return ToolInfo(
         slug=str(slug),
         name=str(name) if name else None,
         toolkit=str(toolkit) if toolkit else None,
-        description=str(description) if description else None
+        description=str(description) if description else None,
     )
 
 
@@ -295,25 +237,80 @@ def tool_matches_query(tool: dict, query: str) -> bool:
         str(tool.get("toolkit_slug", "")),
         str(tool.get("toolkit", "")),
     ]).casefold()
-
     return query.casefold() in text
 
 
-# =========================
-# ROOT
-# =========================
+def find_organic_results(obj: Any) -> List[dict]:
+    if isinstance(obj, dict):
+        for key in ["organic_results", "organic"]:
+            value = obj.get(key)
+            if isinstance(value, list):
+                return value
+        for value in obj.values():
+            found = find_organic_results(value)
+            if found:
+                return found
+
+    if isinstance(obj, list):
+        for item in obj:
+            found = find_organic_results(item)
+            if found:
+                return found
+
+    return []
+
+
+def execute_search_api_query(query: str, num_results: int = 5, user_id: str = "default") -> Dict[str, Any]:
+    payload = {
+        "user_id": user_id,
+        "version": "latest",
+        "arguments": {
+            "engine": "google",
+            "q": query,
+            "num": num_results,
+        },
+    }
+    return composio_post("/tools/execute/SEARCH_API_SEARCH", payload=payload)
+
+
+def normalize_search_result(item: dict, category: str, query: str) -> PublicSourceResult:
+    return PublicSourceResult(
+        category=category,
+        query=query,
+        title=item.get("title"),
+        url=item.get("link") or item.get("url"),
+        displayed_url=item.get("displayed_link") or item.get("displayed_url"),
+        snippet=item.get("snippet") or item.get("description"),
+        source="search_api",
+    )
+
+
+def build_public_presence_queries(request: PublicPresenceRequest) -> List[Dict[str, str]]:
+    location = " ".join([part for part in [request.city, request.country] if part])
+    base = request.company_name
+
+    queries = [
+        {"category": "official_presence", "query": f"{base} sitio web oficial {location}".strip()},
+        {"category": "social_profiles", "query": f"{base} Instagram LinkedIn Facebook {location}".strip()},
+        {"category": "reputation", "query": f"{base} opiniones reseñas Google {location}".strip()},
+    ]
+
+    if request.industry:
+        queries.append({"category": "competitors", "query": f"{request.industry} {location} competidores {base}".strip()})
+    if request.website:
+        queries.append({"category": "known_website", "query": f"site:{request.website} {base}".strip()})
+    if request.instagram:
+        queries.append({"category": "known_instagram", "query": f"{request.instagram} {base}".strip()})
+    if request.linkedin:
+        queries.append({"category": "known_linkedin", "query": f"{request.linkedin} {base}".strip()})
+
+    return queries
+
 
 @app.get("/")
 def root():
-    return {
-        "status": "ok",
-        "message": "Marketing Audit API funcionando"
-    }
+    return {"status": "ok", "message": "Marketing Audit API funcionando"}
 
-
-# =========================
-# LÓGICA DE AUDITORÍA
-# =========================
 
 def build_analysis_text(request: ProspectAuditRequest) -> str:
     fields = [
@@ -325,7 +322,6 @@ def build_analysis_text(request: ProspectAuditRequest) -> str:
         request.offer,
         request.notes,
     ]
-
     return " ".join([field for field in fields if field]).casefold()
 
 
@@ -336,68 +332,21 @@ def contains_any(text: str, keywords: List[str]) -> bool:
 def infer_focus_areas(text: str, request: ProspectAuditRequest) -> List[str]:
     focus_areas = []
 
-    if request.instagram or contains_any(
-        text,
-        ["instagram", "contenido", "publicaciones", "posteos", "feed", "reels"]
-    ):
+    if request.instagram or contains_any(text, ["instagram", "contenido", "publicaciones", "posteos", "feed", "reels"]):
         focus_areas.append("contenido")
-
-    if contains_any(
-        text,
-        ["awareness", "visibilidad", "alcance", "reconocimiento", "tráfico", "audiencia"]
-    ):
+    if contains_any(text, ["awareness", "visibilidad", "alcance", "reconocimiento", "tráfico", "audiencia"]):
         focus_areas.append("awareness")
-
-    if contains_any(
-        text,
-        [
-            "propuesta de valor",
-            "diferenciación",
-            "diferenciacion",
-            "oferta",
-            "por qué elegir",
-            "porque elegir",
-            "posicionamiento"
-        ]
-    ):
+    if contains_any(text, ["propuesta de valor", "diferenciación", "diferenciacion", "oferta", "por qué elegir", "porque elegir", "posicionamiento"]):
         focus_areas.append("propuesta de valor")
-
-    if contains_any(
-        text,
-        [
-            "cta",
-            "llamada a la acción",
-            "llamada a la accion",
-            "conversión",
-            "conversion",
-            "convertir",
-            "leads",
-            "consulta",
-            "mensaje"
-        ]
-    ):
+    if contains_any(text, ["cta", "llamada a la acción", "llamada a la accion", "conversión", "conversion", "convertir", "leads", "consulta", "mensaje"]):
         focus_areas.append("conversión")
-
-    if contains_any(
-        text,
-        ["funnel", "embudo", "landing", "retargeting", "seguimiento", "pipeline"]
-    ):
+    if contains_any(text, ["funnel", "embudo", "landing", "retargeting", "seguimiento", "pipeline"]):
         focus_areas.append("funnel")
-
-    if contains_any(
-        text,
-        ["marca", "competidores", "competencia", "precio", "premium", "autoridad"]
-    ):
+    if contains_any(text, ["marca", "competidores", "competencia", "precio", "premium", "autoridad"]):
         focus_areas.append("posicionamiento")
 
     if not focus_areas:
-        focus_areas = [
-            "awareness",
-            "propuesta de valor",
-            "contenido",
-            "funnel",
-            "conversión"
-        ]
+        focus_areas = ["awareness", "propuesta de valor", "contenido", "funnel", "conversión"]
 
     return list(dict.fromkeys(focus_areas))
 
@@ -405,76 +354,43 @@ def infer_focus_areas(text: str, request: ProspectAuditRequest) -> List[str]:
 def infer_primary_bottleneck(text: str, focus_areas: List[str]) -> str:
     if "propuesta de valor" in focus_areas:
         return "propuesta de valor"
-
     if "conversión" in focus_areas:
         return "conversión"
-
     if "funnel" in focus_areas:
         return "funnel"
-
     if "posicionamiento" in focus_areas:
         return "posicionamiento"
-
     if "contenido" in focus_areas:
         return "contenido"
-
     return "awareness"
 
 
 def infer_awareness_level(text: str, primary_bottleneck: str) -> str:
     if contains_any(text, ["no saben", "desconocen", "educar mercado", "mercado no entiende"]):
         return "unaware"
-
     if contains_any(text, ["problema", "dolor", "necesidad", "poca claridad", "confusión", "confusion"]):
         return "problem-aware"
-
     if contains_any(text, ["solución", "solucion", "alternativa", "comparan", "competidores"]):
         return "solution-aware"
-
     if contains_any(text, ["marca", "producto", "servicio", "testimonios", "casos de éxito", "casos de exito"]):
         return "product-aware"
-
     if contains_any(text, ["precio", "promoción", "promocion", "agenda", "cotización", "cotizacion", "comprar"]):
         return "most-aware"
-
     if primary_bottleneck in ["propuesta de valor", "contenido", "funnel"]:
         return "problem-aware"
-
     return "problem-aware"
 
 
 def build_commercial_risk(primary_bottleneck: str) -> str:
     risks = {
-        "propuesta de valor": (
-            "La empresa puede estar generando visibilidad sin lograr que el mercado entienda "
-            "por qué debería elegirla frente a otras alternativas."
-        ),
-        "conversión": (
-            "La empresa puede estar atrayendo atención, pero perdiendo oportunidades porque no "
-            "guía al usuario hacia una acción comercial concreta."
-        ),
-        "funnel": (
-            "La empresa puede tener puntos de contacto aislados, pero sin un recorrido claro que "
-            "transforme interés en oportunidad comercial."
-        ),
-        "posicionamiento": (
-            "La empresa puede quedar atrapada en comparación por precio o apariencia porque no "
-            "comunica una diferencia estratégica clara."
-        ),
-        "contenido": (
-            "La empresa puede estar publicando con frecuencia, pero sin una narrativa que construya "
-            "demanda, autoridad o intención de compra."
-        ),
-        "awareness": (
-            "La empresa puede tener baja presencia mental en el mercado y depender demasiado de "
-            "acciones tácticas de corto plazo."
-        )
+        "propuesta de valor": "La empresa puede estar generando visibilidad sin lograr que el mercado entienda por qué debería elegirla frente a otras alternativas.",
+        "conversión": "La empresa puede estar atrayendo atención, pero perdiendo oportunidades porque no guía al usuario hacia una acción comercial concreta.",
+        "funnel": "La empresa puede tener puntos de contacto aislados, pero sin un recorrido claro que transforme interés en oportunidad comercial.",
+        "posicionamiento": "La empresa puede quedar atrapada en comparación por precio o apariencia porque no comunica una diferencia estratégica clara.",
+        "contenido": "La empresa puede estar publicando con frecuencia, pero sin una narrativa que construya demanda, autoridad o intención de compra.",
+        "awareness": "La empresa puede tener baja presencia mental en el mercado y depender demasiado de acciones tácticas de corto plazo.",
     }
-
-    return risks.get(
-        primary_bottleneck,
-        "La empresa puede estar haciendo actividad digital sin convertirla en demanda calificada."
-    )
+    return risks.get(primary_bottleneck, "La empresa puede estar haciendo actividad digital sin convertirla en demanda calificada.")
 
 
 def build_recommended_angle(primary_bottleneck: str) -> str:
@@ -484,13 +400,9 @@ def build_recommended_angle(primary_bottleneck: str) -> str:
         "funnel": "Mostrar que el problema no es solo publicar más, sino construir un recorrido desde atención hasta conversión.",
         "posicionamiento": "Mostrar cómo una marca sin diferenciación termina compitiendo por precio, estética o disponibilidad.",
         "contenido": "Mostrar que el contenido actual puede entretener o informar, pero no necesariamente vender.",
-        "awareness": "Mostrar que sin presencia mental suficiente, cada acción comercial empieza desde cero."
+        "awareness": "Mostrar que sin presencia mental suficiente, cada acción comercial empieza desde cero.",
     }
-
-    return angles.get(
-        primary_bottleneck,
-        "Mostrar una brecha comercial concreta sin entregar todavía la solución completa."
-    )
+    return angles.get(primary_bottleneck, "Mostrar una brecha comercial concreta sin entregar todavía la solución completa.")
 
 
 def infer_confidence(request: ProspectAuditRequest) -> str:
@@ -502,19 +414,12 @@ def infer_confidence(request: ProspectAuditRequest) -> str:
         bool(request.offer),
         bool(request.notes and len(request.notes) > 40),
     ])
-
     if signal_count >= 4:
         return "media-alta"
-
     if signal_count >= 2:
         return "media"
-
     return "baja"
 
-
-# =========================
-# ENDPOINTS DE AUDITORÍA
-# =========================
 
 @app.post(
     "/audit/prospect",
@@ -522,11 +427,10 @@ def infer_confidence(request: ProspectAuditRequest) -> str:
     operation_id="auditProspect",
     summary="Audit a marketing prospect",
     description="Recibe datos básicos de un prospecto y devuelve focos de auditoría comercial.",
-    dependencies=[Security(verify_api_key)]
+    dependencies=[Security(verify_api_key)],
 )
 def audit_prospect(request: ProspectAuditRequest):
     text = build_analysis_text(request)
-
     focus_areas = infer_focus_areas(text, request)
     primary_bottleneck = infer_primary_bottleneck(text, focus_areas)
     awareness_level = infer_awareness_level(text, primary_bottleneck)
@@ -539,19 +443,16 @@ def audit_prospect(request: ProspectAuditRequest):
         detected_focus_areas=focus_areas,
         commercial_risk=build_commercial_risk(primary_bottleneck),
         recommended_angle=build_recommended_angle(primary_bottleneck),
-        next_step=(
-            "Preparar un diagnóstico comercial breve que muestre la brecha principal y proponga "
-            "una reunión para profundizar la solución."
-        ),
+        next_step="Preparar un diagnóstico comercial breve que muestre la brecha principal y proponga una reunión para profundizar la solución.",
         do_not_give_for_free=[
             "calendario completo de contenido",
             "reescritura integral de la propuesta de valor",
             "estructura completa de campañas",
             "arquitectura completa de funnel",
             "segmentaciones detalladas de pauta",
-            "copys finales listos para implementar"
+            "copys finales listos para implementar",
         ],
-        confidence=infer_confidence(request)
+        confidence=infer_confidence(request),
     )
 
 
@@ -561,11 +462,10 @@ def audit_prospect(request: ProspectAuditRequest):
     operation_id="createReportBrief",
     summary="Create a commercial audit report brief",
     description="Genera una estructura breve de reporte comercial a partir de hallazgos de auditoría.",
-    dependencies=[Security(verify_api_key)]
+    dependencies=[Security(verify_api_key)],
 )
 def create_report_brief(request: ReportBriefRequest):
     bottleneck = request.primary_bottleneck or "brecha comercial"
-
     return ReportBriefResponse(
         company_name=request.company_name,
         report_type="commercial_audit_brief",
@@ -576,30 +476,20 @@ def create_report_brief(request: ReportBriefRequest):
             "Riesgo de mantener la situación actual",
             "Oportunidad estratégica detectada",
             "Qué conviene mostrar en reunión",
-            "Próximo paso recomendado"
+            "Próximo paso recomendado",
         ],
-        opening_angle=(
-            f"La presentación debería abrir mostrando cómo {request.company_name} puede estar "
-            f"perdiendo oportunidades por un problema de {bottleneck}."
-        ),
-        recommended_close=(
-            "Cerrar con una invitación a revisar el caso en una reunión breve, sin entregar todavía "
-            "la estrategia completa."
-        ),
+        opening_angle=f"La presentación debería abrir mostrando cómo {request.company_name} puede estar perdiendo oportunidades por un problema de {bottleneck}.",
+        recommended_close="Cerrar con una invitación a revisar el caso en una reunión breve, sin entregar todavía la estrategia completa.",
         do_not_include=[
             "plan completo de contenidos",
             "estructura completa de campañas",
             "copys finales",
             "segmentaciones detalladas",
             "presupuesto táctico completo",
-            "implementación paso a paso"
-        ]
+            "implementación paso a paso",
+        ],
     )
 
-
-# =========================
-# ENDPOINTS DE COMPOSIO / TOOLS
-# =========================
 
 @app.get(
     "/tools/status",
@@ -607,7 +497,7 @@ def create_report_brief(request: ReportBriefRequest):
     operation_id="getToolsStatus",
     summary="Check available Composio toolkits",
     description="Verifica si Composio está configurado y revisa herramientas disponibles para toolkits relevantes.",
-    dependencies=[Security(verify_api_key)]
+    dependencies=[Security(verify_api_key)],
 )
 def get_tools_status():
     toolkits_to_check = [
@@ -618,47 +508,31 @@ def get_tools_status():
         "semrush",
         "similarweb",
         "google_sheets",
-        "google_drive"
+        "google_drive",
     ]
 
     if not COMPOSIO_API_KEY:
         return ToolsStatusResponse(
             composio_configured=False,
             checked_toolkits=[],
-            recommendation=(
-                "COMPOSIO_API_KEY no está configurada. Agregala como variable de entorno antes "
-                "de usar herramientas externas."
-            )
+            recommendation="COMPOSIO_API_KEY no está configurada. Agregala como variable de entorno antes de usar herramientas externas.",
         )
 
     checked = []
 
     for toolkit in toolkits_to_check:
         try:
-            data = composio_get(
-                "/tools",
-                params={
-                    "toolkit_slug": toolkit,
-                    "limit": 20
-                }
-            )
-
+            data = composio_get("/tools", params={"toolkit_slug": toolkit, "limit": 20})
             tools = extract_tools_list(data)
-            sample_tools = []
-
-            for tool in tools[:5]:
-                normalized = normalize_tool(tool)
-                sample_tools.append(normalized.slug)
-
+            sample_tools = [normalize_tool(tool).slug for tool in tools[:5]]
             checked.append(
                 ToolkitStatus(
                     toolkit=toolkit,
                     available=len(tools) > 0,
                     tool_count=len(tools),
-                    sample_tools=sample_tools
+                    sample_tools=sample_tools,
                 )
             )
-
         except Exception as exc:
             checked.append(
                 ToolkitStatus(
@@ -666,7 +540,7 @@ def get_tools_status():
                     available=False,
                     tool_count=0,
                     sample_tools=[],
-                    error=str(exc)
+                    error=str(exc),
                 )
             )
 
@@ -677,25 +551,16 @@ def get_tools_status():
     ]
 
     if len(available_essential) == len(essential):
-        recommendation = (
-            "Herramientas esenciales disponibles. Se puede avanzar a búsqueda pública, "
-            "validación de páginas y scraping controlado."
-        )
+        recommendation = "Herramientas esenciales disponibles. Se puede avanzar a búsqueda pública, validación de páginas y scraping controlado."
     elif available_essential:
-        recommendation = (
-            "Hay algunas herramientas esenciales disponibles, pero conviene conectar o verificar "
-            "las faltantes antes de una auditoría completa."
-        )
+        recommendation = "Hay algunas herramientas esenciales disponibles, pero conviene conectar o verificar las faltantes antes de una auditoría completa."
     else:
-        recommendation = (
-            "No se detectaron herramientas esenciales. Primero conectá o verificá Search API, "
-            "Browser Tool o Apify."
-        )
+        recommendation = "No se detectaron herramientas esenciales. Primero conectá o verificá Search API, Browser Tool o Apify."
 
     return ToolsStatusResponse(
         composio_configured=True,
         checked_toolkits=checked,
-        recommendation=recommendation
+        recommendation=recommendation,
     )
 
 
@@ -705,12 +570,10 @@ def get_tools_status():
     operation_id="searchComposioTools",
     summary="Search Composio tools",
     description="Busca herramientas disponibles en Composio usando texto libre y, opcionalmente, un toolkit específico.",
-    dependencies=[Security(verify_api_key)]
+    dependencies=[Security(verify_api_key)],
 )
 def search_composio_tools(request: ToolsSearchRequest):
-    params = {
-        "limit": 100
-    }
+    params = {"limit": 100}
 
     if request.toolkit_slug:
         params["toolkit_slug"] = request.toolkit_slug
@@ -727,7 +590,7 @@ def search_composio_tools(request: ToolsSearchRequest):
     return ToolsSearchResponse(
         query=request.query,
         toolkit_slug=request.toolkit_slug,
-        results=matches[:request.limit]
+        results=matches[:request.limit],
     )
 
 
@@ -737,7 +600,7 @@ def search_composio_tools(request: ToolsSearchRequest):
     operation_id="getComposioToolDetails",
     summary="Get Composio tool details",
     description="Obtiene detalles y schema de una herramienta específica de Composio.",
-    dependencies=[Security(verify_api_key)]
+    dependencies=[Security(verify_api_key)],
 )
 def get_composio_tool_details(tool_slug: str):
     data = composio_get(f"/tools/{tool_slug}")
@@ -747,7 +610,7 @@ def get_composio_tool_details(tool_slug: str):
 
     return ToolDetailsResponse(
         tool_slug=tool_slug,
-        raw_response=data
+        raw_response=data,
     )
 
 
@@ -757,38 +620,29 @@ def get_composio_tool_details(tool_slug: str):
     operation_id="executeComposioTool",
     summary="Execute an allowed Composio tool",
     description="Ejecuta una herramienta permitida de Composio usando argumentos estructurados o texto en lenguaje natural.",
-    dependencies=[Security(verify_api_key)]
+    dependencies=[Security(verify_api_key)],
 )
 def execute_composio_tool(request: ToolExecuteRequest):
     if request.tool_slug not in ALLOWED_COMPOSIO_TOOLS:
         raise HTTPException(
             status_code=403,
-            detail=(
-                f"La herramienta {request.tool_slug} no está permitida todavía. "
-                f"Permitidas: {sorted(ALLOWED_COMPOSIO_TOOLS)}"
-            )
+            detail=f"La herramienta {request.tool_slug} no está permitida todavía. Permitidas: {sorted(ALLOWED_COMPOSIO_TOOLS)}",
         )
 
     if not request.arguments and not request.text:
         raise HTTPException(
             status_code=422,
-            detail="Debés enviar arguments o text para ejecutar la herramienta."
+            detail="Debés enviar arguments o text para ejecutar la herramienta.",
         )
 
-    payload = {
-        "user_id": request.user_id,
-        "version": "latest"
-    }
+    payload = {"user_id": request.user_id, "version": "latest"}
 
     if request.arguments:
         payload["arguments"] = request.arguments
     else:
         payload["text"] = request.text
 
-    data = composio_post(
-        f"/tools/execute/{request.tool_slug}",
-        payload=payload
-    )
+    data = composio_post(f"/tools/execute/{request.tool_slug}", payload=payload)
 
     if not isinstance(data, dict):
         data = {"response": data}
@@ -798,5 +652,78 @@ def execute_composio_tool(request: ToolExecuteRequest):
         successful=data.get("successful"),
         data=data.get("data"),
         error=data.get("error"),
-        raw_response=data
+        raw_response=data,
+    )
+
+
+@app.post(
+    "/research/company-public-presence",
+    response_model=PublicPresenceResponse,
+    operation_id="researchCompanyPublicPresence",
+    summary="Research public presence of a company",
+    description="Busca presencia pública de una empresa usando Search API vía Composio y devuelve fuentes normalizadas para auditoría comercial.",
+    dependencies=[Security(verify_api_key)],
+)
+def research_company_public_presence(request: PublicPresenceRequest):
+    if "SEARCH_API_SEARCH" not in ALLOWED_COMPOSIO_TOOLS:
+        raise HTTPException(
+            status_code=403,
+            detail="SEARCH_API_SEARCH no está permitido en ALLOWED_COMPOSIO_TOOLS.",
+        )
+
+    queries = build_public_presence_queries(request)
+    sources: List[PublicSourceResult] = []
+    errors: List[str] = []
+
+    safe_num = max(1, min(request.num_results_per_query, 10))
+
+    for query_item in queries:
+        category = query_item["category"]
+        query = query_item["query"]
+
+        try:
+            raw_response = execute_search_api_query(query=query, num_results=safe_num, user_id="default")
+            organic_results = find_organic_results(raw_response)
+
+            for item in organic_results[:safe_num]:
+                if isinstance(item, dict):
+                    sources.append(normalize_search_result(item=item, category=category, query=query))
+
+        except HTTPException as exc:
+            errors.append(f"{category}: {exc.detail}")
+        except Exception as exc:
+            errors.append(f"{category}: {str(exc)}")
+
+    queries_used = [item["query"] for item in queries]
+
+    if len(sources) >= 8:
+        confidence = "media-alta"
+    elif len(sources) >= 3:
+        confidence = "media"
+    else:
+        confidence = "baja"
+
+    if sources:
+        summary = (
+            f"Se encontraron {len(sources)} fuentes públicas relacionadas con {request.company_name}. "
+            "La información puede usarse como base para validar presencia digital, perfiles sociales, reputación y contexto competitivo."
+        )
+    else:
+        summary = (
+            f"No se encontraron fuentes públicas suficientes para {request.company_name}. "
+            "Conviene revisar el nombre, ciudad, rubro o perfiles conocidos."
+        )
+
+    if errors:
+        summary = summary + f" Algunas búsquedas tuvieron errores: {len(errors)}."
+
+    return PublicPresenceResponse(
+        company_name=request.company_name,
+        research_type="company_public_presence",
+        queries_used=queries_used,
+        sources_found=sources,
+        presence_summary=summary,
+        research_confidence=confidence,
+        next_step="Usar estas fuentes como insumo para auditProspect y luego generar un diagnóstico comercial breve.",
+        raw_result_count=len(sources),
     )
