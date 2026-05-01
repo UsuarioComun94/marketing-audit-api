@@ -986,7 +986,7 @@ def build_report_pages(
     interpretation: ScoreInterpretation,
     public_sources: List[ReviewedPublicSource],
     corrective_actions: List[CorrectiveActionItem],
-    awareness_locator: AwarenessFunnelLocator,
+    awareness_funnel_locator: AwarenessFunnelLocator,
     temperature_heatmap: TemperatureHeatmap,
     funnel_blueprint: FunnelBlueprint,
 ) -> List[ReportPage]:
@@ -1017,9 +1017,9 @@ def build_report_pages(
             page=3,
             title="Awareness funnel locator",
             content=(
-                f"Etapa dominante: {awareness_locator.dominant_stage}. "
-                f"Etapa bloqueada: {awareness_locator.blocked_stage}. "
-                f"{awareness_locator.explanation}"
+                f"Etapa dominante: {awareness_funnel_locator.dominant_stage}. "
+                f"Etapa bloqueada: {awareness_funnel_locator.blocked_stage}. "
+                f"{awareness_funnel_locator.explanation}"
             ),
             visual_element="awareness_funnel",
         ),
@@ -1054,7 +1054,7 @@ def build_report_ready_markdown(
     diagnosis_initial: str,
     commercial_score: CommercialScore,
     score_interpretation: ScoreInterpretation,
-    awareness_locator: AwarenessFunnelLocator,
+    awareness_funnel_locator: AwarenessFunnelLocator,
     temperature_heatmap: TemperatureHeatmap,
     visual_diagram_mermaid: str,
     funnel_blueprint: FunnelBlueprint,
@@ -1107,14 +1107,14 @@ Score general: {commercial_score.overall}/10.
 Lectura: {score_interpretation.summary}
 
 ## 4. Awareness funnel locator
-Etapa dominante: {awareness_locator.dominant_stage}.
-Etapa bloqueada: {awareness_locator.blocked_stage}.
+Etapa dominante: {awareness_funnel_locator.dominant_stage}.
+Etapa bloqueada: {awareness_funnel_locator.blocked_stage}.
 
 Distribución estimada:
-{chr(10).join([f"- {stage.stage}: {stage.weight}% ({stage.state})" for stage in awareness_locator.stage_distribution])}
+{chr(10).join([f"- {stage.stage}: {stage.weight}% ({stage.state})" for stage in awareness_funnel_locator.stage_distribution])}
 
 Lectura:
-{awareness_locator.explanation}
+{awareness_funnel_locator.explanation}
 
 ## 5. Customer temperature heatmap
 Temperatura promedio: {temperature_heatmap.average_temperature}.
