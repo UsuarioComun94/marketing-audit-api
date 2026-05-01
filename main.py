@@ -1570,90 +1570,203 @@ def density_color(value: int) -> str:
     return "rgb(239, 68, 68)"
 
 
+
 def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) -> str:
     x_axis = density_map.x_axis
     y_axis = density_map.y_axis
 
-    cell_w = 150
-    cell_h = 76
-    left_w = 135
-    top_h = 92
-    width = left_w + cell_w * len(x_axis) + 48
-    height = top_h + cell_h * len(y_axis) + 118
+    width = 1100
+    height = 560
+    chart_x = 112
+    chart_y = 92
+    chart_w = 880
+    chart_h = 335
+    stage_step = chart_w / (len(x_axis) - 1)
+    temp_step = chart_h / (len(y_axis) - 1)
+
+    def x_pos(label: str) -> float:
+        return chart_x + x_axis.index(label) * stage_step
+
+    def y_pos(label: str) -> float:
+        # Invert y-axis: Frío abajo, Caliente arriba.
+        return chart_y + (len(y_axis) - 1 - y_axis.index(label)) * temp_step
 
     value_lookup = {
         (point.x, point.y): point.value
         for point in density_map.density_points
     }
 
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Customer intent density map">',
-        '<defs>',
-        '  <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">',
-        '    <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#111827" flood-opacity="0.18"/>',
-        '  </filter>',
-        '  <linearGradient id="legendGradient" x1="0%" x2="100%" y1="0%" y2="0%">',
-        '    <stop offset="0%" stop-color="#2563eb"/>',
-        '    <stop offset="35%" stop-color="#0ea5e9"/>',
-        '    <stop offset="55%" stop-color="#84cc16"/>',
-        '    <stop offset="75%" stop-color="#f59e0b"/>',
-        '    <stop offset="100%" stop-color="#ef4444"/>',
-        '  </linearGradient>',
-        '</defs>',
-        f'<rect width="{width}" height="{height}" rx="24" fill="#111827"/>',
-        f'<text x="{width/2}" y="34" text-anchor="middle" font-size="24" font-weight="850" fill="#f9fafb">Customer Intent Density Map</text>',
-        f'<text x="{width/2}" y="58" text-anchor="middle" font-size="13" fill="#d1d5db">Azul = frío · Verde/amarillo = templado · Rojo = caliente</text>',
+    blobs = []
+    contours = []
+
+    for point in density_map.density_points:
+        value = max(0, min(int(point.value), 100))
+        if value < 28:
+            continue
+
+        cx = x_pos(point.x)
+        cy = y_pos(point.y)
+        color = density_color(value)
+
+        is_dominant = (
+            point.x == density_map.dominant_zone.x
+            and point.y == density_map.dominant_zone.y
+        )
+        is_blocked = (
+            point.x == density_map.blocked_zone.x
+            and point.y == density_map.blocked_zone.y
+        )
+
+        rx_outer = 70 + value * 1.9
+        ry_outer = 16 + value * 0.22
+        opacity_outer = 0.12 + value / 190
+
+        rx_mid = 42 + value * 1.1
+        ry_mid = 10 + value * 0.15
+        opacity_mid = 0.14 + value / 230
+
+        blobs.append(
+            f'<ellipse cx="{cx:.1f}" cy="{cy:.1f}" rx="{rx_outer:.1f}" ry="{ry_outer:.1f}" '
+            f'fill="{color}" opacity="{opacity_outer:.2f}" filter="url(#densityBlur)"/>'
+        )
+        blobs.append(
+            f'<ellipse cx="{cx:.1f}" cy="{cy:.1f}" rx="{rx_mid:.1f}" ry="{ry_mid:.1f}" '
+            f'fill="{color}" opacity="{opacity_mid:.2f}" filter="url(#softBlur)"/>'
+        )
+
+        if value >= 55:
+            line_w = 58 + value * 2.1
+            stroke_opacity = 0.34 if value < 80 else 0.55
+            stroke_w = 3 if value < 80 else 5
+            contours.append(
+                f'<line x1="{cx - line_w/2:.1f}" y1="{cy:.1f}" x2="{cx + line_w/2:.1f}" y2="{cy:.1f}" '
+                f'stroke="{color}" stroke-width="{stroke_w}" stroke-linecap="round" opacity="{stroke_opacity:.2f}"/>'
+            )
+
+        if is_dominant:
+            contours.append(
+                f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="22" fill="none" stroke="#ffffff" stroke-width="4" opacity="0.95"/>'
+            )
+            contours.append(
+                f'<text x="{cx:.1f}" y="{cy - 32:.1f}" text-anchor="middle" font-size="12" font-weight="900" fill="#ffffff">DOMINANTE</text>'
+            )
+        elif is_blocked:
+            contours.append(
+                f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="18" fill="none" stroke="#fbbf24" stroke-width="4" opacity="0.95"/>'
+            )
+            contours.append(
+                f'<text x="{cx:.1f}" y="{cy + 40:.1f}" text-anchor="middle" font-size="12" font-weight="900" fill="#fbbf24">BLOQUEO</text>'
+            )
+
+    dominant_cx = x_pos(density_map.dominant_zone.x)
+    dominant_cy = y_pos(density_map.dominant_zone.y)
+    blocked_cx = x_pos(density_map.blocked_zone.x)
+    blocked_cy = y_pos(density_map.blocked_zone.y)
+
+    temp_bands = []
+    band_labels = [
+        ("Caliente", "#7f1d1d", 0.20),
+        ("Templado", "#713f12", 0.16),
+        ("Tibio", "#064e3b", 0.14),
+        ("Frío", "#0f2a5f", 0.20),
     ]
+    for label, color, opacity in band_labels:
+        cy = y_pos(label)
+        temp_bands.append(
+            f'<rect x="{chart_x}" y="{cy - 40}" width="{chart_w}" height="80" '
+            f'fill="{color}" opacity="{opacity}" rx="14"/>'
+        )
 
-    for col_index, label in enumerate(x_axis):
-        x = left_w + col_index * cell_w
-        parts.append(f'<text x="{x + cell_w/2}" y="{top_h - 18}" text-anchor="middle" font-size="13" font-weight="800" fill="#f9fafb">{h(label)}</text>')
+    x_labels = []
+    for label in x_axis:
+        x = x_pos(label)
+        x_labels.append(
+            f'<text x="{x:.1f}" y="{chart_y - 28}" text-anchor="middle" font-size="15" font-weight="900" fill="#f9fafb">{h(label)}</text>'
+        )
+        x_labels.append(
+            f'<line x1="{x:.1f}" y1="{chart_y - 8}" x2="{x:.1f}" y2="{chart_y + chart_h + 8}" '
+            f'stroke="#334155" stroke-width="1" opacity="0.35"/>'
+        )
 
-    for row_index, y_label in enumerate(y_axis):
-        y = top_h + row_index * cell_h
-        parts.append(f'<text x="{left_w - 20}" y="{y + cell_h/2 + 5}" text-anchor="end" font-size="14" font-weight="800" fill="#f9fafb">{h(y_label)}</text>')
+    y_labels = []
+    for label in y_axis:
+        y = y_pos(label)
+        y_labels.append(
+            f'<text x="{chart_x - 26}" y="{y + 5:.1f}" text-anchor="end" font-size="14" font-weight="900" fill="#f9fafb">{h(label)}</text>'
+        )
+        y_labels.append(
+            f'<line x1="{chart_x - 6}" y1="{y:.1f}" x2="{chart_x + chart_w + 6}" y2="{y:.1f}" '
+            f'stroke="#334155" stroke-width="1" opacity="0.28"/>'
+        )
 
-        for col_index, x_label in enumerate(x_axis):
-            x = left_w + col_index * cell_w
-            value = value_lookup.get((x_label, y_label), 0)
-            fill = density_color(value)
+    profile_bars = []
+    for label in y_axis:
+        y = y_pos(label)
+        row_values = [value_lookup.get((x, label), 0) for x in x_axis]
+        max_row = max(row_values) if row_values else 0
+        bar_w = 18 + max_row * 0.95
+        profile_color = density_color(max_row)
+        profile_bars.append(
+            f'<rect x="{chart_x + chart_w + 20}" y="{y - 18:.1f}" width="{bar_w:.1f}" height="36" rx="8" '
+            f'fill="{profile_color}" opacity="0.78"/>'
+        )
 
-            is_dominant = (
-                x_label == density_map.dominant_zone.x
-                and y_label == density_map.dominant_zone.y
-            )
-            is_blocked = (
-                x_label == density_map.blocked_zone.x
-                and y_label == density_map.blocked_zone.y
-            )
+    legend_y = height - 84
+    legend_x = chart_x
+    legend_w = chart_w
+    interpretation = h(density_map.interpretation[:168])
 
-            stroke = "#f9fafb" if is_dominant else "#fbbf24" if is_blocked else "#374151"
-            stroke_w = 4 if is_dominant else 3 if is_blocked else 1
-            opacity = 0.96 if value >= 55 else 0.78 if value >= 30 else 0.5
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Customer intent density map">
+    <defs>
+      <filter id="densityBlur" x="-45%" y="-180%" width="190%" height="460%">
+        <feGaussianBlur stdDeviation="18"/>
+      </filter>
+      <filter id="softBlur" x="-35%" y="-120%" width="170%" height="340%">
+        <feGaussianBlur stdDeviation="7"/>
+      </filter>
+      <marker id="arrowHead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L0,6 L9,3 z" fill="#f9fafb"/>
+      </marker>
+      <linearGradient id="legendGradient" x1="0%" x2="100%" y1="0%" y2="0%">
+        <stop offset="0%" stop-color="#2563eb"/>
+        <stop offset="35%" stop-color="#0ea5e9"/>
+        <stop offset="55%" stop-color="#84cc16"/>
+        <stop offset="75%" stop-color="#f59e0b"/>
+        <stop offset="100%" stop-color="#ef4444"/>
+      </linearGradient>
+      <radialGradient id="chartGlow" cx="50%" cy="45%" r="70%">
+        <stop offset="0%" stop-color="#1e293b"/>
+        <stop offset="100%" stop-color="#0f172a"/>
+      </radialGradient>
+    </defs>
 
-            parts.append(f'<rect x="{x+8}" y="{y+8}" width="{cell_w-16}" height="{cell_h-16}" rx="16" fill="{fill}" opacity="{opacity}" stroke="{stroke}" stroke-width="{stroke_w}" filter="url(#softShadow)"/>')
-            parts.append(f'<text x="{x + cell_w/2}" y="{y + cell_h/2 + 6}" text-anchor="middle" font-size="18" font-weight="900" fill="#ffffff">{value}</text>')
+    <rect width="{width}" height="{height}" rx="28" fill="#0b1220"/>
+    <rect x="28" y="24" width="{width - 56}" height="{height - 48}" rx="26" fill="url(#chartGlow)" stroke="#1f2937" stroke-width="1"/>
 
-            if is_dominant:
-                parts.append(f'<text x="{x + cell_w/2}" y="{y + cell_h - 10}" text-anchor="middle" font-size="10" font-weight="800" fill="#ffffff">DOMINANTE</text>')
-            elif is_blocked:
-                parts.append(f'<text x="{x + cell_w/2}" y="{y + cell_h - 10}" text-anchor="middle" font-size="10" font-weight="800" fill="#ffffff">BLOQUEO</text>')
+    <text x="{width/2}" y="50" text-anchor="middle" font-size="27" font-weight="900" fill="#f9fafb">Customer Intent Density Map</text>
+    <text x="{width/2}" y="76" text-anchor="middle" font-size="14" fill="#d1d5db">Mapa de densidad inferida · Azul frío → verde/amarillo templado → rojo caliente</text>
 
-    legend_x = left_w
-    legend_y = height - 72
-    legend_w = cell_w * len(x_axis)
-    parts.extend([
-        f'<rect x="{legend_x}" y="{legend_y}" width="{legend_w}" height="14" rx="7" fill="url(#legendGradient)"/>',
-        f'<text x="{legend_x}" y="{legend_y + 36}" text-anchor="start" font-size="12" fill="#d1d5db">Frío</text>',
-        f'<text x="{legend_x + legend_w/2}" y="{legend_y + 36}" text-anchor="middle" font-size="12" fill="#d1d5db">Templado</text>',
-        f'<text x="{legend_x + legend_w}" y="{legend_y + 36}" text-anchor="end" font-size="12" fill="#d1d5db">Caliente</text>',
-        f'<text x="{width/2}" y="{height - 18}" text-anchor="middle" font-size="12" fill="#9ca3af">{h(density_map.interpretation[:160])}</text>',
-        '</svg>',
-    ])
+    <rect x="{chart_x - 12}" y="{chart_y - 12}" width="{chart_w + 24}" height="{chart_h + 24}" rx="20" fill="#020617" opacity="0.48" stroke="#334155" stroke-width="1"/>
 
-    return ''.join(parts)
+    {''.join(temp_bands)}
+    {''.join(x_labels)}
+    {''.join(y_labels)}
+    {''.join(blobs)}
+    {''.join(contours)}
+    {''.join(profile_bars)}
 
+    <path d="M {dominant_cx:.1f} {dominant_cy:.1f} C {(dominant_cx + blocked_cx)/2:.1f} {dominant_cy - 46:.1f}, {(dominant_cx + blocked_cx)/2:.1f} {blocked_cy - 46:.1f}, {blocked_cx:.1f} {blocked_cy:.1f}"
+      fill="none" stroke="#f9fafb" stroke-width="2.4" stroke-dasharray="8 7" marker-end="url(#arrowHead)" opacity="0.82"/>
 
+    <text x="{chart_x}" y="{chart_y + chart_h + 50}" font-size="12" fill="#cbd5e1">Perfil lateral = concentración máxima por temperatura</text>
+
+    <rect x="{legend_x}" y="{legend_y}" width="{legend_w}" height="14" rx="7" fill="url(#legendGradient)"/>
+    <text x="{legend_x}" y="{legend_y + 36}" text-anchor="start" font-size="12" fill="#d1d5db">Frío</text>
+    <text x="{legend_x + legend_w/2}" y="{legend_y + 36}" text-anchor="middle" font-size="12" fill="#d1d5db">Templado</text>
+    <text x="{legend_x + legend_w}" y="{legend_y + 36}" text-anchor="end" font-size="12" fill="#d1d5db">Caliente</text>
+
+    <text x="{width/2}" y="{height - 20}" text-anchor="middle" font-size="12" fill="#94a3b8">{interpretation}</text>
+</svg>'''
 
 
 def build_visual_report_html(
