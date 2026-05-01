@@ -17,7 +17,6 @@ app = FastAPI(
         }
     ]
 )
-
 API_KEY = os.getenv("API_KEY", "dev-key")
 
 
