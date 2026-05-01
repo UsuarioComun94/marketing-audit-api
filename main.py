@@ -192,6 +192,47 @@ class IntegratedAuditBlock(BaseModel):
     confidence: str
 
 
+class CommercialScore(BaseModel):
+    overall: float
+    value_proposition: int
+    public_presence: int
+    differentiation: int
+    cta_strength: int
+    trust_signals: int
+    competitive_pressure: int
+
+
+class ScoreInterpretation(BaseModel):
+    level: str
+    summary: str
+    main_leverage: str
+    main_risk: str
+
+
+class FunnelBlueprint(BaseModel):
+    current_flow: List[str]
+    missing_links: List[str]
+    recommended_flow: List[str]
+
+
+class CorrectiveActionItem(BaseModel):
+    issue: str
+    evidence: str
+    recommended_action: str
+    priority: str
+    effort: str
+    expected_impact: str
+    verification_metric: str
+    do_not_give_for_free: str
+
+
+class ReportPage(BaseModel):
+    page: int
+    title: str
+    content: str
+    visual_element: Optional[str] = None
+
+
 class ProspectWithResearchResponse(BaseModel):
     company_name: str
     audit_type: str
@@ -199,6 +240,12 @@ class ProspectWithResearchResponse(BaseModel):
     public_sources_summary: List[ReviewedPublicSource]
     diagnosis_initial: str
     audit: IntegratedAuditBlock
+    commercial_score: CommercialScore
+    score_interpretation: ScoreInterpretation
+    visual_diagram_mermaid: str
+    funnel_blueprint: FunnelBlueprint
+    corrective_action_plan: List[CorrectiveActionItem]
+    report_pages: List[ReportPage]
     report_sections: List[str]
     report_ready_markdown: str
     do_not_give_for_free: List[str]
@@ -442,24 +489,352 @@ def build_initial_diagnosis(
     )
 
 
+def clamp_score(value: int) -> int:
+    return max(1, min(value, 10))
+
+
+def source_count_by_category(
+    sources: List[ReviewedPublicSource],
+    category: str,
+) -> int:
+    return sum(1 for source in sources if source.category == category)
+
+
+def build_commercial_score(
+    audit: ProspectAuditResponse,
+    public_sources: List[ReviewedPublicSource],
+    raw_sources_count: int,
+    request: ProspectWithResearchRequest,
+) -> CommercialScore:
+    notes_text = " ".join([
+        request.notes or "",
+        request.offer or "",
+        " ".join([source.signal for source in public_sources]),
+    ]).casefold()
+
+    public_presence = 3
+    if raw_sources_count >= 12:
+        public_presence = 8
+    elif raw_sources_count >= 8:
+        public_presence = 7
+    elif raw_sources_count >= 4:
+        public_presence = 6
+    elif raw_sources_count >= 1:
+        public_presence = 4
+
+    value_proposition = 7
+    if audit.primary_bottleneck == "propuesta de valor":
+        value_proposition = 4
+    if "propuesta de valor clara" in notes_text or "diferencian" in notes_text or "diferenciación" in notes_text:
+        value_proposition = min(value_proposition, 4)
+
+    differentiation = 7
+    if audit.primary_bottleneck in ["propuesta de valor", "posicionamiento"]:
+        differentiation = 3
+    elif "competidores" in notes_text or source_count_by_category(public_sources, "competitors") > 0:
+        differentiation = 5
+
+    cta_strength = 7
+    if "cta" in notes_text or "llamada a la acción" in notes_text or audit.primary_bottleneck == "conversión":
+        cta_strength = 4
+
+    trust_signals = 5
+    if source_count_by_category(public_sources, "reputation") >= 2:
+        trust_signals = 7
+    elif source_count_by_category(public_sources, "reputation") == 1:
+        trust_signals = 6
+    elif raw_sources_count == 0:
+        trust_signals = 3
+
+    competitive_pressure = 5
+    if source_count_by_category(public_sources, "competitors") >= 3:
+        competitive_pressure = 8
+    elif source_count_by_category(public_sources, "competitors") >= 1:
+        competitive_pressure = 7
+    if request.industry:
+        competitive_pressure = max(competitive_pressure, 6)
+
+    positive_scores = [
+        value_proposition,
+        public_presence,
+        differentiation,
+        cta_strength,
+        trust_signals,
+    ]
+
+    pressure_penalty = max(0, competitive_pressure - 5) * 0.35
+    overall = round(max(1.0, min(10.0, (sum(positive_scores) / len(positive_scores)) - pressure_penalty)), 1)
+
+    return CommercialScore(
+        overall=overall,
+        value_proposition=clamp_score(value_proposition),
+        public_presence=clamp_score(public_presence),
+        differentiation=clamp_score(differentiation),
+        cta_strength=clamp_score(cta_strength),
+        trust_signals=clamp_score(trust_signals),
+        competitive_pressure=clamp_score(competitive_pressure),
+    )
+
+
+def build_score_interpretation(
+    score: CommercialScore,
+    audit: ProspectAuditResponse,
+) -> ScoreInterpretation:
+    if score.overall < 4:
+        level = "riesgo alto"
+    elif score.overall < 6:
+        level = "riesgo medio-alto"
+    elif score.overall < 8:
+        level = "riesgo medio"
+    else:
+        level = "riesgo bajo"
+
+    if audit.primary_bottleneck == "propuesta de valor":
+        main_risk = "competir por precio, disponibilidad o catálogo en vez de valor percibido"
+    elif audit.primary_bottleneck == "conversión":
+        main_risk = "generar interés sin transformarlo en consultas calificadas"
+    elif audit.primary_bottleneck == "funnel":
+        main_risk = "tener puntos de contacto aislados sin recorrido comercial claro"
+    elif audit.primary_bottleneck == "posicionamiento":
+        main_risk = "ser percibido como una alternativa más dentro de un mercado saturado"
+    else:
+        main_risk = "hacer actividad digital sin convertirla en demanda calificada"
+
+    return ScoreInterpretation(
+        level=level,
+        summary=(
+            f"Score general {score.overall}/10. La marca muestra señales comerciales aprovechables, "
+            f"pero el principal cuello de botella está en {audit.primary_bottleneck}."
+        ),
+        main_leverage=audit.primary_bottleneck,
+        main_risk=main_risk,
+    )
+
+
+def build_visual_diagram_mermaid(audit: ProspectAuditResponse) -> str:
+    bottleneck_label = audit.primary_bottleneck.capitalize()
+
+    return f"""flowchart LR
+A[Presencia pública] --> B[Contenido / catálogo]
+B --> C[Interés inicial]
+C --> D{{¿{bottleneck_label} resuelto?}}
+D -- No --> E[Pérdida de diferenciación]
+E --> F[Competencia por precio o disponibilidad]
+D -- Sí --> G[Preferencia de marca]
+G --> H[Consulta calificada]
+H --> I[Reunión / oportunidad comercial]"""
+
+
+def build_funnel_blueprint(audit: ProspectAuditResponse) -> FunnelBlueprint:
+    missing_links = ["Diferenciación explícita", "CTA específico", "Prueba social visible"]
+
+    if audit.primary_bottleneck == "propuesta de valor":
+        missing_links.insert(0, "Promesa comercial clara")
+    if audit.primary_bottleneck == "conversión":
+        missing_links.insert(0, "Llamada a la acción orientada a consulta")
+    if audit.primary_bottleneck == "funnel":
+        missing_links.insert(0, "Recorrido desde interés hasta reunión")
+
+    return FunnelBlueprint(
+        current_flow=[
+            "Presencia pública",
+            "Contenido o catálogo",
+            "Interés inicial",
+            "Consulta débil o poco calificada",
+        ],
+        missing_links=list(dict.fromkeys(missing_links)),
+        recommended_flow=[
+            "Mensaje diferencial",
+            "Contenido que explique criterio y valor",
+            "Prueba social o evidencia de confianza",
+            "CTA a diagnóstico / consulta / reunión",
+            "Seguimiento comercial",
+        ],
+    )
+
+
+def build_corrective_action_plan(
+    request: ProspectWithResearchRequest,
+    audit: ProspectAuditResponse,
+    public_sources: List[ReviewedPublicSource],
+    score: CommercialScore,
+) -> List[CorrectiveActionItem]:
+    evidence_base = (
+        "Las fuentes públicas y las notas disponibles sugieren presencia digital, "
+        "pero no una razón de elección suficientemente clara."
+    )
+    if public_sources:
+        evidence_base = (
+            f"Se revisaron {len(public_sources)} fuentes públicas resumidas; las señales apuntan a "
+            "presencia digital con necesidad de mayor diferenciación comercial."
+        )
+
+    actions: List[CorrectiveActionItem] = []
+
+    actions.append(
+        CorrectiveActionItem(
+            issue="Propuesta de valor débil o poco demostrada",
+            evidence=evidence_base,
+            recommended_action=(
+                "Definir una promesa comercial concreta: qué hace distinto a la marca, para quién, "
+                "en qué situación y por qué debería ser elegida."
+            ),
+            priority="alta",
+            effort="medio",
+            expected_impact="Mejorar claridad de elección, calidad de consultas y percepción de valor.",
+            verification_metric="Comparar tasa de consultas calificadas, respuesta al CTA y calidad de mensajes recibidos.",
+            do_not_give_for_free="No entregar copy final ni estrategia completa de posicionamiento sin contratación.",
+        )
+    )
+
+    if score.cta_strength <= 5 or audit.primary_bottleneck == "conversión":
+        actions.append(
+            CorrectiveActionItem(
+                issue="CTA débil o poco orientado a conversión",
+                evidence="El análisis detecta riesgo de atención sin una acción comercial clara.",
+                recommended_action=(
+                    "Reformular los puntos de conversión hacia una acción concreta: diagnóstico, consulta, "
+                    "tasación, reunión o evaluación inicial."
+                ),
+                priority="alta",
+                effort="bajo-medio",
+                expected_impact="Reducir fricción y aumentar consultas con intención comercial.",
+                verification_metric="Medir clics a contacto, mensajes iniciados, formularios enviados o reuniones agendadas.",
+                do_not_give_for_free="No entregar arquitectura completa de funnel ni secuencia completa de automatización.",
+            )
+        )
+
+    if score.differentiation <= 5 or audit.primary_bottleneck == "posicionamiento":
+        actions.append(
+            CorrectiveActionItem(
+                issue="Diferenciación insuficiente frente a competidores",
+                evidence="El contexto público sugiere similitud con otros jugadores del mercado.",
+                recommended_action=(
+                    "Construir un ángulo de posicionamiento basado en especialización, proceso, criterio, "
+                    "experiencia o prueba social."
+                ),
+                priority="media-alta",
+                effort="medio",
+                expected_impact="Reducir comparación por precio/disponibilidad y aumentar preferencia de marca.",
+                verification_metric="Evaluar recordación de mensaje, objeciones frecuentes y calidad de leads entrantes.",
+                do_not_give_for_free="No entregar manifiesto de marca completo ni sistema completo de mensajes.",
+            )
+        )
+
+    actions.append(
+        CorrectiveActionItem(
+            issue="Falta de sistema de seguimiento comercial visible",
+            evidence="La presencia pública por sí sola no garantiza conversión si no existe recorrido posterior.",
+            recommended_action=(
+                "Definir un siguiente paso comercial simple y medible: reunión breve, diagnóstico, evaluación "
+                "o formulario de intención."
+            ),
+            priority="media",
+            effort="medio",
+            expected_impact="Transformar visibilidad en oportunidades comerciales más ordenadas.",
+            verification_metric="Medir ratio de contacto a reunión y reunión a oportunidad.",
+            do_not_give_for_free="No entregar CRM completo, automatizaciones completas ni guiones finales de venta.",
+        )
+    )
+
+    return actions
+
+
+def build_report_pages(
+    request: ProspectWithResearchRequest,
+    audit: ProspectAuditResponse,
+    score: CommercialScore,
+    interpretation: ScoreInterpretation,
+    public_sources: List[ReviewedPublicSource],
+    corrective_actions: List[CorrectiveActionItem],
+) -> List[ReportPage]:
+    sources_text = "\\n".join([
+        f"- {source.title or 'Fuente pública'}: {source.signal}"
+        for source in public_sources
+    ]) or "No se detectaron fuentes públicas suficientemente fuertes."
+
+    actions_text = "\\n".join([
+        f"- {action.issue}: {action.recommended_action} Prioridad: {action.priority}."
+        for action in corrective_actions
+    ])
+
+    return [
+        ReportPage(
+            page=1,
+            title="Diagnóstico ejecutivo",
+            content=interpretation.summary,
+            visual_element="score_summary",
+        ),
+        ReportPage(
+            page=2,
+            title="Fuentes públicas revisadas",
+            content=sources_text,
+            visual_element="source_table",
+        ),
+        ReportPage(
+            page=3,
+            title="Mapa de awareness",
+            content=(
+                f"Nivel probable: {audit.awareness_level}. El mercado puede reconocer la necesidad, "
+                "pero todavía necesita una razón clara para elegir esta marca."
+            ),
+            visual_element="awareness_map",
+        ),
+        ReportPage(
+            page=4,
+            title="Blueprint de conversión",
+            content=(
+                "El recorrido actual parece depender de presencia y catálogo. El recorrido recomendado "
+                "debe conectar mensaje diferencial, prueba social, CTA y seguimiento comercial."
+            ),
+            visual_element="mermaid_diagram",
+        ),
+        ReportPage(
+            page=5,
+            title="Plan de acción recomendado",
+            content=actions_text,
+            visual_element="priority_matrix",
+        ),
+    ]
+
+
 def build_report_ready_markdown(
     request: ProspectWithResearchRequest,
     audit: ProspectAuditResponse,
     public_sources: List[ReviewedPublicSource],
     diagnosis_initial: str,
+    commercial_score: CommercialScore,
+    score_interpretation: ScoreInterpretation,
+    visual_diagram_mermaid: str,
+    funnel_blueprint: FunnelBlueprint,
+    corrective_action_plan: List[CorrectiveActionItem],
 ) -> str:
     source_lines = []
     if public_sources:
         for index, source in enumerate(public_sources, start=1):
             source_lines.append(
-                f"{index}. {source.title or 'Fuente pública'}\n"
-                f"   URL: {source.url or 'No disponible'}\n"
+                f"{index}. {source.title or 'Fuente pública'}\\n"
+                f"   URL: {source.url or 'No disponible'}\\n"
                 f"   Señal: {source.signal}"
             )
     else:
         source_lines.append("No se detectaron fuentes públicas suficientemente fuertes. Revisar nombre, ciudad, rubro o perfiles conocidos.")
 
-    sources_block = "\n".join(source_lines)
+    sources_block = "\\n".join(source_lines)
+
+    action_lines = []
+    for index, action in enumerate(corrective_action_plan, start=1):
+        action_lines.append(
+            f"{index}. {action.issue}\\n"
+            f"   Evidencia: {action.evidence}\\n"
+            f"   Acción recomendada: {action.recommended_action}\\n"
+            f"   Prioridad: {action.priority} | Esfuerzo: {action.effort}\\n"
+            f"   Impacto esperado: {action.expected_impact}\\n"
+            f"   Validación: {action.verification_metric}\\n"
+            f"   No regalar gratis: {action.do_not_give_for_free}"
+        )
+
+    actions_block = "\\n\\n".join(action_lines)
 
     return f"""# Diagnóstico comercial breve — {request.company_name}
 
@@ -469,27 +844,50 @@ def build_report_ready_markdown(
 ## 2. Fuentes públicas revisadas
 {sources_block}
 
-## 3. Mapa de awareness
+## 3. Score comercial
+Score general: {commercial_score.overall}/10.
+- Propuesta de valor: {commercial_score.value_proposition}/10
+- Presencia pública: {commercial_score.public_presence}/10
+- Diferenciación: {commercial_score.differentiation}/10
+- CTA / conversión: {commercial_score.cta_strength}/10
+- Señales de confianza: {commercial_score.trust_signals}/10
+- Presión competitiva: {commercial_score.competitive_pressure}/10
+
+Lectura: {score_interpretation.summary}
+
+## 4. Mapa de awareness
 Nivel probable: {audit.awareness_level}.
 
 La lectura estratégica es que el mercado puede reconocer la necesidad o la categoría, pero no necesariamente percibir una diferencia clara para elegir esta marca.
 
-## 4. Problema comercial principal
+## 5. Problema comercial principal
 {audit.primary_bottleneck}.
 
-## 5. Riesgo comercial
+## 6. Riesgo comercial
 {audit.commercial_risk}
 
-## 6. Ángulo recomendado para reunión
-{audit.recommended_angle}
+## 7. Blueprint visual
+```mermaid
+{visual_diagram_mermaid}
+```
 
-## 7. Oportunidad estratégica
-Transformar la presencia pública en una narrativa comercial que construya preferencia, no solo visibilidad.
+## 8. Blueprint de funnel
+Flujo actual:
+{chr(10).join([f"- {item}" for item in funnel_blueprint.current_flow])}
 
-## 8. Próximo paso recomendado
+Eslabones faltantes:
+{chr(10).join([f"- {item}" for item in funnel_blueprint.missing_links])}
+
+Flujo recomendado:
+{chr(10).join([f"- {item}" for item in funnel_blueprint.recommended_flow])}
+
+## 9. Plan de acción recomendado
+{actions_block}
+
+## 10. Próximo paso recomendado
 {audit.next_step}
 
-## 9. Límites de esta entrega
+## 11. Límites de esta entrega
 No incluye calendario completo de contenido, copys finales, segmentaciones detalladas, arquitectura completa de funnel ni implementación paso a paso.
 """
 
@@ -920,7 +1318,7 @@ def research_company_public_presence(request: PublicPresenceRequest):
     response_model=ProspectWithResearchResponse,
     operation_id="auditProspectWithResearch",
     summary="Audit a prospect with public research",
-    description="Investiga presencia pública, resume fuentes, audita el prospecto y devuelve un reporte comercial listo para plantilla.",
+    description="Investiga presencia pública, resume fuentes, audita el prospecto y devuelve scoring, blueprint, plan correctivo y reporte listo para plantilla.",
     dependencies=[Security(verify_api_key)],
 )
 def audit_prospect_with_research(request: ProspectWithResearchRequest):
@@ -965,28 +1363,66 @@ def audit_prospect_with_research(request: ProspectWithResearchRequest):
         public_sources=public_sources_summary,
     )
 
+    commercial_score = build_commercial_score(
+        audit=audit,
+        public_sources=public_sources_summary,
+        raw_sources_count=research.raw_result_count,
+        request=request,
+    )
+
+    score_interpretation = build_score_interpretation(
+        score=commercial_score,
+        audit=audit,
+    )
+
+    visual_diagram_mermaid = build_visual_diagram_mermaid(audit)
+    funnel_blueprint = build_funnel_blueprint(audit)
+
+    corrective_action_plan = build_corrective_action_plan(
+        request=request,
+        audit=audit,
+        public_sources=public_sources_summary,
+        score=commercial_score,
+    )
+
+    report_pages = build_report_pages(
+        request=request,
+        audit=audit,
+        score=commercial_score,
+        interpretation=score_interpretation,
+        public_sources=public_sources_summary,
+        corrective_actions=corrective_action_plan,
+    )
+
     report_ready_markdown = build_report_ready_markdown(
         request=request,
         audit=audit,
         public_sources=public_sources_summary,
         diagnosis_initial=diagnosis_initial,
+        commercial_score=commercial_score,
+        score_interpretation=score_interpretation,
+        visual_diagram_mermaid=visual_diagram_mermaid,
+        funnel_blueprint=funnel_blueprint,
+        corrective_action_plan=corrective_action_plan,
     )
 
     report_sections = [
         "Diagnóstico inicial",
         "Fuentes públicas revisadas",
+        "Score comercial",
         "Mapa de awareness",
         "Problema comercial principal",
         "Riesgo comercial",
-        "Ángulo recomendado para reunión",
-        "Oportunidad estratégica",
+        "Blueprint visual",
+        "Blueprint de funnel",
+        "Plan de acción recomendado",
         "Próximo paso recomendado",
         "Límites de esta entrega",
     ]
 
     return ProspectWithResearchResponse(
         company_name=request.company_name,
-        audit_type="prospect_audit_with_public_research",
+        audit_type="prospect_audit_with_public_research_v2",
         research_confidence=research.research_confidence,
         public_sources_summary=public_sources_summary,
         diagnosis_initial=diagnosis_initial,
@@ -998,10 +1434,15 @@ def audit_prospect_with_research(request: ProspectWithResearchRequest):
             recommended_angle=audit.recommended_angle,
             confidence=audit.confidence,
         ),
+        commercial_score=commercial_score,
+        score_interpretation=score_interpretation,
+        visual_diagram_mermaid=visual_diagram_mermaid,
+        funnel_blueprint=funnel_blueprint,
+        corrective_action_plan=corrective_action_plan,
+        report_pages=report_pages,
         report_sections=report_sections,
         report_ready_markdown=report_ready_markdown,
         do_not_give_for_free=audit.do_not_give_for_free,
         next_step=audit.next_step,
         raw_sources_count=research.raw_result_count,
     )
-
