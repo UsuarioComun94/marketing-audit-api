@@ -163,6 +163,49 @@ class PublicPresenceResponse(BaseModel):
     raw_result_count: int
 
 
+class ReviewedPublicSource(BaseModel):
+    category: str
+    title: Optional[str] = None
+    url: Optional[str] = None
+    signal: str
+
+
+class ProspectWithResearchRequest(BaseModel):
+    company_name: str = Field(..., description="Nombre de la empresa o prospecto")
+    industry: Optional[str] = Field(None, description="Rubro o industria")
+    city: Optional[str] = Field(None, description="Ciudad o zona principal")
+    country: Optional[str] = Field("Argentina", description="País de referencia")
+    website: Optional[str] = Field(None, description="Sitio web conocido")
+    instagram: Optional[str] = Field(None, description="Perfil de Instagram conocido")
+    linkedin: Optional[str] = Field(None, description="Perfil de LinkedIn conocido")
+    offer: Optional[str] = Field(None, description="Oferta principal del prospecto")
+    notes: Optional[str] = Field(None, description="Notas adicionales del usuario")
+    num_results_per_query: int = Field(5, description="Cantidad de resultados por búsqueda")
+
+
+class IntegratedAuditBlock(BaseModel):
+    awareness_level: str
+    primary_bottleneck: str
+    detected_focus_areas: List[str]
+    commercial_risk: str
+    recommended_angle: str
+    confidence: str
+
+
+class ProspectWithResearchResponse(BaseModel):
+    company_name: str
+    audit_type: str
+    research_confidence: str
+    public_sources_summary: List[ReviewedPublicSource]
+    diagnosis_initial: str
+    audit: IntegratedAuditBlock
+    report_sections: List[str]
+    report_ready_markdown: str
+    do_not_give_for_free: List[str]
+    next_step: str
+    raw_sources_count: int
+
+
 def get_composio_headers() -> Dict[str, str]:
     if not COMPOSIO_API_KEY:
         raise HTTPException(status_code=500, detail="COMPOSIO_API_KEY no está configurada en el servidor")
@@ -305,6 +348,150 @@ def build_public_presence_queries(request: PublicPresenceRequest) -> List[Dict[s
         queries.append({"category": "known_linkedin", "query": f"{request.linkedin} {base}".strip()})
 
     return queries
+
+
+def build_source_signal(source: PublicSourceResult) -> str:
+    text = " ".join([
+        source.category or "",
+        source.title or "",
+        source.snippet or "",
+        source.url or "",
+    ]).casefold()
+
+    if source.category == "official_presence":
+        return "Señal de presencia oficial o catálogo digital. Sirve para evaluar si la marca comunica diferenciación o solo disponibilidad."
+    if source.category == "social_profiles":
+        return "Señal de presencia social. Sirve para revisar si la comunicación construye preferencia o solo visibilidad."
+    if source.category == "reputation":
+        return "Señal de reputación pública. Sirve para revisar confianza, prueba social y percepción externa."
+    if source.category == "competitors":
+        return "Señal de contexto competitivo. Sirve para comparar si el posicionamiento propio se distingue del resto del mercado."
+    if "zonaprop" in text or "argenprop" in text or "portal" in text:
+        return "Señal de dependencia de portales/catálogos. Riesgo: competir por propiedad visible, precio o ubicación, no por marca."
+    if "instagram" in text or "facebook" in text or "linkedin" in text:
+        return "Señal de canal social. Conviene revisar si el contenido guía a una acción comercial clara."
+    return "Fuente pública útil para validar presencia, mensaje, reputación o contexto competitivo."
+
+
+def summarize_public_sources(
+    sources: List[PublicSourceResult],
+    max_sources: int = 5,
+) -> List[ReviewedPublicSource]:
+    summarized: List[ReviewedPublicSource] = []
+    seen_urls = set()
+
+    for source in sources:
+        url = source.url or source.displayed_url
+        if not url or url in seen_urls:
+            continue
+
+        seen_urls.add(url)
+        summarized.append(
+            ReviewedPublicSource(
+                category=source.category,
+                title=source.title,
+                url=url,
+                signal=build_source_signal(source),
+            )
+        )
+
+        if len(summarized) >= max_sources:
+            break
+
+    return summarized
+
+
+def build_research_notes(
+    request: ProspectWithResearchRequest,
+    public_sources: List[ReviewedPublicSource],
+    presence_summary: str,
+) -> str:
+    parts = []
+
+    if request.notes:
+        parts.append(request.notes)
+
+    parts.append(presence_summary)
+
+    if public_sources:
+        source_lines = []
+        for source in public_sources:
+            source_lines.append(
+                f"{source.category}: {source.title or 'sin título'} - {source.signal}"
+            )
+        parts.append("Fuentes públicas revisadas: " + " | ".join(source_lines))
+
+    return " ".join(parts)
+
+
+def build_initial_diagnosis(
+    request: ProspectWithResearchRequest,
+    audit: ProspectAuditResponse,
+    public_sources: List[ReviewedPublicSource],
+) -> str:
+    if public_sources:
+        return (
+            f"{request.company_name} muestra presencia pública detectable, pero el principal riesgo comercial "
+            f"parece estar en {audit.primary_bottleneck}. La empresa puede estar generando visibilidad sin convertirla "
+            "en una razón clara de elección."
+        )
+
+    return (
+        f"No se encontraron suficientes fuentes públicas fuertes para validar la presencia de {request.company_name}. "
+        f"Aun así, con las señales disponibles, el cuello de botella probable es {audit.primary_bottleneck}."
+    )
+
+
+def build_report_ready_markdown(
+    request: ProspectWithResearchRequest,
+    audit: ProspectAuditResponse,
+    public_sources: List[ReviewedPublicSource],
+    diagnosis_initial: str,
+) -> str:
+    source_lines = []
+    if public_sources:
+        for index, source in enumerate(public_sources, start=1):
+            source_lines.append(
+                f"{index}. {source.title or 'Fuente pública'}\n"
+                f"   URL: {source.url or 'No disponible'}\n"
+                f"   Señal: {source.signal}"
+            )
+    else:
+        source_lines.append("No se detectaron fuentes públicas suficientemente fuertes. Revisar nombre, ciudad, rubro o perfiles conocidos.")
+
+    sources_block = "\n".join(source_lines)
+
+    return f"""# Diagnóstico comercial breve — {request.company_name}
+
+## 1. Diagnóstico inicial
+{diagnosis_initial}
+
+## 2. Fuentes públicas revisadas
+{sources_block}
+
+## 3. Mapa de awareness
+Nivel probable: {audit.awareness_level}.
+
+La lectura estratégica es que el mercado puede reconocer la necesidad o la categoría, pero no necesariamente percibir una diferencia clara para elegir esta marca.
+
+## 4. Problema comercial principal
+{audit.primary_bottleneck}.
+
+## 5. Riesgo comercial
+{audit.commercial_risk}
+
+## 6. Ángulo recomendado para reunión
+{audit.recommended_angle}
+
+## 7. Oportunidad estratégica
+Transformar la presencia pública en una narrativa comercial que construya preferencia, no solo visibilidad.
+
+## 8. Próximo paso recomendado
+{audit.next_step}
+
+## 9. Límites de esta entrega
+No incluye calendario completo de contenido, copys finales, segmentaciones detalladas, arquitectura completa de funnel ni implementación paso a paso.
+"""
 
 
 @app.get("/")
@@ -727,3 +914,94 @@ def research_company_public_presence(request: PublicPresenceRequest):
         next_step="Usar estas fuentes como insumo para auditProspect y luego generar un diagnóstico comercial breve.",
         raw_result_count=len(sources),
     )
+
+@app.post(
+    "/audit/prospect-with-research",
+    response_model=ProspectWithResearchResponse,
+    operation_id="auditProspectWithResearch",
+    summary="Audit a prospect with public research",
+    description="Investiga presencia pública, resume fuentes, audita el prospecto y devuelve un reporte comercial listo para plantilla.",
+    dependencies=[Security(verify_api_key)],
+)
+def audit_prospect_with_research(request: ProspectWithResearchRequest):
+    public_presence_request = PublicPresenceRequest(
+        company_name=request.company_name,
+        industry=request.industry,
+        city=request.city,
+        country=request.country,
+        website=request.website,
+        instagram=request.instagram,
+        linkedin=request.linkedin,
+        num_results_per_query=request.num_results_per_query,
+    )
+
+    research = research_company_public_presence(public_presence_request)
+    public_sources_summary = summarize_public_sources(
+        research.sources_found,
+        max_sources=5,
+    )
+
+    enriched_notes = build_research_notes(
+        request=request,
+        public_sources=public_sources_summary,
+        presence_summary=research.presence_summary,
+    )
+
+    audit_request = ProspectAuditRequest(
+        company_name=request.company_name,
+        website=request.website,
+        instagram=request.instagram,
+        linkedin=request.linkedin,
+        industry=request.industry,
+        offer=request.offer,
+        notes=enriched_notes,
+    )
+
+    audit = audit_prospect(audit_request)
+
+    diagnosis_initial = build_initial_diagnosis(
+        request=request,
+        audit=audit,
+        public_sources=public_sources_summary,
+    )
+
+    report_ready_markdown = build_report_ready_markdown(
+        request=request,
+        audit=audit,
+        public_sources=public_sources_summary,
+        diagnosis_initial=diagnosis_initial,
+    )
+
+    report_sections = [
+        "Diagnóstico inicial",
+        "Fuentes públicas revisadas",
+        "Mapa de awareness",
+        "Problema comercial principal",
+        "Riesgo comercial",
+        "Ángulo recomendado para reunión",
+        "Oportunidad estratégica",
+        "Próximo paso recomendado",
+        "Límites de esta entrega",
+    ]
+
+    return ProspectWithResearchResponse(
+        company_name=request.company_name,
+        audit_type="prospect_audit_with_public_research",
+        research_confidence=research.research_confidence,
+        public_sources_summary=public_sources_summary,
+        diagnosis_initial=diagnosis_initial,
+        audit=IntegratedAuditBlock(
+            awareness_level=audit.awareness_level,
+            primary_bottleneck=audit.primary_bottleneck,
+            detected_focus_areas=audit.detected_focus_areas,
+            commercial_risk=audit.commercial_risk,
+            recommended_angle=audit.recommended_angle,
+            confidence=audit.confidence,
+        ),
+        report_sections=report_sections,
+        report_ready_markdown=report_ready_markdown,
+        do_not_give_for_free=audit.do_not_give_for_free,
+        next_step=audit.next_step,
+        raw_sources_count=research.raw_result_count,
+    )
+
