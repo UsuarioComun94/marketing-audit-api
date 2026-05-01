@@ -1,5 +1,6 @@
 import os
 import html
+import math
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -1572,16 +1573,17 @@ def density_color(value: int) -> str:
 
 
 
+
 def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) -> str:
     x_axis = density_map.x_axis
     y_axis = density_map.y_axis
 
     width = 1100
-    height = 560
-    chart_x = 112
+    height = 570
+    chart_x = 108
     chart_y = 92
-    chart_w = 880
-    chart_h = 335
+    chart_w = 870
+    chart_h = 340
     stage_step = chart_w / (len(x_axis) - 1)
     temp_step = chart_h / (len(y_axis) - 1)
 
@@ -1592,149 +1594,121 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
         # Invert y-axis: Frío abajo, Caliente arriba.
         return chart_y + (len(y_axis) - 1 - y_axis.index(label)) * temp_step
 
-    value_lookup = {
-        (point.x, point.y): point.value
+    points = [
+        (x_pos(point.x), y_pos(point.y), max(0, min(int(point.value), 100)), point.x, point.y)
         for point in density_map.density_points
-    }
+    ]
 
-    def value_at(x_label: str, y_label: str) -> int:
-        return int(value_lookup.get((x_label, y_label), 0))
+    def deterministic_noise(row: int, col: int, salt: int = 0) -> float:
+        raw = (row * 92821 + col * 68917 + row * col * 193 + salt * 8347) % 1000
+        return raw / 1000
 
-    ribbons = []
-    cores = []
-    hotspots = []
-    labels = []
+    def field_value(px: float, py: float, row: int, col: int) -> float:
+        # Horizontal sigma is intentionally wider than vertical sigma to emulate liquidity heatmap shelves.
+        total = 0.0
+        for gx, gy, value, _, _ in points:
+            dx = (px - gx) / 185
+            dy = (py - gy) / 34
+            total += value * math.exp(-0.5 * ((dx * dx) + (dy * dy)))
 
-    # Connected ribbons across stages. This replaces the previous "cell matrix" look.
-    for y_label in y_axis:
-        row_values = [value_at(x_label, y_label) for x_label in x_axis]
-        y = y_pos(y_label)
+        # Row temperature base: upper zones get a warmer bias, lower zones retain cold liquidity.
+        y_ratio = (py - chart_y) / chart_h
+        temp_bias = 7 + (1 - y_ratio) * 8
 
-        # Row-level faint shelf: gives the continuous liquidity-map base.
-        max_row = max(row_values) if row_values else 0
-        if max_row >= 28:
-            baseline_color = density_color(max_row)
-            baseline_width = 20 + max_row * 0.28
-            ribbons.append(
-                f'<line x1="{chart_x:.1f}" y1="{y:.1f}" x2="{chart_x + chart_w:.1f}" y2="{y:.1f}" '
-                f'stroke="{baseline_color}" stroke-width="{baseline_width:.1f}" stroke-linecap="round" '
-                f'opacity="0.11" filter="url(#densityBlur)"/>'
-            )
+        noise = 0.72 + deterministic_noise(row, col, 11) * 0.58
+        return max(0, min(100, (total * 0.64 + temp_bias) * noise))
 
-        # Segment-level ribbons connect each funnel stage to the next.
-        for index in range(len(x_axis) - 1):
-            x1 = x_pos(x_axis[index])
-            x2 = x_pos(x_axis[index + 1])
-            v1 = row_values[index]
-            v2 = row_values[index + 1]
-            avg = (v1 + v2) / 2
+    # Dense raster layer: many tiny horizontal fragments, not square cells.
+    raster_parts = []
+    raster_rows = 62
+    raster_cols = 72
+    cell_w = chart_w / raster_cols
+    cell_h = chart_h / raster_rows
 
-            if avg < 18:
+    for row in range(raster_rows):
+        py = chart_y + row * cell_h + cell_h / 2
+
+        for col in range(raster_cols):
+            px = chart_x + col * cell_w + cell_w / 2
+            value = field_value(px, py, row, col)
+            noise = deterministic_noise(row, col, 23)
+
+            if value < 13 and noise < 0.68:
                 continue
 
-            color = density_color(round(avg))
-            width_outer = 18 + avg * 0.55
-            width_inner = 4 + avg * 0.12
-            opacity_outer = min(0.70, 0.12 + avg / 135)
-            opacity_inner = min(0.80, 0.20 + avg / 160)
+            fill = density_color(round(value))
 
-            mid_x = (x1 + x2) / 2
-            curve_offset = ((v2 - v1) / 100) * 28
-            path = f"M {x1:.1f} {y:.1f} C {mid_x:.1f} {y - curve_offset:.1f}, {mid_x:.1f} {y + curve_offset:.1f}, {x2:.1f} {y:.1f}"
+            # Fragmented liquidity texture: variable segment width and occasional holes.
+            frag_w = cell_w * (0.50 + noise * 1.15)
+            frag_h = max(2.2, cell_h * (0.34 + deterministic_noise(row, col, 31) * 0.56))
+            x = px - frag_w / 2
+            y = py - frag_h / 2
 
-            ribbons.append(
-                f'<path d="{path}" fill="none" stroke="{color}" stroke-width="{width_outer:.1f}" '
-                f'stroke-linecap="round" opacity="{opacity_outer:.2f}" filter="url(#densityBlur)"/>'
+            opacity = min(0.82, 0.045 + value / 135)
+            if value < 20:
+                opacity *= 0.55
+
+            raster_parts.append(
+                f'<rect x="{x:.1f}" y="{y:.1f}" width="{frag_w:.1f}" height="{frag_h:.1f}" '
+                f'rx="1.6" fill="{fill}" opacity="{opacity:.3f}"/>'
             )
 
-            if avg >= 34:
-                cores.append(
-                    f'<path d="{path}" fill="none" stroke="{color}" stroke-width="{width_inner:.1f}" '
-                    f'stroke-linecap="round" opacity="{opacity_inner:.2f}" filter="url(#softBlur)"/>'
-                )
-
-            if avg >= 55:
-                cores.append(
-                    f'<path d="{path}" fill="none" stroke="{color}" stroke-width="{max(2.0, width_inner/2):.1f}" '
-                    f'stroke-linecap="round" opacity="0.75"/>'
-                )
-
-    # Hotspots and labels on top of the connected ribbons.
-    for point in density_map.density_points:
-        value = max(0, min(int(point.value), 100))
-        if value < 42:
+    # Strong horizontal liquidity shelves around high-density diagnostic zones.
+    shelves = []
+    for gx, gy, value, x_label, y_label in points:
+        if value < 35:
             continue
 
-        cx = x_pos(point.x)
-        cy = y_pos(point.y)
         color = density_color(value)
+        for layer in range(3):
+            layer_noise = deterministic_noise(int(gx), int(gy), layer + 40)
+            shelf_len = 100 + value * (3.2 + layer * 0.55) + layer_noise * 70
+            shelf_h = max(2.2, 2 + value * (0.035 + layer * 0.018))
+            shelf_y = gy + (layer - 1) * (6 + layer_noise * 5)
+            shelf_x = max(chart_x, gx - shelf_len / 2 + (layer_noise - 0.5) * 50)
+            shelf_w = min(shelf_len, chart_x + chart_w - shelf_x)
 
-        is_dominant = (
-            point.x == density_map.dominant_zone.x
-            and point.y == density_map.dominant_zone.y
+            shelves.append(
+                f'<rect x="{shelf_x:.1f}" y="{shelf_y:.1f}" width="{shelf_w:.1f}" height="{shelf_h:.1f}" '
+                f'rx="{shelf_h/2:.1f}" fill="{color}" opacity="{0.24 + value/210:.3f}" filter="url(#softGlow)"/>'
+            )
+
+        if value >= 55:
+            core_len = 70 + value * 2.4
+            core_x = max(chart_x, gx - core_len / 2)
+            core_w = min(core_len, chart_x + chart_w - core_x)
+            shelves.append(
+                f'<rect x="{core_x:.1f}" y="{gy-1.8:.1f}" width="{core_w:.1f}" height="3.6" '
+                f'rx="1.8" fill="{color}" opacity="0.88"/>'
+            )
+
+    # Heat clouds: broad blurred accumulation zones.
+    clouds = []
+    for gx, gy, value, _, _ in points:
+        if value < 45:
+            continue
+        color = density_color(value)
+        clouds.append(
+            f'<ellipse cx="{gx:.1f}" cy="{gy:.1f}" rx="{95 + value*1.15:.1f}" ry="{22 + value*0.20:.1f}" '
+            f'fill="{color}" opacity="{0.09 + value/420:.3f}" filter="url(#heavyBlur)"/>'
         )
-        is_blocked = (
-            point.x == density_map.blocked_zone.x
-            and point.y == density_map.blocked_zone.y
-        )
 
-        radius = 10 + value * 0.18
-        glow_radius = 24 + value * 0.50
-
-        hotspots.append(
-            f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{glow_radius:.1f}" fill="{color}" opacity="0.22" filter="url(#densityBlur)"/>'
-        )
-        hotspots.append(
-            f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{radius:.1f}" fill="{color}" opacity="0.50" filter="url(#softBlur)"/>'
-        )
-
-        if is_dominant and is_blocked:
-            labels.append(
-                f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="24" fill="none" stroke="#ffffff" stroke-width="4" opacity="0.95"/>'
-            )
-            labels.append(
-                f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="31" fill="none" stroke="#fbbf24" stroke-width="3" opacity="0.95"/>'
-            )
-            labels.append(
-                f'<text x="{cx:.1f}" y="{cy - 36:.1f}" text-anchor="middle" font-size="12" font-weight="900" fill="#ffffff">DOMINANTE</text>'
-            )
-            labels.append(
-                f'<text x="{cx:.1f}" y="{cy + 46:.1f}" text-anchor="middle" font-size="12" font-weight="900" fill="#fbbf24">BLOQUEO</text>'
-            )
-        elif is_dominant:
-            labels.append(
-                f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="22" fill="none" stroke="#ffffff" stroke-width="4" opacity="0.95"/>'
-            )
-            labels.append(
-                f'<text x="{cx:.1f}" y="{cy - 32:.1f}" text-anchor="middle" font-size="12" font-weight="900" fill="#ffffff">DOMINANTE</text>'
-            )
-        elif is_blocked:
-            labels.append(
-                f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="18" fill="none" stroke="#fbbf24" stroke-width="4" opacity="0.95"/>'
-            )
-            labels.append(
-                f'<text x="{cx:.1f}" y="{cy + 40:.1f}" text-anchor="middle" font-size="12" font-weight="900" fill="#fbbf24">BLOQUEO</text>'
-            )
-
-    dominant_cx = x_pos(density_map.dominant_zone.x)
-    dominant_cy = y_pos(density_map.dominant_zone.y)
-    blocked_cx = x_pos(density_map.blocked_zone.x)
-    blocked_cy = y_pos(density_map.blocked_zone.y)
-
-    temp_bands = []
+    # Subtle hot/cold background zones.
+    background_zones = []
     band_labels = [
-        ("Caliente", "#7f1d1d", 0.16),
-        ("Templado", "#713f12", 0.12),
-        ("Tibio", "#064e3b", 0.11),
-        ("Frío", "#0f2a5f", 0.15),
+        ("Caliente", "#7f1d1d", 0.23),
+        ("Templado", "#713f12", 0.15),
+        ("Tibio", "#064e3b", 0.13),
+        ("Frío", "#0f2a5f", 0.22),
     ]
     for label, color, opacity in band_labels:
         cy = y_pos(label)
-        temp_bands.append(
-            f'<rect x="{chart_x}" y="{cy - 40}" width="{chart_w}" height="80" '
-            f'fill="{color}" opacity="{opacity}" rx="14"/>'
+        background_zones.append(
+            f'<rect x="{chart_x}" y="{cy - 42:.1f}" width="{chart_w}" height="84" '
+            f'fill="{color}" opacity="{opacity}" rx="12"/>'
         )
 
+    # Grid and labels.
     x_labels = []
     for label in x_axis:
         x = x_pos(label)
@@ -1743,48 +1717,70 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
         )
         x_labels.append(
             f'<line x1="{x:.1f}" y1="{chart_y - 8}" x2="{x:.1f}" y2="{chart_y + chart_h + 8}" '
-            f'stroke="#334155" stroke-width="1" opacity="0.30"/>'
+            f'stroke="#94a3b8" stroke-width="0.8" opacity="0.22" stroke-dasharray="4 6"/>'
         )
 
     y_labels = []
     for label in y_axis:
         y = y_pos(label)
         y_labels.append(
-            f'<text x="{chart_x - 26}" y="{y + 5:.1f}" text-anchor="end" font-size="14" font-weight="900" fill="#f9fafb">{h(label)}</text>'
+            f'<text x="{chart_x - 25}" y="{y + 5:.1f}" text-anchor="end" font-size="14" font-weight="900" fill="#f9fafb">{h(label)}</text>'
         )
         y_labels.append(
             f'<line x1="{chart_x - 6}" y1="{y:.1f}" x2="{chart_x + chart_w + 6}" y2="{y:.1f}" '
-            f'stroke="#334155" stroke-width="1" opacity="0.22"/>'
+            f'stroke="#94a3b8" stroke-width="0.8" opacity="0.20" stroke-dasharray="4 6"/>'
         )
 
-    profile_bars = []
-    for label in y_axis:
-        y = y_pos(label)
-        row_values = [value_at(x, label) for x in x_axis]
-        max_row = max(row_values) if row_values else 0
-        bar_w = 18 + max_row * 0.95
-        profile_color = density_color(max_row)
-        profile_bars.append(
-            f'<rect x="{chart_x + chart_w + 20}" y="{y - 18:.1f}" width="{bar_w:.1f}" height="36" rx="8" '
-            f'fill="{profile_color}" opacity="0.76" filter="url(#softBlur)"/>'
+    # Lateral profile: many small bars, closer to liquidity profile.
+    profile_parts = []
+    profile_rows = 48
+    for row in range(profile_rows):
+        py = chart_y + row * (chart_h / profile_rows) + (chart_h / profile_rows) / 2
+        samples = [
+            field_value(chart_x + col * (chart_w / 28), py, row, col)
+            for col in range(29)
+        ]
+        max_value = max(samples)
+        if max_value < 11:
+            continue
+
+        bar_w = 10 + max_value * 1.15
+        bar_h = max(3.0, chart_h / profile_rows * 0.70)
+        color = density_color(round(max_value))
+        opacity = min(0.88, 0.12 + max_value / 110)
+        profile_parts.append(
+            f'<rect x="{chart_x + chart_w + 18}" y="{py - bar_h/2:.1f}" width="{bar_w:.1f}" height="{bar_h:.1f}" '
+            f'rx="1.5" fill="{color}" opacity="{opacity:.3f}"/>'
         )
 
-    legend_y = height - 84
+    # Diagnostic markers.
+    dominant_cx = x_pos(density_map.dominant_zone.x)
+    dominant_cy = y_pos(density_map.dominant_zone.y)
+    blocked_cx = x_pos(density_map.blocked_zone.x)
+    blocked_cy = y_pos(density_map.blocked_zone.y)
+
+    markers = [
+        f'<circle cx="{dominant_cx:.1f}" cy="{dominant_cy:.1f}" r="18" fill="#ffffff" opacity="0.20" filter="url(#softGlow)"/>',
+        f'<circle cx="{dominant_cx:.1f}" cy="{dominant_cy:.1f}" r="13" fill="none" stroke="#ffffff" stroke-width="3"/>',
+        f'<text x="{dominant_cx:.1f}" y="{dominant_cy - 26:.1f}" text-anchor="middle" font-size="11" font-weight="900" fill="#ffffff">DOMINANTE</text>',
+        f'<circle cx="{blocked_cx:.1f}" cy="{blocked_cy:.1f}" r="16" fill="#fbbf24" opacity="0.20" filter="url(#softGlow)"/>',
+        f'<circle cx="{blocked_cx:.1f}" cy="{blocked_cy:.1f}" r="12" fill="none" stroke="#fbbf24" stroke-width="3"/>',
+        f'<text x="{blocked_cx:.1f}" y="{blocked_cy + 32:.1f}" text-anchor="middle" font-size="11" font-weight="900" fill="#fbbf24">BLOQUEO</text>',
+    ]
+
+    legend_y = height - 86
     legend_x = chart_x
     legend_w = chart_w
     interpretation = h(density_map.interpretation[:168])
 
     return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Customer intent density map">
     <defs>
-      <filter id="densityBlur" x="-45%" y="-180%" width="190%" height="460%">
-        <feGaussianBlur stdDeviation="18"/>
+      <filter id="heavyBlur" x="-45%" y="-220%" width="190%" height="540%">
+        <feGaussianBlur stdDeviation="20"/>
       </filter>
-      <filter id="softBlur" x="-35%" y="-120%" width="170%" height="340%">
-        <feGaussianBlur stdDeviation="7"/>
+      <filter id="softGlow" x="-40%" y="-160%" width="180%" height="420%">
+        <feGaussianBlur stdDeviation="5"/>
       </filter>
-      <marker id="arrowHead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-        <path d="M0,0 L0,6 L9,3 z" fill="#f9fafb"/>
-      </marker>
       <linearGradient id="legendGradient" x1="0%" x2="100%" y1="0%" y2="0%">
         <stop offset="0%" stop-color="#2563eb"/>
         <stop offset="35%" stop-color="#0ea5e9"/>
@@ -1802,21 +1798,18 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
     <rect x="28" y="24" width="{width - 56}" height="{height - 48}" rx="26" fill="url(#chartGlow)" stroke="#1f2937" stroke-width="1"/>
 
     <text x="{width/2}" y="50" text-anchor="middle" font-size="27" font-weight="900" fill="#f9fafb">Customer Intent Density Map</text>
-    <text x="{width/2}" y="76" text-anchor="middle" font-size="14" fill="#d1d5db">Mapa de densidad conectada · Azul frío → verde/amarillo templado → rojo caliente</text>
+    <text x="{width/2}" y="76" text-anchor="middle" font-size="14" fill="#d1d5db">Mapa de calor rasterizado - Azul frío → verde/amarillo templado → rojo caliente</text>
 
-    <rect x="{chart_x - 12}" y="{chart_y - 12}" width="{chart_w + 24}" height="{chart_h + 24}" rx="20" fill="#020617" opacity="0.48" stroke="#334155" stroke-width="1"/>
+    <rect x="{chart_x - 12}" y="{chart_y - 12}" width="{chart_w + 24}" height="{chart_h + 24}" rx="16" fill="#020617" opacity="0.52" stroke="#334155" stroke-width="1"/>
 
-    {''.join(temp_bands)}
+    {''.join(background_zones)}
     {''.join(x_labels)}
     {''.join(y_labels)}
-    {''.join(ribbons)}
-    {''.join(cores)}
-    {''.join(hotspots)}
-    {''.join(labels)}
-    {''.join(profile_bars)}
-
-    <path d="M {dominant_cx:.1f} {dominant_cy:.1f} C {(dominant_cx + blocked_cx)/2:.1f} {dominant_cy - 46:.1f}, {(dominant_cx + blocked_cx)/2:.1f} {blocked_cy - 46:.1f}, {blocked_cx:.1f} {blocked_cy:.1f}"
-      fill="none" stroke="#f9fafb" stroke-width="2.4" stroke-dasharray="8 7" marker-end="url(#arrowHead)" opacity="0.82"/>
+    {''.join(clouds)}
+    {''.join(raster_parts)}
+    {''.join(shelves)}
+    {''.join(profile_parts)}
+    {''.join(markers)}
 
     <text x="{chart_x}" y="{chart_y + chart_h + 50}" font-size="12" fill="#cbd5e1">Perfil lateral = concentración máxima por temperatura</text>
 
@@ -1825,7 +1818,7 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
     <text x="{legend_x + legend_w/2}" y="{legend_y + 36}" text-anchor="middle" font-size="12" fill="#d1d5db">Templado</text>
     <text x="{legend_x + legend_w}" y="{legend_y + 36}" text-anchor="end" font-size="12" fill="#d1d5db">Caliente</text>
 
-    <text x="{width/2}" y="{height - 20}" text-anchor="middle" font-size="12" fill="#94a3b8">{interpretation}</text>
+    <text x="{width/2}" y="{height - 22}" text-anchor="middle" font-size="12" fill="#94a3b8">{interpretation}</text>
 </svg>'''
 
 
