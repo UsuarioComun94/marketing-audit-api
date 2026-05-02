@@ -1278,6 +1278,18 @@ Lectura:
 Zona dominante: {customer_intent_density_map.dominant_zone.x} / {customer_intent_density_map.dominant_zone.y}.
 Zona bloqueada: {customer_intent_density_map.blocked_zone.x} / {customer_intent_density_map.blocked_zone.y}.
 
+Cómo explicarlo:
+- El eje horizontal muestra avance comercial: Awareness → Interest → Consideration → Conversion.
+- El eje vertical muestra temperatura: Frío → Tibio → Templado → Caliente.
+- La intensidad de color muestra concentración diagnóstica, no medición real de clicks.
+- La zona dominante indica dónde está el grueso del público.
+- La zona bloqueada indica dónde el público pierde avance.
+- Si la zona dominante está antes de conversión, hay interés sin suficiente movimiento hacia acción.
+- Si la zona bloqueada está en conversión, el problema suele estar en CTA, confianza, prueba social o propuesta de valor.
+
+Guion de lectura:
+Este mapa cruza etapa del funnel con temperatura del cliente. Sirve para explicar dónde está acumulada la atención y dónde se rompe el avance hacia una consulta o decisión comercial.
+
 ## 7. Problema comercial principal
 {audit.primary_bottleneck}.
 
@@ -1299,6 +1311,17 @@ Flujo recomendado:
 
 Resumen:
 {funnel_blueprint.summary}
+
+Cómo explicarlo:
+- A1–A5 muestran la ruta actual: lo que la marca ya tiene construido.
+- FAULT muestra el punto de ruptura donde el recorrido pierde continuidad comercial.
+- S1–S5 muestran la ruta de reconstrucción recomendada.
+- Los eslabones faltantes sostienen el rediseño: mensaje, educación, prueba, confianza y seguimiento.
+- OUT representa la salida deseada: oportunidad comercial más calificada.
+- La relación central es causa → ruptura → rediseño.
+
+Guion de lectura:
+Este blueprint no es un calendario de implementación; es un plano del sistema comercial. La ruta azul muestra lo que existe, la zona FAULT muestra dónde se rompe y la ruta verde muestra cómo debería rediseñarse el sistema para convertir presencia en preferencia y preferencia en consulta.
 
 ## 10. Blueprint diagram
 ```mermaid
@@ -1496,79 +1519,46 @@ def render_score_chart_svg(score: CommercialScore) -> str:
 
 
 
+
 def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
     width = 1120
-    height = 720
+    height = 660
 
     current_items = blueprint.current_flow or []
-    break_items = blueprint.breakpoints or []
     recommended_items = blueprint.recommended_flow or []
-    missing_links = blueprint.missing_links or []
-
-    def short(value: str, max_len: int = 34) -> str:
-        safe = h(value)
-        return safe if len(safe) <= max_len else safe[:max_len - 1] + "…"
 
     def grid_lines() -> str:
         parts = []
         for x in range(0, width + 1, 24):
             major = x % 120 == 0
             parts.append(
-                f'<line x1="{x}" y1="0" x2="{x}" y2="{height}" stroke="#7dd3fc" stroke-width="{1.0 if major else 0.55}" opacity="{0.22 if major else 0.09}"/>'
+                f'<line x1="{x}" y1="0" x2="{x}" y2="{height}" stroke="#7dd3fc" stroke-width="{1.0 if major else 0.55}" opacity="{0.22 if major else 0.08}"/>'
             )
         for y in range(0, height + 1, 24):
             major = y % 120 == 0
             parts.append(
-                f'<line x1="0" y1="{y}" x2="{width}" y2="{y}" stroke="#7dd3fc" stroke-width="{1.0 if major else 0.55}" opacity="{0.22 if major else 0.09}"/>'
+                f'<line x1="0" y1="{y}" x2="{width}" y2="{y}" stroke="#7dd3fc" stroke-width="{1.0 if major else 0.55}" opacity="{0.22 if major else 0.08}"/>'
             )
         return ''.join(parts)
 
-    # Integrated commercial system path. These are not separate columns:
-    # they form a single technical route with a fault zone and rebuild bypass.
     current_coords = [
-        (105, 255),
-        (245, 220),
-        (385, 245),
-        (505, 320),
-        (610, 405),
+        (115, 285),
+        (260, 245),
+        (405, 275),
+        (515, 350),
+        (625, 430),
     ]
 
     rebuild_coords = [
-        (650, 320),
-        (740, 235),
-        (875, 230),
-        (965, 310),
-        (1015, 410),
+        (665, 350),
+        (760, 265),
+        (890, 265),
+        (990, 340),
+        (1030, 440),
     ]
 
-    fault_center = (575, 335)
-    conversion_output = (1015, 410)
-
-    def node(cx: int, cy: int, label: str, code: str, color: str, fill: str, r: int = 14) -> str:
-        label_text = short(label, 31)
-        return f'''
-        <g>
-          <circle cx="{cx}" cy="{cy}" r="{r + 8}" fill="{color}" opacity="0.12" filter="url(#blueprintGlowSoft)"/>
-          <circle cx="{cx}" cy="{cy}" r="{r}" fill="{fill}" stroke="{color}" stroke-width="2.5"/>
-          <text x="{cx}" y="{cy + 4}" text-anchor="middle" font-size="10" font-weight="900" fill="#e0f2fe">{h(code)}</text>
-          <rect x="{cx - 92}" y="{cy + 23}" width="184" height="24" rx="12" fill="#061a2f" stroke="{color}" stroke-width="1" opacity="0.92"/>
-          <text x="{cx}" y="{cy + 39}" text-anchor="middle" font-size="10.5" font-weight="800" fill="#dbeafe">{label_text}</text>
-        </g>
-        '''
-
-    def leader_callout(x1: int, y1: int, x2: int, y2: int, label: str, color: str, align: str = "start") -> str:
-        label_text = short(label, 42)
-        text_x = x2 + 8 if align == "start" else x2 - 8
-        anchor = "start" if align == "start" else "end"
-        rect_x = x2 if align == "start" else x2 - 238
-        return f'''
-        <g>
-          <path d="M {x1} {y1} L {x2} {y2}" fill="none" stroke="{color}" stroke-width="1.4" stroke-dasharray="5 5" opacity="0.88"/>
-          <circle cx="{x1}" cy="{y1}" r="3.5" fill="{color}"/>
-          <rect x="{rect_x}" y="{y2 - 15}" width="238" height="30" rx="8" fill="#061a2f" stroke="{color}" stroke-width="1" opacity="0.96"/>
-          <text x="{text_x}" y="{y2 + 4}" text-anchor="{anchor}" font-size="10.5" font-weight="800" fill="{color}">{label_text}</text>
-        </g>
-        '''
+    fault_center = (585, 365)
+    conversion_output = (1030, 440)
 
     def path_from(points: list[tuple[int, int]], color: str, width_px: float, dash: str = "") -> str:
         if not points:
@@ -1580,94 +1570,91 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
             mid_x = (prev_x + x) / 2
             d += f" C {mid_x:.1f} {prev_y}, {mid_x:.1f} {y}, {x} {y}"
         dash_attr = f' stroke-dasharray="{dash}"' if dash else ""
-        return f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{width_px}" stroke-linecap="round" stroke-linejoin="round" opacity="0.88"{dash_attr}/>'
+        return f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{width_px}" stroke-linecap="round" stroke-linejoin="round" opacity="0.90"{dash_attr}/>'
 
-    # Main traces and technical layers.
+    def node(cx: int, cy: int, code: str, color: str, fill: str, r: int = 16) -> str:
+        return f'''
+        <g>
+          <circle cx="{cx}" cy="{cy}" r="{r + 12}" fill="{color}" opacity="0.13" filter="url(#blueprintGlowSoft)"/>
+          <circle cx="{cx}" cy="{cy}" r="{r}" fill="{fill}" stroke="{color}" stroke-width="3"/>
+          <text x="{cx}" y="{cy + 5}" text-anchor="middle" font-size="12" font-weight="900" fill="#e0f2fe">{h(code)}</text>
+        </g>
+        '''
+
+    def small_tick(cx: int, cy: int, color: str) -> str:
+        return f'''
+        <g opacity="0.8">
+          <line x1="{cx - 9}" y1="{cy}" x2="{cx + 9}" y2="{cy}" stroke="{color}" stroke-width="1.4"/>
+          <line x1="{cx}" y1="{cy - 9}" x2="{cx}" y2="{cy + 9}" stroke="{color}" stroke-width="1.4"/>
+        </g>
+        '''
+
     main_path = path_from(current_coords, "#93c5fd", 4.2)
-    main_path_glow = path_from(current_coords, "#38bdf8", 13.0)
+    main_path_glow = path_from(current_coords, "#38bdf8", 14.0)
     rebuild_path = path_from([fault_center] + rebuild_coords, "#34d399", 4.4)
-    rebuild_path_glow = path_from([fault_center] + rebuild_coords, "#22c55e", 13.0)
-    missing_path = path_from([(310, 505), (470, 535), (650, 520), (815, 555)], "#fb7185", 2.6, "10 8")
+    rebuild_path_glow = path_from([fault_center] + rebuild_coords, "#22c55e", 14.0)
+    missing_path = path_from([(220, 505), (420, 540), (660, 520), (890, 555)], "#fb7185", 2.4, "10 8")
 
     system_zones = f'''
     <g opacity="0.92">
-      <path d="M 70 175 L 430 155 L 520 215 L 480 370 L 155 410 L 70 335 Z"
-            fill="#0f2a4a" opacity="0.28" stroke="#93c5fd" stroke-width="1.6" stroke-dasharray="12 8"/>
-      <text x="104" y="186" font-size="12" font-weight="900" fill="#bfdbfe">ACQUISITION + INTEREST LAYER</text>
+      <path d="M 76 178 L 455 158 L 535 222 L 495 402 L 160 420 L 76 336 Z"
+            fill="#0f2a4a" opacity="0.25" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="12 8"/>
+      <text x="112" y="195" font-size="12" font-weight="900" fill="#bfdbfe">ACQUISITION + INTEREST LAYER</text>
 
-      <path d="M 440 210 L 710 210 L 765 360 L 620 470 L 455 410 Z"
-            fill="#3a2208" opacity="0.30" stroke="#f59e0b" stroke-width="1.8" stroke-dasharray="10 7"/>
-      <text x="493" y="228" font-size="12" font-weight="900" fill="#fcd34d">FAULT / VALUE GAP ZONE</text>
+      <path d="M 452 232 L 724 228 L 778 382 L 628 492 L 462 430 Z"
+            fill="#3a2208" opacity="0.28" stroke="#f59e0b" stroke-width="1.7" stroke-dasharray="10 7"/>
+      <text x="506" y="250" font-size="12" font-weight="900" fill="#fcd34d">FAULT / VALUE GAP ZONE</text>
 
-      <path d="M 665 165 L 1040 175 L 1060 450 L 870 520 L 700 415 Z"
-            fill="#062d22" opacity="0.30" stroke="#34d399" stroke-width="1.6" stroke-dasharray="12 8"/>
-      <text x="740" y="186" font-size="12" font-weight="900" fill="#bbf7d0">REBUILD + CONVERSION LAYER</text>
+      <path d="M 678 176 L 1044 184 L 1062 470 L 870 540 L 708 430 Z"
+            fill="#062d22" opacity="0.28" stroke="#34d399" stroke-width="1.5" stroke-dasharray="12 8"/>
+      <text x="748" y="196" font-size="12" font-weight="900" fill="#bbf7d0">REBUILD + CONVERSION LAYER</text>
     </g>
     '''
 
     nodes_svg = []
     for index, (cx, cy) in enumerate(current_coords):
-        label = current_items[index] if index < len(current_items) else f"Current step {index + 1}"
-        nodes_svg.append(node(cx, cy, label, f"A{index + 1}", "#93c5fd", "#0f2a4a"))
+        nodes_svg.append(node(cx, cy, f"A{index + 1}", "#93c5fd", "#0f2a4a"))
 
     for index, (cx, cy) in enumerate(rebuild_coords):
-        label = recommended_items[index] if index < len(recommended_items) else f"Recommended step {index + 1}"
-        nodes_svg.append(node(cx, cy, label, f"S{index + 1}", "#34d399", "#062d22"))
+        nodes_svg.append(node(cx, cy, f"S{index + 1}", "#34d399", "#062d22"))
+
+    technical_ticks = []
+    for cx, cy in current_coords + rebuild_coords:
+        technical_ticks.append(small_tick(cx, cy, "#7dd3fc"))
 
     fault_marker = f'''
     <g>
-      <ellipse cx="{fault_center[0]}" cy="{fault_center[1]}" rx="92" ry="64" fill="#f59e0b" opacity="0.13" filter="url(#blueprintGlowSoft)"/>
+      <ellipse cx="{fault_center[0]}" cy="{fault_center[1]}" rx="94" ry="62" fill="#f59e0b" opacity="0.13" filter="url(#blueprintGlowSoft)"/>
       <ellipse cx="{fault_center[0]}" cy="{fault_center[1]}" rx="74" ry="50" fill="none" stroke="#f59e0b" stroke-width="2.2" stroke-dasharray="9 7"/>
       <line x1="{fault_center[0] - 62}" y1="{fault_center[1] - 42}" x2="{fault_center[0] + 62}" y2="{fault_center[1] + 42}" stroke="#f59e0b" stroke-width="2" opacity="0.85"/>
       <line x1="{fault_center[0] - 62}" y1="{fault_center[1] + 42}" x2="{fault_center[0] + 62}" y2="{fault_center[1] - 42}" stroke="#f59e0b" stroke-width="2" opacity="0.85"/>
-      <circle cx="{fault_center[0]}" cy="{fault_center[1]}" r="17" fill="#3a2208" stroke="#f59e0b" stroke-width="3"/>
+      <circle cx="{fault_center[0]}" cy="{fault_center[1]}" r="19" fill="#3a2208" stroke="#f59e0b" stroke-width="3"/>
       <text x="{fault_center[0]}" y="{fault_center[1] + 4}" text-anchor="middle" font-size="11" font-weight="900" fill="#fcd34d">FAULT</text>
     </g>
     '''
 
-    callouts = []
-    # Rupture callouts around the fault zone.
-    break_targets = [
-        (fault_center[0] - 30, fault_center[1] - 20, 245, 118, "end"),
-        (fault_center[0] + 35, fault_center[1] - 8, 778, 110, "start"),
-        (fault_center[0] + 20, fault_center[1] + 28, 806, 515, "start"),
-    ]
-    for index, item in enumerate(break_items[:3]):
-        x1, y1, x2, y2, align = break_targets[index]
-        callouts.append(leader_callout(x1, y1, x2, y2, item, "#f59e0b", align))
-
-    # Missing links as lower diagnostic layer.
-    missing_callouts = []
-    for index, item in enumerate(missing_links[:3]):
-        x = 120 + index * 300
-        y = 590
-        missing_callouts.append(
-            f'''
-            <g>
-              <rect x="{x}" y="{y}" width="250" height="32" rx="9" fill="#2a0d16" stroke="#fb7185" stroke-width="1" opacity="0.92"/>
-              <text x="{x + 12}" y="{y + 20}" font-size="10.5" font-weight="800" fill="#fecdd3">MISSING · {short(item, 29)}</text>
-            </g>
-            '''
-        )
-
     title_block = f'''
-    <text x="{width/2}" y="48" text-anchor="middle" font-size="29" font-weight="900" fill="#e0f2fe">Commercial System Blueprint</text>
-    <text x="{width/2}" y="75" text-anchor="middle" font-size="13" fill="#93c5fd">Integrated technical map of the commercial path, rupture zone and rebuild route</text>
+    <text x="{width/2}" y="52" text-anchor="middle" font-size="30" font-weight="900" fill="#e0f2fe">Commercial System Blueprint</text>
+    <text x="{width/2}" y="80" text-anchor="middle" font-size="13" fill="#93c5fd">Integrated architecture map · details listed below the blueprint</text>
+    '''
+
+    legend_codes = f'''
+    <g>
+      <rect x="76" y="580" width="968" height="34" rx="10" fill="#061a2f" stroke="#2563eb" stroke-width="1" opacity="0.92"/>
+      <text x="108" y="602" font-size="11" font-weight="900" fill="#bfdbfe">A1–A5: current path</text>
+      <text x="374" y="602" font-size="11" font-weight="900" fill="#fcd34d">FAULT: rupture / value gap</text>
+      <text x="678" y="602" font-size="11" font-weight="900" fill="#bbf7d0">S1–S5: rebuild route</text>
+      <text x="930" y="602" font-size="11" font-weight="900" fill="#fecdd3">dashed rose: missing links</text>
+    </g>
     '''
 
     dimension_lines = f'''
     <g opacity="0.72">
-      <line x1="82" y1="658" x2="1038" y2="658" stroke="#60a5fa" stroke-width="1.3"/>
-      <line x1="82" y1="650" x2="82" y2="666" stroke="#60a5fa" stroke-width="1.3"/>
-      <line x1="1038" y1="650" x2="1038" y2="666" stroke="#60a5fa" stroke-width="1.3"/>
-      <text x="{width/2}" y="682" text-anchor="middle" font-size="11" fill="#bfdbfe">END-TO-END COMMERCIAL SYSTEM · VISIBILITY → PREFERENCE → QUALIFIED CONVERSION</text>
+      <line x1="82" y1="630" x2="1038" y2="630" stroke="#60a5fa" stroke-width="1.3"/>
+      <line x1="82" y1="622" x2="82" y2="638" stroke="#60a5fa" stroke-width="1.3"/>
+      <line x1="1038" y1="622" x2="1038" y2="638" stroke="#60a5fa" stroke-width="1.3"/>
+      <text x="{width/2}" y="650" text-anchor="middle" font-size="11" fill="#bfdbfe">END-TO-END COMMERCIAL SYSTEM · VISIBILITY → PREFERENCE → QUALIFIED CONVERSION</text>
     </g>
-    '''
-
-    summary_text = short(blueprint.summary, 142)
-    summary_plate = f'''
-    <rect x="64" y="620" width="992" height="30" rx="10" fill="#061a2f" stroke="#2563eb" stroke-width="1" opacity="0.92"/>
-    <text x="{width/2}" y="640" text-anchor="middle" font-size="11.5" fill="#dbeafe">{summary_text}</text>
     '''
 
     return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Commercial system blueprint">
@@ -1687,11 +1674,10 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
     <rect width="{width}" height="{height}" rx="26" fill="#061426"/>
     <rect x="24" y="22" width="{width - 48}" height="{height - 44}" rx="24" fill="url(#blueprintBg)" stroke="#2563eb" stroke-width="1.2"/>
     {grid_lines()}
-
     {title_block}
     {system_zones}
 
-    <g opacity="0.22" filter="url(#traceGlow)">
+    <g opacity="0.20" filter="url(#traceGlow)">
       {main_path_glow}
       {rebuild_path_glow}
     </g>
@@ -1699,21 +1685,22 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
     {rebuild_path}
     {missing_path}
 
+    <g opacity="0.55">
+      {''.join(technical_ticks)}
+    </g>
+
     <g>
       {''.join(nodes_svg)}
     </g>
 
     {fault_marker}
-    {''.join(callouts)}
-    {''.join(missing_callouts)}
 
     <circle cx="{conversion_output[0]}" cy="{conversion_output[1]}" r="28" fill="#34d399" opacity="0.12" filter="url(#blueprintGlowSoft)"/>
     <circle cx="{conversion_output[0]}" cy="{conversion_output[1]}" r="18" fill="#062d22" stroke="#34d399" stroke-width="3"/>
     <text x="{conversion_output[0]}" y="{conversion_output[1] + 4}" text-anchor="middle" font-size="10" font-weight="900" fill="#bbf7d0">OUT</text>
 
-    {summary_plate}
+    {legend_codes}
     {dimension_lines}
-
     <text x="{width - 64}" y="{height - 18}" text-anchor="end" font-size="10" fill="#60a5fa" opacity="0.75">Blueprint draft · integrated commercial architecture</text>
 </svg>'''
 
@@ -1998,6 +1985,59 @@ def build_visual_report_html(
         for action in result.corrective_action_plan
     ])
 
+    blueprint_current_items = ''.join([
+        f'<li><strong>A{index + 1}</strong> · {h(item)}</li>'
+        for index, item in enumerate(result.funnel_blueprint.current_flow)
+    ])
+
+    blueprint_break_items = ''.join([
+        f'<li><strong>R{index + 1}</strong> · {h(item)}</li>'
+        for index, item in enumerate(result.funnel_blueprint.breakpoints)
+    ])
+
+    blueprint_rebuild_items = ''.join([
+        f'<li><strong>S{index + 1}</strong> · {h(item)}</li>'
+        for index, item in enumerate(result.funnel_blueprint.recommended_flow)
+    ])
+
+    blueprint_missing_items = ''.join([
+        f'<li>{h(item)}</li>'
+        for item in result.funnel_blueprint.missing_links
+    ])
+
+    density_connection_items = ''.join([
+        f'<li><strong>Eje horizontal:</strong> muestra avance comercial de {h(" → ".join(result.customer_intent_density_map.x_axis))}. A la izquierda hay atención inicial; a la derecha debería aparecer intención de conversión.</li>',
+        f'<li><strong>Eje vertical:</strong> muestra temperatura del cliente de {h(" → ".join(result.customer_intent_density_map.y_axis))}. Más arriba implica mayor urgencia, confianza o predisposición a actuar.</li>',
+        f'<li><strong>Color e intensidad:</strong> azul indica baja temperatura, verde/amarillo indica zona templada de transición y rojo/naranja indica mayor calor comercial inferido.</li>',
+        f'<li><strong>Zona dominante:</strong> {h(result.customer_intent_density_map.dominant_zone.x)} / {h(result.customer_intent_density_map.dominant_zone.y)} señala dónde se concentra el grueso del público analizado.</li>',
+        f'<li><strong>Zona bloqueada:</strong> {h(result.customer_intent_density_map.blocked_zone.x)} / {h(result.customer_intent_density_map.blocked_zone.y)} marca dónde el interés pierde avance o no logra transformarse en una acción comercial clara.</li>',
+        f'<li><strong>Perfil lateral:</strong> resume por temperatura dónde hay más concentración. Sirve para explicar si el mercado está frío, templado o cerca de conversión.</li>',
+        f'<li><strong>Límite metodológico:</strong> este mapa es diagnóstico e inferido; no reemplaza datos reales de GA4, CRM, campañas, Hotjar/Clarity o formularios.</li>',
+    ])
+
+    density_script = (
+        f"Este mapa cruza dos variables: avance en el funnel y temperatura del cliente. "
+        f"La concentración principal aparece en {h(result.customer_intent_density_map.dominant_zone.x)} / {h(result.customer_intent_density_map.dominant_zone.y)}, "
+        f"pero la fricción aparece en {h(result.customer_intent_density_map.blocked_zone.x)} / {h(result.customer_intent_density_map.blocked_zone.y)}. "
+        f"La lectura comercial es que el público no necesariamente está ausente; el problema es cómo se mueve, o no se mueve, hacia una decisión."
+    )
+
+    blueprint_connection_items = ''.join([
+        '<li><strong>Ruta azul A1–A5:</strong> representa el recorrido actual. Muestra cómo la marca lleva al usuario desde presencia pública hacia interés, comparación y consulta.</li>',
+        '<li><strong>Zona FAULT:</strong> representa el punto donde el sistema comercial pierde continuidad. No es un error visual; es la zona donde el interés deja de avanzar porque falta claridad, prueba, CTA o diferenciación.</li>',
+        '<li><strong>Ruta verde S1–S5:</strong> representa la reconstrucción recomendada. No es una lista de tareas aisladas; es una ruta alternativa para convertir presencia en preferencia y preferencia en consulta calificada.</li>',
+        '<li><strong>Línea rosa punteada:</strong> representa los eslabones de soporte faltantes. Son activos que sostienen el recorrido: mensaje diferencial, educación, prueba social, confianza y seguimiento.</li>',
+        '<li><strong>OUT:</strong> representa la salida deseada del sistema: no solo más visibilidad, sino una oportunidad comercial más calificada y defendible.</li>',
+        '<li><strong>Relación central:</strong> el blueprint muestra causa y reparación. La ruta azul muestra lo que existe; FAULT muestra dónde se rompe; la ruta verde muestra cómo debería rediseñarse.</li>',
+    ])
+
+    blueprint_script = (
+        "Este blueprint se lee como un plano del sistema comercial. "
+        "La ruta azul muestra el recorrido actual; la zona FAULT muestra dónde se rompe la continuidad; "
+        "la ruta verde muestra el rediseño recomendado. Las cards inferiores explican qué significa cada código, "
+        "para que el plano no se llene de texto y siga funcionando visualmente como mapa técnico."
+    )
+
     return f'''<!doctype html>
 <html lang="es">
 <head>
@@ -2091,12 +2131,108 @@ def build_visual_report_html(
     .muted {{
       color: #6b7280;
     }}
+    .visual-note-grid {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-top: 14px;
+    }}
+    .visual-note {{
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 16px;
+      padding: 14px 16px;
+      color: #111827;
+      line-height: 1.45;
+      box-shadow: 0 8px 18px rgba(17, 24, 39, 0.06);
+    }}
+    .visual-note h3 {{
+      margin: 0 0 8px;
+      font-size: 15px;
+      letter-spacing: -0.02em;
+    }}
+    .legend-bar {{
+      height: 12px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #2563eb 0%, #0ea5e9 35%, #84cc16 55%, #f59e0b 75%, #ef4444 100%);
+      margin: 8px 0 6px;
+    }}
+    .legend-labels {{
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: #4b5563;
+      font-weight: 700;
+      gap: 10px;
+    }}
+    .blueprint-code-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }}
+    .blueprint-code-card {{
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 16px;
+      padding: 14px 16px;
+      color: #111827;
+      box-shadow: 0 8px 18px rgba(17, 24, 39, 0.06);
+    }}
+    .blueprint-code-card h3 {{
+      margin: 0 0 10px;
+      font-size: 15px;
+      letter-spacing: -0.02em;
+    }}
+    .blueprint-code-card ul {{
+      margin: 0;
+      padding-left: 18px;
+    }}
+    .blueprint-code-card li {{
+      margin: 6px 0;
+      line-height: 1.35;
+    }}
+    .explanation-card {{
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 16px;
+      padding: 16px 18px;
+      color: #111827;
+      line-height: 1.5;
+      box-shadow: 0 8px 18px rgba(17, 24, 39, 0.06);
+      margin-top: 14px;
+    }}
+    .explanation-card h3 {{
+      margin: 0 0 10px;
+      font-size: 16px;
+      letter-spacing: -0.02em;
+    }}
+    .explanation-card ul {{
+      margin: 0;
+      padding-left: 18px;
+    }}
+    .explanation-card li {{
+      margin: 7px 0;
+    }}
+    .script-box {{
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      color: #334155;
+    }}
+    .script-box p {{
+      margin: 6px 0;
+    }}
     @media print {{
       body {{ background: white; }}
       .card, .hero {{ box-shadow: none; break-inside: avoid; }}
     }}
     @media (max-width: 900px) {{
       .grid {{ grid-template-columns: 1fr; }}
+      .visual-note-grid {{ grid-template-columns: 1fr; }}
+      .blueprint-code-grid {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -2130,9 +2266,44 @@ def build_visual_report_html(
             <p><strong>Zona bloqueada:</strong> {h(result.customer_intent_density_map.blocked_zone.x)} / {h(result.customer_intent_density_map.blocked_zone.y)}</p>
           </div>
         </div>
+        <div class="explanation-card">
+          <h3>Cómo explicar las conexiones del heatmap</h3>
+          <ul>{density_connection_items}</ul>
+          <div class="script-box">
+            <p><strong>Guion de lectura:</strong> {density_script}</p>
+          </div>
+        </div>
       </div>
       <div class="card full">{temperature_svg}</div>
-      <div class="card full">{blueprint_svg}</div>
+      <div class="card full">
+        {blueprint_svg}
+        <div class="blueprint-code-grid">
+          <div class="blueprint-code-card">
+            <h3>Current path · A-codes</h3>
+            <ul>{blueprint_current_items or '<li>No current-flow items detected.</li>'}</ul>
+          </div>
+          <div class="blueprint-code-card">
+            <h3>Rupture zone · R-codes</h3>
+            <ul>{blueprint_break_items or '<li>No rupture points detected.</li>'}</ul>
+          </div>
+          <div class="blueprint-code-card">
+            <h3>Rebuild route · S-codes</h3>
+            <ul>{blueprint_rebuild_items or '<li>No rebuild items detected.</li>'}</ul>
+          </div>
+          <div class="blueprint-code-card">
+            <h3>Missing links / support layer</h3>
+            <ul>{blueprint_missing_items or '<li>No missing links detected.</li>'}</ul>
+            <p><strong>Lectura:</strong> {h(result.funnel_blueprint.summary)}</p>
+          </div>
+        </div>
+        <div class="explanation-card">
+          <h3>Cómo explicar el blueprint completo</h3>
+          <ul>{blueprint_connection_items}</ul>
+          <div class="script-box">
+            <p><strong>Guion de lectura:</strong> {blueprint_script}</p>
+          </div>
+        </div>
+      </div>
 
       <div class="card full">
         <h2>Fuentes públicas revisadas</h2>
