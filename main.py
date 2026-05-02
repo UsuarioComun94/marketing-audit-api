@@ -322,13 +322,11 @@ class VisualReportResponse(BaseModel):
     company_name: str
     report_id: str
     report_url: str
-    awareness_funnel_svg: str
-    temperature_heatmap_svg: str
-    customer_intent_density_svg: str
-    funnel_blueprint_svg: str
-    score_chart_svg: str
-    report_html: str
-    report_markdown: str
+    response_mode: str = "compact"
+    visual_assets: List[str]
+    report_summary: str
+    how_to_use: str
+    note: str
 
 
 class CampaignMetric(BaseModel):
@@ -638,6 +636,28 @@ class CampaignPerformanceResponse(BaseModel):
     next_data_needed: List[str]
     summary: str
 
+class CampaignPerformanceCompactResponse(BaseModel):
+    company_name: str
+    audit_type: str
+    data_quality: str
+    campaigns_analyzed: int
+    summary: str
+    prioritized_actions: List[PerformanceAction]
+    top_findings: List[PerformanceFinding]
+    top_cross_metric_findings: List[CrossMetricFinding]
+    tracking_health: List[TrackingHealthFinding]
+    lead_quality_assessment: List[LeadQualityAssessment]
+    cost_quality_matrix: List[CostQualityQuadrant]
+    budget_reallocation: List[BudgetReallocationRecommendation]
+    experiment_recommendations: List[ExperimentRecommendation]
+    data_completeness: DataCompletenessScore
+    sample_size_warnings: List[str]
+    discovery_questions: List[str]
+    proposal_guidance: ProposalGuidance
+    timed_action_plan: TimedActionPlan
+    next_data_needed: List[str]
+
+
 
 class FullCommercialSystemRequest(ProspectWithResearchRequest):
     campaigns: List[CampaignMetric] = Field(default_factory=list)
@@ -652,8 +672,28 @@ class FullCommercialSystemRequest(ProspectWithResearchRequest):
 class FullCommercialSystemResponse(BaseModel):
     company_name: str
     audit_type: str
-    public_commercial_audit: ProspectWithResearchResponse
-    campaign_performance: CampaignPerformanceResponse
+    response_mode: str = "compact"
+    system_summary: str
+    recommended_next_step: str
+    visual_report_url: Optional[str] = None
+    visual_report_status: str
+    research_confidence: str
+    diagnosis_initial: str
+    public_sources_summary: List[ReviewedPublicSource]
+    awareness_funnel_locator: AwarenessFunnelLocator
+    customer_intent_density_map: CustomerIntentDensityMap
+    funnel_blueprint: FunnelBlueprint
+    corrective_action_plan: List[CorrectiveActionItem]
+    campaign_data_quality: str
+    campaigns_analyzed: int
+    campaign_summary: str
+    top_campaign_findings: List[PerformanceFinding]
+    top_cross_metric_findings: List[CrossMetricFinding]
+    tracking_health: List[TrackingHealthFinding]
+    lead_quality_assessment: List[LeadQualityAssessment]
+    cost_quality_matrix: List[CostQualityQuadrant]
+    budget_reallocation: List[BudgetReallocationRecommendation]
+    experiment_recommendations: List[ExperimentRecommendation]
     unified_priorities: List[PerformanceAction]
     commercial_readiness_score: CommercialReadinessScore
     data_completeness_score: DataCompletenessScore
@@ -661,8 +701,9 @@ class FullCommercialSystemResponse(BaseModel):
     discovery_questions: List[str]
     proposal_guidance: ProposalGuidance
     timed_action_plan: TimedActionPlan
-    system_summary: str
-    recommended_next_step: str
+    response_note: str
+
+
 
 
 def get_composio_headers() -> Dict[str, str]:
@@ -2670,13 +2711,19 @@ def create_visual_audit_report(request: ProspectWithResearchRequest):
         company_name=result.company_name,
         report_id=report_id,
         report_url=report_url,
-        awareness_funnel_svg=awareness_svg,
-        temperature_heatmap_svg=temperature_svg,
-        customer_intent_density_svg=density_svg,
-        funnel_blueprint_svg=blueprint_svg,
-        score_chart_svg=score_svg,
-        report_html=report_html,
-        report_markdown=result.report_ready_markdown,
+        visual_assets=[
+            "awareness_funnel",
+            "temperature_heatmap",
+            "customer_intent_density_map",
+            "commercial_system_blueprint",
+            "commercial_score_chart",
+        ],
+        report_summary=(
+            f"Reporte visual generado para {result.company_name}. "
+            "La respuesta de API es compacta para evitar errores de tamaño; los SVG/HTML completos están disponibles en report_url."
+        ),
+        how_to_use="Abrí report_url para ver heatmap, blueprint, embudo, score chart y explicación completa.",
+        note="No se devuelven SVG/HTML en el JSON porque eso dispara response_too_large en Custom GPT Actions.",
     )
 
 
@@ -4829,14 +4876,35 @@ def convert_corrective_to_performance_action(item: CorrectiveActionItem) -> Perf
 
 @app.post(
     "/audit/campaign-performance",
-    response_model=CampaignPerformanceResponse,
+    response_model=CampaignPerformanceCompactResponse,
     operation_id="auditCampaignPerformance",
     summary="Audit campaign performance",
     description="Audita campañas con reglas de performance. Puede funcionar sin campañas cargadas devolviendo acciones preparadas y datos requeridos.",
     dependencies=[Security(verify_api_key)],
 )
 def audit_campaign_performance(request: CampaignPerformanceRequest):
-    return run_campaign_performance_audit(request)
+    result = run_campaign_performance_audit(request)
+    return CampaignPerformanceCompactResponse(
+        company_name=result.company_name,
+        audit_type=result.audit_type,
+        data_quality=result.data_quality,
+        campaigns_analyzed=result.campaigns_analyzed,
+        summary=result.summary,
+        prioritized_actions=result.prioritized_actions[:12],
+        top_findings=result.findings[:10],
+        top_cross_metric_findings=result.cross_metric_findings[:10],
+        tracking_health=result.tracking_health[:8],
+        lead_quality_assessment=result.lead_quality_assessment[:8],
+        cost_quality_matrix=result.cost_quality_matrix[:10],
+        budget_reallocation=result.budget_reallocation[:10],
+        experiment_recommendations=result.experiment_recommendations[:8],
+        data_completeness=result.data_completeness,
+        sample_size_warnings=result.sample_size_warnings[:10],
+        discovery_questions=result.discovery_questions[:10],
+        proposal_guidance=result.proposal_guidance,
+        timed_action_plan=result.timed_action_plan,
+        next_data_needed=result.next_data_needed[:12],
+    )
 
 
 @app.post(
@@ -4900,22 +4968,67 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
     commercial_readiness_score = build_commercial_readiness_score(public_audit, campaign_performance)
     map_coherence_check = build_map_coherence_check(public_audit, campaign_performance)
 
+    visual_report_url = None
+    visual_report_status = "not_generated"
+    try:
+        awareness_svg = render_awareness_funnel_svg(public_audit.awareness_funnel_locator)
+        temperature_svg = render_temperature_heatmap_svg(public_audit.temperature_heatmap)
+        density_svg = render_customer_intent_density_svg(public_audit.customer_intent_density_map)
+        blueprint_svg = render_funnel_blueprint_svg(public_audit.funnel_blueprint)
+        score_svg = render_score_chart_svg(public_audit.commercial_score)
+        report_html = build_visual_report_html(
+            result=public_audit,
+            awareness_svg=awareness_svg,
+            temperature_svg=temperature_svg,
+            density_svg=density_svg,
+            blueprint_svg=blueprint_svg,
+            score_svg=score_svg,
+        )
+        report_id = uuid.uuid4().hex
+        VISUAL_REPORT_STORE[report_id] = report_html
+        visual_report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
+        visual_report_status = "generated"
+    except Exception as exc:
+        visual_report_status = f"visual_report_generation_failed: {str(exc)}"
+
     return FullCommercialSystemResponse(
         company_name=request.company_name,
-        audit_type="full_commercial_system_audit_v2",
-        public_commercial_audit=public_audit,
-        campaign_performance=campaign_performance,
-        unified_priorities=unified_priorities,
-        commercial_readiness_score=commercial_readiness_score,
-        data_completeness_score=campaign_performance.data_completeness,
-        map_coherence_check=map_coherence_check,
-        discovery_questions=campaign_performance.discovery_questions,
-        proposal_guidance=campaign_performance.proposal_guidance,
-        timed_action_plan=campaign_performance.timed_action_plan,
+        audit_type="full_commercial_system_audit_v3_compact",
+        response_mode="compact",
         system_summary=system_summary,
         recommended_next_step=(
             "Cargar un export real de campañas, eventos, calidad de lead, CRM y período anterior para pasar de acciones preparadas a decisiones con evidencia."
             if campaign_performance.data_quality == "sin_datos"
             else "Revisar primero tracking, data completeness, mapa de coherencia y acciones con impacto alto/esfuerzo bajo."
+        ),
+        visual_report_url=visual_report_url,
+        visual_report_status=visual_report_status,
+        research_confidence=public_audit.research_confidence,
+        diagnosis_initial=public_audit.diagnosis_initial,
+        public_sources_summary=public_audit.public_sources_summary[:8],
+        awareness_funnel_locator=public_audit.awareness_funnel_locator,
+        customer_intent_density_map=public_audit.customer_intent_density_map,
+        funnel_blueprint=public_audit.funnel_blueprint,
+        corrective_action_plan=public_audit.corrective_action_plan[:8],
+        campaign_data_quality=campaign_performance.data_quality,
+        campaigns_analyzed=campaign_performance.campaigns_analyzed,
+        campaign_summary=campaign_performance.summary,
+        top_campaign_findings=campaign_performance.findings[:10],
+        top_cross_metric_findings=campaign_performance.cross_metric_findings[:10],
+        tracking_health=campaign_performance.tracking_health[:8],
+        lead_quality_assessment=campaign_performance.lead_quality_assessment[:8],
+        cost_quality_matrix=campaign_performance.cost_quality_matrix[:10],
+        budget_reallocation=campaign_performance.budget_reallocation[:10],
+        experiment_recommendations=campaign_performance.experiment_recommendations[:8],
+        unified_priorities=unified_priorities[:12],
+        commercial_readiness_score=commercial_readiness_score,
+        data_completeness_score=campaign_performance.data_completeness,
+        map_coherence_check=map_coherence_check,
+        discovery_questions=campaign_performance.discovery_questions[:10],
+        proposal_guidance=campaign_performance.proposal_guidance,
+        timed_action_plan=campaign_performance.timed_action_plan,
+        response_note=(
+            "Respuesta compacta para evitar response_too_large en Custom GPT Actions. "
+            "Los visuales completos no viajan en JSON; usar visual_report_url o /deliverables/visual-report."
         ),
     )
