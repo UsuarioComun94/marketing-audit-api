@@ -1284,11 +1284,12 @@ Cómo explicarlo:
 - La intensidad de color muestra concentración diagnóstica, no medición real de clicks.
 - La zona dominante indica dónde está el grueso del público.
 - La zona bloqueada indica dónde el público pierde avance.
+- La zona bloqueada se conecta conceptualmente con el FAULT del blueprint.
 - Si la zona dominante está antes de conversión, hay interés sin suficiente movimiento hacia acción.
 - Si la zona bloqueada está en conversión, el problema suele estar en CTA, confianza, prueba social o propuesta de valor.
 
 Guion de lectura:
-Este mapa cruza etapa del funnel con temperatura del cliente. Sirve para explicar dónde está acumulada la atención y dónde se rompe el avance hacia una consulta o decisión comercial.
+Este mapa cruza etapa del funnel con temperatura del cliente. Sirve para explicar dónde está acumulada la atención, dónde se enfría el recorrido y qué parte del sistema comercial debe rediseñarse en el blueprint.
 
 ## 7. Problema comercial principal
 {audit.primary_bottleneck}.
@@ -1315,13 +1316,14 @@ Resumen:
 Cómo explicarlo:
 - A1–A5 muestran la ruta actual: lo que la marca ya tiene construido.
 - FAULT muestra el punto de ruptura donde el recorrido pierde continuidad comercial.
+- DG significa Diagnosis Gate: el diagnóstico que convierte la ruptura en rediseño.
 - S1–S5 muestran la ruta de reconstrucción recomendada.
-- Los eslabones faltantes sostienen el rediseño: mensaje, educación, prueba, confianza y seguimiento.
+- El support layer se explica afuera del plano para evitar ruido visual: mensaje, educación, prueba, confianza y seguimiento.
 - OUT representa la salida deseada: oportunidad comercial más calificada.
-- La relación central es causa → ruptura → rediseño.
+- La relación central es ruta actual → ruptura → diagnosis gate → rediseño.
 
 Guion de lectura:
-Este blueprint no es un calendario de implementación; es un plano del sistema comercial. La ruta azul muestra lo que existe, la zona FAULT muestra dónde se rompe y la ruta verde muestra cómo debería rediseñarse el sistema para convertir presencia en preferencia y preferencia en consulta.
+Este blueprint no es un calendario de implementación; es un plano del sistema comercial. La ruta azul muestra lo que existe, FAULT muestra dónde se rompe, DG explica por qué empieza el rediseño y la ruta verde muestra cómo debería reconstruirse el sistema para convertir presencia en preferencia y preferencia en consulta.
 
 ## 10. Blueprint diagram
 ```mermaid
@@ -1520,12 +1522,10 @@ def render_score_chart_svg(score: CommercialScore) -> str:
 
 
 
+
 def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
     width = 1120
     height = 660
-
-    current_items = blueprint.current_flow or []
-    recommended_items = blueprint.recommended_flow or []
 
     def grid_lines() -> str:
         parts = []
@@ -1542,23 +1542,23 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
         return ''.join(parts)
 
     current_coords = [
-        (115, 285),
-        (260, 245),
-        (405, 275),
-        (515, 350),
-        (625, 430),
+        (125, 305),
+        (270, 260),
+        (410, 292),
+        (518, 365),
+        (625, 445),
     ]
 
     rebuild_coords = [
-        (665, 350),
-        (760, 265),
-        (890, 265),
-        (990, 340),
-        (1030, 440),
+        (690, 365),
+        (780, 285),
+        (910, 285),
+        (1010, 360),
+        (1040, 455),
     ]
 
-    fault_center = (585, 365)
-    conversion_output = (1030, 440)
+    fault_center = (585, 385)
+    conversion_output = (1040, 455)
 
     def path_from(points: list[tuple[int, int]], color: str, width_px: float, dash: str = "") -> str:
         if not points:
@@ -1572,42 +1572,66 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
         dash_attr = f' stroke-dasharray="{dash}"' if dash else ""
         return f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{width_px}" stroke-linecap="round" stroke-linejoin="round" opacity="0.90"{dash_attr}/>'
 
-    def node(cx: int, cy: int, code: str, color: str, fill: str, r: int = 16) -> str:
+    def hex_points(cx: int, cy: int, r: int = 23) -> str:
+        coords = [
+            (cx + r, cy),
+            (cx + r * 0.5, cy + r * 0.866),
+            (cx - r * 0.5, cy + r * 0.866),
+            (cx - r, cy),
+            (cx - r * 0.5, cy - r * 0.866),
+            (cx + r * 0.5, cy - r * 0.866),
+        ]
+        return " ".join([f"{x:.1f},{y:.1f}" for x, y in coords])
+
+    def node(cx: int, cy: int, code: str, color: str, fill: str, r: int = 23) -> str:
         return f'''
         <g>
-          <circle cx="{cx}" cy="{cy}" r="{r + 12}" fill="{color}" opacity="0.13" filter="url(#blueprintGlowSoft)"/>
-          <circle cx="{cx}" cy="{cy}" r="{r}" fill="{fill}" stroke="{color}" stroke-width="3"/>
+          <polygon points="{hex_points(cx, cy, r + 11)}" fill="{color}" opacity="0.12" filter="url(#blueprintGlowSoft)"/>
+          <polygon points="{hex_points(cx, cy, r)}" fill="{fill}" stroke="{color}" stroke-width="3"/>
           <text x="{cx}" y="{cy + 5}" text-anchor="middle" font-size="12" font-weight="900" fill="#e0f2fe">{h(code)}</text>
+        </g>
+        '''
+
+    def gate(cx: int, cy: int, code: str, color: str) -> str:
+        return f'''
+        <g>
+          <rect x="{cx - 18}" y="{cy - 18}" width="36" height="36" transform="rotate(45 {cx} {cy})"
+                fill="#061a2f" stroke="{color}" stroke-width="2.4"/>
+          <text x="{cx}" y="{cy + 4}" text-anchor="middle" font-size="9.5" font-weight="900" fill="{color}">{h(code)}</text>
         </g>
         '''
 
     def small_tick(cx: int, cy: int, color: str) -> str:
         return f'''
-        <g opacity="0.8">
-          <line x1="{cx - 9}" y1="{cy}" x2="{cx + 9}" y2="{cy}" stroke="{color}" stroke-width="1.4"/>
-          <line x1="{cx}" y1="{cy - 9}" x2="{cx}" y2="{cy + 9}" stroke="{color}" stroke-width="1.4"/>
+        <g opacity="0.68">
+          <line x1="{cx - 9}" y1="{cy}" x2="{cx + 9}" y2="{cy}" stroke="{color}" stroke-width="1.2"/>
+          <line x1="{cx}" y1="{cy - 9}" x2="{cx}" y2="{cy + 9}" stroke="{color}" stroke-width="1.2"/>
         </g>
         '''
 
     main_path = path_from(current_coords, "#93c5fd", 4.2)
     main_path_glow = path_from(current_coords, "#38bdf8", 14.0)
-    rebuild_path = path_from([fault_center] + rebuild_coords, "#34d399", 4.4)
-    rebuild_path_glow = path_from([fault_center] + rebuild_coords, "#22c55e", 14.0)
-    missing_path = path_from([(220, 505), (420, 540), (660, 520), (890, 555)], "#fb7185", 2.4, "10 8")
+
+    # Rebuild route starts at S1. The short amber transition through DG explains why the redesign starts.
+    rebuild_path = path_from(rebuild_coords, "#34d399", 4.4)
+    rebuild_path_glow = path_from(rebuild_coords, "#22c55e", 14.0)
+
+    diagnosis_gate = (638, 386)
+    transition_path = path_from([fault_center, diagnosis_gate, rebuild_coords[0]], "#f59e0b", 2.4, "8 7")
 
     system_zones = f'''
     <g opacity="0.92">
-      <path d="M 76 178 L 455 158 L 535 222 L 495 402 L 160 420 L 76 336 Z"
+      <path d="M 76 180 L 455 160 L 535 225 L 500 404 L 162 420 L 78 338 Z"
             fill="#0f2a4a" opacity="0.25" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="12 8"/>
-      <text x="112" y="195" font-size="12" font-weight="900" fill="#bfdbfe">ACQUISITION + INTEREST LAYER</text>
+      <text x="112" y="198" font-size="12" font-weight="900" fill="#bfdbfe">CURRENT COMMERCIAL PATH</text>
 
-      <path d="M 452 232 L 724 228 L 778 382 L 628 492 L 462 430 Z"
+      <path d="M 456 232 L 730 230 L 780 384 L 628 500 L 464 432 Z"
             fill="#3a2208" opacity="0.28" stroke="#f59e0b" stroke-width="1.7" stroke-dasharray="10 7"/>
-      <text x="506" y="250" font-size="12" font-weight="900" fill="#fcd34d">FAULT / VALUE GAP ZONE</text>
+      <text x="512" y="252" font-size="12" font-weight="900" fill="#fcd34d">FAULT / VALUE GAP</text>
 
-      <path d="M 678 176 L 1044 184 L 1062 470 L 870 540 L 708 430 Z"
+      <path d="M 700 178 L 1050 184 L 1062 475 L 875 542 L 715 430 Z"
             fill="#062d22" opacity="0.28" stroke="#34d399" stroke-width="1.5" stroke-dasharray="12 8"/>
-      <text x="748" y="196" font-size="12" font-weight="900" fill="#bbf7d0">REBUILD + CONVERSION LAYER</text>
+      <text x="766" y="198" font-size="12" font-weight="900" fill="#bbf7d0">REBUILD ROUTE</text>
     </g>
     '''
 
@@ -1635,16 +1659,16 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
 
     title_block = f'''
     <text x="{width/2}" y="52" text-anchor="middle" font-size="30" font-weight="900" fill="#e0f2fe">Commercial System Blueprint</text>
-    <text x="{width/2}" y="80" text-anchor="middle" font-size="13" fill="#93c5fd">Integrated architecture map · details listed below the blueprint</text>
+    <text x="{width/2}" y="80" text-anchor="middle" font-size="13" fill="#93c5fd">Integrated architecture map · hex nodes + diagnosis gate</text>
     '''
 
     legend_codes = f'''
     <g>
       <rect x="76" y="580" width="968" height="34" rx="10" fill="#061a2f" stroke="#2563eb" stroke-width="1" opacity="0.92"/>
-      <text x="108" y="602" font-size="11" font-weight="900" fill="#bfdbfe">A1–A5: current path</text>
-      <text x="374" y="602" font-size="11" font-weight="900" fill="#fcd34d">FAULT: rupture / value gap</text>
-      <text x="678" y="602" font-size="11" font-weight="900" fill="#bbf7d0">S1–S5: rebuild route</text>
-      <text x="930" y="602" font-size="11" font-weight="900" fill="#fecdd3">dashed rose: missing links</text>
+      <text x="108" y="602" font-size="11" font-weight="900" fill="#bfdbfe">A1–A5: current route</text>
+      <text x="350" y="602" font-size="11" font-weight="900" fill="#fcd34d">FAULT + DG: diagnosis gate</text>
+      <text x="640" y="602" font-size="11" font-weight="900" fill="#bbf7d0">S1–S5: rebuild route</text>
+      <text x="892" y="602" font-size="11" font-weight="900" fill="#cbd5e1">support layer explained below</text>
     </g>
     '''
 
@@ -1653,7 +1677,7 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
       <line x1="82" y1="630" x2="1038" y2="630" stroke="#60a5fa" stroke-width="1.3"/>
       <line x1="82" y1="622" x2="82" y2="638" stroke="#60a5fa" stroke-width="1.3"/>
       <line x1="1038" y1="622" x2="1038" y2="638" stroke="#60a5fa" stroke-width="1.3"/>
-      <text x="{width/2}" y="650" text-anchor="middle" font-size="11" fill="#bfdbfe">END-TO-END COMMERCIAL SYSTEM · VISIBILITY → PREFERENCE → QUALIFIED CONVERSION</text>
+      <text x="{width/2}" y="650" text-anchor="middle" font-size="11" fill="#bfdbfe">VISIBILITY → PREFERENCE → QUALIFIED CONVERSION</text>
     </g>
     '''
 
@@ -1682,10 +1706,10 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
       {rebuild_path_glow}
     </g>
     {main_path}
+    {transition_path}
     {rebuild_path}
-    {missing_path}
 
-    <g opacity="0.55">
+    <g opacity="0.50">
       {''.join(technical_ticks)}
     </g>
 
@@ -1694,6 +1718,7 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
     </g>
 
     {fault_marker}
+    {gate(diagnosis_gate[0], diagnosis_gate[1], "DG", "#f59e0b")}
 
     <circle cx="{conversion_output[0]}" cy="{conversion_output[1]}" r="28" fill="#34d399" opacity="0.12" filter="url(#blueprintGlowSoft)"/>
     <circle cx="{conversion_output[0]}" cy="{conversion_output[1]}" r="18" fill="#062d22" stroke="#34d399" stroke-width="3"/>
@@ -2006,36 +2031,37 @@ def build_visual_report_html(
     ])
 
     density_connection_items = ''.join([
-        f'<li><strong>Eje horizontal:</strong> muestra avance comercial de {h(" → ".join(result.customer_intent_density_map.x_axis))}. A la izquierda hay atención inicial; a la derecha debería aparecer intención de conversión.</li>',
-        f'<li><strong>Eje vertical:</strong> muestra temperatura del cliente de {h(" → ".join(result.customer_intent_density_map.y_axis))}. Más arriba implica mayor urgencia, confianza o predisposición a actuar.</li>',
-        f'<li><strong>Color e intensidad:</strong> azul indica baja temperatura, verde/amarillo indica zona templada de transición y rojo/naranja indica mayor calor comercial inferido.</li>',
-        f'<li><strong>Zona dominante:</strong> {h(result.customer_intent_density_map.dominant_zone.x)} / {h(result.customer_intent_density_map.dominant_zone.y)} señala dónde se concentra el grueso del público analizado.</li>',
-        f'<li><strong>Zona bloqueada:</strong> {h(result.customer_intent_density_map.blocked_zone.x)} / {h(result.customer_intent_density_map.blocked_zone.y)} marca dónde el interés pierde avance o no logra transformarse en una acción comercial clara.</li>',
-        f'<li><strong>Perfil lateral:</strong> resume por temperatura dónde hay más concentración. Sirve para explicar si el mercado está frío, templado o cerca de conversión.</li>',
+        f'<li><strong>Eje horizontal:</strong> ordena el avance comercial de {h(" → ".join(result.customer_intent_density_map.x_axis))}. Sirve para explicar en qué parte del recorrido se acumula o se pierde intención.</li>',
+        f'<li><strong>Eje vertical:</strong> ordena la temperatura de {h(" → ".join(result.customer_intent_density_map.y_axis))}. Frío implica atención débil; templado implica interés con posibilidad de avance; caliente implica predisposición más cercana a acción.</li>',
+        f'<li><strong>Color e intensidad:</strong> el azul indica baja temperatura, el verde/amarillo indica transición y el naranja/rojo indica mayor calor comercial inferido. Más densidad visual significa mayor concentración diagnóstica.</li>',
+        f'<li><strong>Zona dominante:</strong> {h(result.customer_intent_density_map.dominant_zone.x)} / {h(result.customer_intent_density_map.dominant_zone.y)} muestra dónde está el grueso del público según las señales disponibles.</li>',
+        f'<li><strong>Zona bloqueada:</strong> {h(result.customer_intent_density_map.blocked_zone.x)} / {h(result.customer_intent_density_map.blocked_zone.y)} muestra dónde el público deja de avanzar. Esa zona se conecta con el FAULT del blueprint.</li>',
+        f'<li><strong>Relación con el blueprint:</strong> el heatmap muestra dónde se concentra y bloquea la intención; el blueprint muestra qué parte del sistema comercial habría que rediseñar para mover esa intención hacia conversión.</li>',
         f'<li><strong>Límite metodológico:</strong> este mapa es diagnóstico e inferido; no reemplaza datos reales de GA4, CRM, campañas, Hotjar/Clarity o formularios.</li>',
     ])
 
     density_script = (
-        f"Este mapa cruza dos variables: avance en el funnel y temperatura del cliente. "
-        f"La concentración principal aparece en {h(result.customer_intent_density_map.dominant_zone.x)} / {h(result.customer_intent_density_map.dominant_zone.y)}, "
-        f"pero la fricción aparece en {h(result.customer_intent_density_map.blocked_zone.x)} / {h(result.customer_intent_density_map.blocked_zone.y)}. "
-        f"La lectura comercial es que el público no necesariamente está ausente; el problema es cómo se mueve, o no se mueve, hacia una decisión."
+        f"Este mapa no muestra solo colores: muestra movimiento comercial. "
+        f"El público se concentra en {h(result.customer_intent_density_map.dominant_zone.x)} / {h(result.customer_intent_density_map.dominant_zone.y)}, "
+        f"pero el avance se frena en {h(result.customer_intent_density_map.blocked_zone.x)} / {h(result.customer_intent_density_map.blocked_zone.y)}. "
+        f"La lectura es que existe intención o atención, pero el sistema necesita mejorar la conexión entre interés, confianza y acción."
     )
 
     blueprint_connection_items = ''.join([
-        '<li><strong>Ruta azul A1–A5:</strong> representa el recorrido actual. Muestra cómo la marca lleva al usuario desde presencia pública hacia interés, comparación y consulta.</li>',
-        '<li><strong>Zona FAULT:</strong> representa el punto donde el sistema comercial pierde continuidad. No es un error visual; es la zona donde el interés deja de avanzar porque falta claridad, prueba, CTA o diferenciación.</li>',
-        '<li><strong>Ruta verde S1–S5:</strong> representa la reconstrucción recomendada. No es una lista de tareas aisladas; es una ruta alternativa para convertir presencia en preferencia y preferencia en consulta calificada.</li>',
-        '<li><strong>Línea rosa punteada:</strong> representa los eslabones de soporte faltantes. Son activos que sostienen el recorrido: mensaje diferencial, educación, prueba social, confianza y seguimiento.</li>',
-        '<li><strong>OUT:</strong> representa la salida deseada del sistema: no solo más visibilidad, sino una oportunidad comercial más calificada y defendible.</li>',
-        '<li><strong>Relación central:</strong> el blueprint muestra causa y reparación. La ruta azul muestra lo que existe; FAULT muestra dónde se rompe; la ruta verde muestra cómo debería rediseñarse.</li>',
+        '<li><strong>Nodos hexagonales:</strong> cada hexágono representa un punto funcional del sistema comercial. A1–A5 pertenecen a la ruta actual; S1–S5 pertenecen a la ruta reconstruida.</li>',
+        '<li><strong>Ruta azul A1–A5:</strong> muestra lo que hoy existe: presencia, contenido, interés, comparación y consulta. No significa que todo esté mal; significa que el recorrido actual todavía no es suficientemente defendible.</li>',
+        '<li><strong>FAULT:</strong> marca la ruptura principal. Es el punto donde la atención o el interés dejan de avanzar porque falta propuesta de valor clara, prueba social, confianza o CTA específico.</li>',
+        '<li><strong>DG / Diagnosis Gate:</strong> explica por qué la ruta verde nace cerca de FAULT. No es que la solución salga mágicamente del problema; el diagnóstico convierte la ruptura en una decisión de rediseño.</li>',
+        '<li><strong>Ruta verde S1–S5:</strong> muestra el sistema recomendado: mensaje diferencial, contenido educativo, prueba de confianza, CTA claro y seguimiento comercial.</li>',
+        '<li><strong>Support layer:</strong> los eslabones faltantes ya no aparecen como línea rosa dentro del plano para evitar ruido visual. Se explican abajo porque sostienen todo el rediseño: mensaje, educación, prueba, confianza y seguimiento.</li>',
+        '<li><strong>OUT:</strong> representa la salida buscada: no más publicaciones aisladas, sino oportunidades comerciales mejor calificadas y más fáciles de defender.</li>',
     ])
 
     blueprint_script = (
-        "Este blueprint se lee como un plano del sistema comercial. "
-        "La ruta azul muestra el recorrido actual; la zona FAULT muestra dónde se rompe la continuidad; "
-        "la ruta verde muestra el rediseño recomendado. Las cards inferiores explican qué significa cada código, "
-        "para que el plano no se llene de texto y siga funcionando visualmente como mapa técnico."
+        "Este blueprint se presenta como arquitectura comercial. "
+        "Primero explicás la ruta azul: lo que ya existe. Después mostrás FAULT: dónde se rompe el avance. "
+        "Luego señalás DG: el diagnóstico que transforma la ruptura en rediseño. Finalmente explicás la ruta verde: "
+        "cómo se reconstruye el sistema para llevar al público desde presencia hasta una oportunidad comercial calificada."
     )
 
     return f'''<!doctype html>
