@@ -1574,16 +1574,17 @@ def density_color(value: int) -> str:
 
 
 
+
 def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) -> str:
     x_axis = density_map.x_axis
     y_axis = density_map.y_axis
 
     width = 1100
-    height = 570
+    height = 500
     chart_x = 108
-    chart_y = 92
+    chart_y = 128
     chart_w = 870
-    chart_h = 340
+    chart_h = 295
     stage_step = chart_w / (len(x_axis) - 1)
     temp_step = chart_h / (len(y_axis) - 1)
 
@@ -1604,23 +1605,19 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
         return raw / 1000
 
     def field_value(px: float, py: float, row: int, col: int) -> float:
-        # Horizontal sigma is intentionally wider than vertical sigma to emulate liquidity heatmap shelves.
         total = 0.0
         for gx, gy, value, _, _ in points:
             dx = (px - gx) / 185
             dy = (py - gy) / 34
             total += value * math.exp(-0.5 * ((dx * dx) + (dy * dy)))
 
-        # Row temperature base: upper zones get a warmer bias, lower zones retain cold liquidity.
         y_ratio = (py - chart_y) / chart_h
         temp_bias = 7 + (1 - y_ratio) * 8
-
         noise = 0.72 + deterministic_noise(row, col, 11) * 0.58
         return max(0, min(100, (total * 0.64 + temp_bias) * noise))
 
-    # Dense raster layer: many tiny horizontal fragments, not square cells.
     raster_parts = []
-    raster_rows = 62
+    raster_rows = 56
     raster_cols = 72
     cell_w = chart_w / raster_cols
     cell_h = chart_h / raster_rows
@@ -1637,10 +1634,8 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
                 continue
 
             fill = density_color(round(value))
-
-            # Fragmented liquidity texture: variable segment width and occasional holes.
             frag_w = cell_w * (0.50 + noise * 1.15)
-            frag_h = max(2.2, cell_h * (0.34 + deterministic_noise(row, col, 31) * 0.56))
+            frag_h = max(2.0, cell_h * (0.34 + deterministic_noise(row, col, 31) * 0.56))
             x = px - frag_w / 2
             y = py - frag_h / 2
 
@@ -1650,10 +1645,9 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
 
             raster_parts.append(
                 f'<rect x="{x:.1f}" y="{y:.1f}" width="{frag_w:.1f}" height="{frag_h:.1f}" '
-                f'rx="1.6" fill="{fill}" opacity="{opacity:.3f}"/>'
+                f'rx="1.5" fill="{fill}" opacity="{opacity:.3f}"/>'
             )
 
-    # Strong horizontal liquidity shelves around high-density diagnostic zones.
     shelves = []
     for gx, gy, value, x_label, y_label in points:
         if value < 35:
@@ -1682,7 +1676,6 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
                 f'rx="1.8" fill="{color}" opacity="0.88"/>'
             )
 
-    # Heat clouds: broad blurred accumulation zones.
     clouds = []
     for gx, gy, value, _, _ in points:
         if value < 45:
@@ -1693,7 +1686,6 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
             f'fill="{color}" opacity="{0.09 + value/420:.3f}" filter="url(#heavyBlur)"/>'
         )
 
-    # Subtle hot/cold background zones.
     background_zones = []
     band_labels = [
         ("Caliente", "#7f1d1d", 0.23),
@@ -1704,16 +1696,15 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
     for label, color, opacity in band_labels:
         cy = y_pos(label)
         background_zones.append(
-            f'<rect x="{chart_x}" y="{cy - 42:.1f}" width="{chart_w}" height="84" '
+            f'<rect x="{chart_x}" y="{cy - 38:.1f}" width="{chart_w}" height="76" '
             f'fill="{color}" opacity="{opacity}" rx="12"/>'
         )
 
-    # Grid and labels.
     x_labels = []
     for label in x_axis:
         x = x_pos(label)
         x_labels.append(
-            f'<text x="{x:.1f}" y="{chart_y - 28}" text-anchor="middle" font-size="15" font-weight="900" fill="#f9fafb">{h(label)}</text>'
+            f'<text x="{x:.1f}" y="{chart_y - 36}" text-anchor="middle" font-size="15" font-weight="900" fill="#f9fafb">{h(label)}</text>'
         )
         x_labels.append(
             f'<line x1="{x:.1f}" y1="{chart_y - 8}" x2="{x:.1f}" y2="{chart_y + chart_h + 8}" '
@@ -1731,9 +1722,8 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
             f'stroke="#94a3b8" stroke-width="0.8" opacity="0.20" stroke-dasharray="4 6"/>'
         )
 
-    # Lateral profile: many small bars, closer to liquidity profile.
     profile_parts = []
-    profile_rows = 48
+    profile_rows = 44
     for row in range(profile_rows):
         py = chart_y + row * (chart_h / profile_rows) + (chart_h / profile_rows) / 2
         samples = [
@@ -1753,7 +1743,6 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
             f'rx="1.5" fill="{color}" opacity="{opacity:.3f}"/>'
         )
 
-    # Diagnostic markers.
     dominant_cx = x_pos(density_map.dominant_zone.x)
     dominant_cy = y_pos(density_map.dominant_zone.y)
     blocked_cx = x_pos(density_map.blocked_zone.x)
@@ -1768,11 +1757,6 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
         f'<text x="{blocked_cx:.1f}" y="{blocked_cy + 32:.1f}" text-anchor="middle" font-size="11" font-weight="900" fill="#fbbf24">BLOQUEO</text>',
     ]
 
-    legend_y = height - 86
-    legend_x = chart_x
-    legend_w = chart_w
-    interpretation = h(density_map.interpretation[:168])
-
     return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Customer intent density map">
     <defs>
       <filter id="heavyBlur" x="-45%" y="-220%" width="190%" height="540%">
@@ -1781,13 +1765,6 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
       <filter id="softGlow" x="-40%" y="-160%" width="180%" height="420%">
         <feGaussianBlur stdDeviation="5"/>
       </filter>
-      <linearGradient id="legendGradient" x1="0%" x2="100%" y1="0%" y2="0%">
-        <stop offset="0%" stop-color="#2563eb"/>
-        <stop offset="35%" stop-color="#0ea5e9"/>
-        <stop offset="55%" stop-color="#84cc16"/>
-        <stop offset="75%" stop-color="#f59e0b"/>
-        <stop offset="100%" stop-color="#ef4444"/>
-      </linearGradient>
       <radialGradient id="chartGlow" cx="50%" cy="45%" r="70%">
         <stop offset="0%" stop-color="#1e293b"/>
         <stop offset="100%" stop-color="#0f172a"/>
@@ -1797,8 +1774,7 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
     <rect width="{width}" height="{height}" rx="28" fill="#0b1220"/>
     <rect x="28" y="24" width="{width - 56}" height="{height - 48}" rx="26" fill="url(#chartGlow)" stroke="#1f2937" stroke-width="1"/>
 
-    <text x="{width/2}" y="50" text-anchor="middle" font-size="27" font-weight="900" fill="#f9fafb">Customer Intent Density Map</text>
-    <text x="{width/2}" y="76" text-anchor="middle" font-size="14" fill="#d1d5db">Mapa de calor rasterizado - Azul frío → verde/amarillo templado → rojo caliente</text>
+    <text x="{width/2}" y="58" text-anchor="middle" font-size="28" font-weight="900" fill="#f9fafb">Customer Intent Density Map</text>
 
     <rect x="{chart_x - 12}" y="{chart_y - 12}" width="{chart_w + 24}" height="{chart_h + 24}" rx="16" fill="#020617" opacity="0.52" stroke="#334155" stroke-width="1"/>
 
@@ -1810,15 +1786,6 @@ def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) ->
     {''.join(shelves)}
     {''.join(profile_parts)}
     {''.join(markers)}
-
-    <text x="{chart_x}" y="{chart_y + chart_h + 50}" font-size="12" fill="#cbd5e1">Perfil lateral = concentración máxima por temperatura</text>
-
-    <rect x="{legend_x}" y="{legend_y}" width="{legend_w}" height="14" rx="7" fill="url(#legendGradient)"/>
-    <text x="{legend_x}" y="{legend_y + 36}" text-anchor="start" font-size="12" fill="#d1d5db">Frío</text>
-    <text x="{legend_x + legend_w/2}" y="{legend_y + 36}" text-anchor="middle" font-size="12" fill="#d1d5db">Templado</text>
-    <text x="{legend_x + legend_w}" y="{legend_y + 36}" text-anchor="end" font-size="12" fill="#d1d5db">Caliente</text>
-
-    <text x="{width/2}" y="{height - 22}" text-anchor="middle" font-size="12" fill="#94a3b8">{interpretation}</text>
 </svg>'''
 
 
@@ -1969,7 +1936,26 @@ def build_visual_report_html(
     <section class="grid">
       <div class="card">{score_svg}</div>
       <div class="card">{awareness_svg}</div>
-      <div class="card full">{density_svg}</div>
+      <div class="card full">
+        {density_svg}
+        <div class="visual-note-grid">
+          <div class="visual-note">
+            <h3>Lectura de temperatura</h3>
+            <div class="legend-bar"></div>
+            <div class="legend-labels">
+              <span>Azul = frío</span>
+              <span>Verde/amarillo = templado</span>
+              <span>Rojo = caliente</span>
+            </div>
+          </div>
+          <div class="visual-note">
+            <h3>Interpretación del mapa</h3>
+            <p>{h(result.customer_intent_density_map.interpretation)}</p>
+            <p><strong>Zona dominante:</strong> {h(result.customer_intent_density_map.dominant_zone.x)} / {h(result.customer_intent_density_map.dominant_zone.y)}</p>
+            <p><strong>Zona bloqueada:</strong> {h(result.customer_intent_density_map.blocked_zone.x)} / {h(result.customer_intent_density_map.blocked_zone.y)}</p>
+          </div>
+        </div>
+      </div>
       <div class="card full">{temperature_svg}</div>
       <div class="card full">{blueprint_svg}</div>
 
