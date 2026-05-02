@@ -1494,53 +1494,190 @@ def render_score_chart_svg(score: CommercialScore) -> str:
     return ''.join(parts)
 
 
+
 def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
-    width = 980
-    col_w = 270
-    gap = 55
-    left_x = 40
-    mid_x = left_x + col_w + gap
-    right_x = mid_x + col_w + gap
+    width = 1120
+    height = 720
+    margin = 46
 
-    max_items = max(len(blueprint.current_flow), len(blueprint.breakpoints), len(blueprint.recommended_flow))
-    box_h = 46
-    box_gap = 16
-    top_y = 88
-    height = top_y + max_items * (box_h + box_gap) + 96
+    left_x = 84
+    mid_x = 430
+    right_x = 758
 
-    def draw_column(items: List[str], x: int, title: str, fill: str, stroke: str, title_fill: str) -> str:
-        col_parts = [
-            f'<text x="{x + col_w/2}" y="48" text-anchor="middle" font-size="18" font-weight="800" fill="{title_fill}">{h(title)}</text>'
-        ]
-        for i, item in enumerate(items):
-            y = top_y + i * (box_h + box_gap)
-            col_parts.append(f'<rect x="{x}" y="{y}" width="{col_w}" height="{box_h}" rx="12" fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>')
-            col_parts.append(f'<text x="{x + col_w/2}" y="{y+28}" text-anchor="middle" font-size="12" font-weight="700" fill="#111827">{h(item[:42])}</text>')
-            if i < len(items) - 1:
-                arrow_x = x + col_w/2
-                y1 = y + box_h
-                y2 = y + box_h + box_gap - 4
-                col_parts.append(f'<line x1="{arrow_x}" y1="{y1}" x2="{arrow_x}" y2="{y2}" stroke="{stroke}" stroke-width="2"/>')
-                col_parts.append(f'<polygon points="{arrow_x-5},{y2-1} {arrow_x+5},{y2-1} {arrow_x},{y2+7}" fill="{stroke}"/>')
-        return ''.join(col_parts)
+    top_y = 142
+    node_w = 260
+    node_h = 48
+    gap_y = 26
 
-    svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Funnel blueprint system map">',
-        f'<rect width="{width}" height="{height}" rx="22" fill="#fafaf9"/>',
-        f'<text x="{width/2}" y="28" text-anchor="middle" font-size="22" font-weight="800" fill="#111827">Funnel Blueprint / System Map</text>',
-        draw_column(blueprint.current_flow, left_x, "Flujo actual", "#f5f5f4", "#a8a29e", "#44403c"),
-        draw_column(blueprint.breakpoints, mid_x, "Puntos de ruptura", "#fef3c7", "#d97706", "#92400e"),
-        draw_column(blueprint.recommended_flow, right_x, "Flujo recomendado", "#dcfce7", "#16a34a", "#166534"),
-        f'<line x1="{left_x+col_w+12}" y1="{top_y + 25}" x2="{mid_x-12}" y2="{top_y + 25}" stroke="#6b7280" stroke-width="2" stroke-dasharray="6 6"/>',
-        f'<polygon points="{mid_x-12},{top_y+25} {mid_x-24},{top_y+18} {mid_x-24},{top_y+32}" fill="#6b7280"/>',
-        f'<line x1="{mid_x+col_w+12}" y1="{top_y + 25}" x2="{right_x-12}" y2="{top_y + 25}" stroke="#6b7280" stroke-width="2" stroke-dasharray="6 6"/>',
-        f'<polygon points="{right_x-12},{top_y+25} {right_x-24},{top_y+18} {right_x-24},{top_y+32}" fill="#6b7280"/>',
-        f'<text x="{width/2}" y="{height-38}" text-anchor="middle" font-size="13" fill="#4b5563">{h(blueprint.summary[:145])}</text>',
-        '</svg>',
-    ]
+    current_items = blueprint.current_flow
+    break_items = blueprint.breakpoints
+    recommended_items = blueprint.recommended_flow
 
-    return ''.join(svg)
+    def y_for(index: int) -> int:
+        return top_y + index * (node_h + gap_y)
 
+    def sanitize_label(value: str, max_len: int = 38) -> str:
+        safe = h(value)
+        return safe if len(safe) <= max_len else safe[:max_len - 1] + "…"
+
+    def grid_lines() -> str:
+        parts = []
+        for x in range(0, width + 1, 24):
+            opacity = 0.10 if x % 96 else 0.22
+            stroke_w = 0.7 if x % 96 else 1.1
+            parts.append(
+                f'<line x1="{x}" y1="0" x2="{x}" y2="{height}" stroke="#60a5fa" stroke-width="{stroke_w}" opacity="{opacity}"/>'
+            )
+        for y in range(0, height + 1, 24):
+            opacity = 0.10 if y % 96 else 0.22
+            stroke_w = 0.7 if y % 96 else 1.1
+            parts.append(
+                f'<line x1="0" y1="{y}" x2="{width}" y2="{y}" stroke="#60a5fa" stroke-width="{stroke_w}" opacity="{opacity}"/>'
+            )
+        return ''.join(parts)
+
+    def blueprint_node(x: int, y: int, label: str, kind: str, index: int) -> str:
+        if kind == "current":
+            stroke = "#93c5fd"
+            fill = "#0f2a4a"
+            number = f"A-{index + 1:02d}"
+        elif kind == "break":
+            stroke = "#f59e0b"
+            fill = "#3a2208"
+            number = f"R-{index + 1:02d}"
+        else:
+            stroke = "#34d399"
+            fill = "#062d22"
+            number = f"S-{index + 1:02d}"
+
+        label_text = sanitize_label(label, 36)
+        corner = 10
+
+        return f'''
+        <g>
+          <rect x="{x}" y="{y}" width="{node_w}" height="{node_h}" rx="8" fill="{fill}" opacity="0.88" stroke="{stroke}" stroke-width="2"/>
+          <path d="M {x + corner} {y} L {x} {y} L {x} {y + corner}" fill="none" stroke="{stroke}" stroke-width="1.2" opacity="0.95"/>
+          <path d="M {x + node_w - corner} {y} L {x + node_w} {y} L {x + node_w} {y + corner}" fill="none" stroke="{stroke}" stroke-width="1.2" opacity="0.95"/>
+          <path d="M {x + corner} {y + node_h} L {x} {y + node_h} L {x} {y + node_h - corner}" fill="none" stroke="{stroke}" stroke-width="1.2" opacity="0.95"/>
+          <path d="M {x + node_w - corner} {y + node_h} L {x + node_w} {y + node_h} L {x + node_w} {y + node_h - corner}" fill="none" stroke="{stroke}" stroke-width="1.2" opacity="0.95"/>
+          <text x="{x + 14}" y="{y + 17}" font-size="10" font-weight="800" fill="{stroke}" opacity="0.92">{number}</text>
+          <text x="{x + node_w / 2}" y="{y + 32}" text-anchor="middle" font-size="13" font-weight="800" fill="#e0f2fe">{label_text}</text>
+        </g>
+        '''
+
+    def vertical_connectors(x: int, count: int, color: str) -> str:
+        parts = []
+        center_x = x + node_w / 2
+        for i in range(count - 1):
+            y1 = y_for(i) + node_h
+            y2 = y_for(i + 1)
+            parts.append(
+                f'<line x1="{center_x}" y1="{y1}" x2="{center_x}" y2="{y2}" stroke="{color}" stroke-width="2" opacity="0.78"/>'
+            )
+            parts.append(
+                f'<polygon points="{center_x-5},{y2-2} {center_x+5},{y2-2} {center_x},{y2+7}" fill="{color}" opacity="0.78"/>'
+            )
+        return ''.join(parts)
+
+    def horizontal_transfer(x1: int, y1: int, x2: int, y2: int, color: str, label: str) -> str:
+        start_x = x1 + node_w + 18
+        end_x = x2 - 18
+        start_y = y1 + node_h / 2
+        end_y = y2 + node_h / 2
+        mid_x = (start_x + end_x) / 2
+        label_y = min(start_y, end_y) - 10
+
+        return f'''
+        <g>
+          <path d="M {start_x} {start_y} C {mid_x} {start_y}, {mid_x} {end_y}, {end_x} {end_y}"
+                fill="none" stroke="{color}" stroke-width="2.2" stroke-dasharray="8 7" opacity="0.82"/>
+          <polygon points="{end_x},{end_y} {end_x-10},{end_y-6} {end_x-10},{end_y+6}" fill="{color}" opacity="0.82"/>
+          <rect x="{mid_x - 56}" y="{label_y - 14}" width="112" height="20" rx="10" fill="#061a2f" stroke="{color}" stroke-width="1" opacity="0.92"/>
+          <text x="{mid_x}" y="{label_y}" text-anchor="middle" font-size="10" font-weight="800" fill="{color}">{h(label)}</text>
+        </g>
+        '''
+
+    nodes = []
+    for index, item in enumerate(current_items):
+        nodes.append(blueprint_node(left_x, y_for(index), item, "current", index))
+    for index, item in enumerate(break_items):
+        nodes.append(blueprint_node(mid_x, y_for(index), item, "break", index))
+    for index, item in enumerate(recommended_items):
+        nodes.append(blueprint_node(right_x, y_for(index), item, "recommended", index))
+
+    connectors = []
+    connectors.append(vertical_connectors(left_x, len(current_items), "#93c5fd"))
+    connectors.append(vertical_connectors(mid_x, len(break_items), "#f59e0b"))
+    connectors.append(vertical_connectors(right_x, len(recommended_items), "#34d399"))
+
+    rupture_y_index = min(2, max(0, len(current_items) - 1))
+    recommended_y_index = min(0, max(0, len(recommended_items) - 1))
+    connectors.append(horizontal_transfer(left_x, y_for(rupture_y_index), mid_x, y_for(0), "#f59e0b", "FAULT LINE"))
+    connectors.append(horizontal_transfer(mid_x, y_for(0), right_x, y_for(recommended_y_index), "#34d399", "REBUILD"))
+
+    bracket_y = height - 118
+    summary_text = sanitize_label(blueprint.summary, 132)
+
+    annotations = f'''
+    <g opacity="0.92">
+      <line x1="{left_x}" y1="{bracket_y}" x2="{left_x + node_w}" y2="{bracket_y}" stroke="#93c5fd" stroke-width="1.4"/>
+      <line x1="{left_x}" y1="{bracket_y - 7}" x2="{left_x}" y2="{bracket_y + 7}" stroke="#93c5fd" stroke-width="1.4"/>
+      <line x1="{left_x + node_w}" y1="{bracket_y - 7}" x2="{left_x + node_w}" y2="{bracket_y + 7}" stroke="#93c5fd" stroke-width="1.4"/>
+      <text x="{left_x + node_w / 2}" y="{bracket_y + 22}" text-anchor="middle" font-size="10" fill="#bfdbfe">CURRENT PATH</text>
+
+      <line x1="{mid_x}" y1="{bracket_y}" x2="{mid_x + node_w}" y2="{bracket_y}" stroke="#f59e0b" stroke-width="1.4"/>
+      <line x1="{mid_x}" y1="{bracket_y - 7}" x2="{mid_x}" y2="{bracket_y + 7}" stroke="#f59e0b" stroke-width="1.4"/>
+      <line x1="{mid_x + node_w}" y1="{bracket_y - 7}" x2="{mid_x + node_w}" y2="{bracket_y + 7}" stroke="#f59e0b" stroke-width="1.4"/>
+      <text x="{mid_x + node_w / 2}" y="{bracket_y + 22}" text-anchor="middle" font-size="10" fill="#fcd34d">BREAKPOINTS</text>
+
+      <line x1="{right_x}" y1="{bracket_y}" x2="{right_x + node_w}" y2="{bracket_y}" stroke="#34d399" stroke-width="1.4"/>
+      <line x1="{right_x}" y1="{bracket_y - 7}" x2="{right_x}" y2="{bracket_y + 7}" stroke="#34d399" stroke-width="1.4"/>
+      <line x1="{right_x + node_w}" y1="{bracket_y - 7}" x2="{right_x + node_w}" y2="{bracket_y + 7}" stroke="#34d399" stroke-width="1.4"/>
+      <text x="{right_x + node_w / 2}" y="{bracket_y + 22}" text-anchor="middle" font-size="10" fill="#bbf7d0">RECOMMENDED BUILD</text>
+    </g>
+    '''
+
+    title_block = f'''
+    <text x="{width/2}" y="48" text-anchor="middle" font-size="28" font-weight="900" fill="#e0f2fe">Commercial Funnel Blueprint</text>
+    <text x="{width/2}" y="76" text-anchor="middle" font-size="13" fill="#93c5fd">Technical map of current path, commercial rupture points and recommended rebuild</text>
+
+    <text x="{left_x + node_w/2}" y="112" text-anchor="middle" font-size="17" font-weight="900" fill="#bfdbfe">01 · CURRENT FLOW</text>
+    <text x="{mid_x + node_w/2}" y="112" text-anchor="middle" font-size="17" font-weight="900" fill="#f59e0b">02 · RUPTURE ZONE</text>
+    <text x="{right_x + node_w/2}" y="112" text-anchor="middle" font-size="17" font-weight="900" fill="#34d399">03 · REBUILD FLOW</text>
+    '''
+
+    summary = f'''
+    <rect x="{margin}" y="{height - 68}" width="{width - margin*2}" height="38" rx="12" fill="#061a2f" stroke="#2563eb" stroke-width="1" opacity="0.92"/>
+    <text x="{width/2}" y="{height - 44}" text-anchor="middle" font-size="12" fill="#dbeafe">{summary_text}</text>
+    '''
+
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Commercial funnel blueprint">
+    <defs>
+      <radialGradient id="blueprintGlow" cx="50%" cy="42%" r="75%">
+        <stop offset="0%" stop-color="#14345f"/>
+        <stop offset="100%" stop-color="#061426"/>
+      </radialGradient>
+      <filter id="blueprintShadow" x="-25%" y="-25%" width="150%" height="150%">
+        <feDropShadow dx="0" dy="8" stdDeviation="7" flood-color="#020617" flood-opacity="0.35"/>
+      </filter>
+    </defs>
+
+    <rect width="{width}" height="{height}" rx="26" fill="#061426"/>
+    <rect x="24" y="22" width="{width - 48}" height="{height - 44}" rx="24" fill="url(#blueprintGlow)" stroke="#2563eb" stroke-width="1.2"/>
+    {grid_lines()}
+
+    {title_block}
+
+    <g filter="url(#blueprintShadow)">
+      {''.join(nodes)}
+    </g>
+
+    {''.join(connectors)}
+    {annotations}
+    {summary}
+
+    <text x="{width - 64}" y="{height - 18}" text-anchor="end" font-size="10" fill="#60a5fa" opacity="0.75">Blueprint draft · diagnostic system map</text>
+</svg>'''
 
 
 def density_color(value: int) -> str:
