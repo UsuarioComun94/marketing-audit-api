@@ -1351,66 +1351,158 @@ G --> H[Consulta calificada]
 H --> I[Reunión / oportunidad comercial]"""
 
 
+
 def build_funnel_blueprint(audit: ProspectAuditResponse) -> FunnelBlueprint:
-    breakpoints = ["CTA débil o poco específico", "Prueba social insuficiente"]
+    """Build a diagnostic blueprint whose content changes with the detected bottleneck."""
+    bottleneck = (audit.primary_bottleneck or "").casefold()
+    focus = " ".join(audit.detected_focus_areas or []).casefold()
 
-    if audit.primary_bottleneck == "propuesta de valor":
-        breakpoints.insert(0, "Propuesta de valor poco clara")
-        summary = (
-            "El recorrido se rompe entre interés y consideración: la marca muestra presencia u oferta, "
-            "pero no construye una razón clara de elección."
-        )
-    elif audit.primary_bottleneck == "conversión":
-        breakpoints.insert(0, "Falta de acción comercial clara")
-        summary = (
-            "El recorrido se rompe al final del funnel: puede existir interés, pero el siguiente paso "
-            "no está suficientemente claro o convincente."
-        )
-    elif audit.primary_bottleneck == "funnel":
-        breakpoints.insert(0, "Recorrido comercial incompleto")
-        summary = (
-            "El recorrido se rompe porque los puntos de contacto no están conectados en una secuencia "
-            "clara desde atención hasta oportunidad comercial."
-        )
-    elif audit.primary_bottleneck == "posicionamiento":
-        breakpoints.insert(0, "Diferenciación insuficiente frente a competidores")
-        summary = (
-            "El recorrido se rompe durante la comparación: la marca no ocupa una posición distintiva "
-            "suficiente para ganar preferencia."
-        )
-    else:
-        breakpoints.insert(0, "Falta de claridad estratégica en el recorrido")
-        summary = (
-            "La presencia pública existe, pero todavía no se traduce en un recorrido comercial defendible."
+    def bp(current_flow, breakpoints, recommended_flow, missing_links, summary):
+        return FunnelBlueprint(
+            current_flow=list(dict.fromkeys(current_flow))[:5],
+            breakpoints=list(dict.fromkeys(breakpoints))[:5],
+            recommended_flow=list(dict.fromkeys(recommended_flow))[:5],
+            missing_links=list(dict.fromkeys(missing_links))[:5],
+            summary=summary,
         )
 
-    missing_links = list(dict.fromkeys([
-        "Mensaje diferencial",
-        "Contenido que eduque criterio de elección",
-        "Prueba social visible",
-        "CTA específico",
-        "Seguimiento comercial",
-    ]))
+    if "convers" in bottleneck or "cta" in focus:
+        return bp(
+            ["Atención inicial", "Interés por la oferta", "Revisión de propuesta", "Fricción en próximo paso", "Consulta incompleta"],
+            ["CTA débil o poco específico", "Formulario/contacto con fricción", "Prueba social insuficiente antes de la acción"],
+            ["Reformular CTA", "Reducir fricción de contacto", "Agregar prueba social cercana al CTA", "Crear opción de diagnóstico/reunión", "Medir contacto calificado"],
+            ["CTA específico", "Prueba social", "Mensaje de bajo riesgo", "Formulario/WhatsApp medible", "Seguimiento comercial"],
+            "El recorrido se rompe al final del funnel: existe atención o interés, pero el usuario no encuentra un próximo paso suficientemente claro, confiable o medible.",
+        )
 
-    return FunnelBlueprint(
-        current_flow=[
-            "Presencia pública",
-            "Contenido o catálogo",
-            "Interés inicial",
-            "Comparación con competidores",
-            "Consulta débil o poco calificada",
-        ],
-        missing_links=missing_links,
-        breakpoints=list(dict.fromkeys(breakpoints)),
-        recommended_flow=[
-            "Mensaje diferencial",
-            "Contenido que explique criterio y valor",
-            "Prueba social o evidencia de confianza",
-            "CTA a diagnóstico / consulta / reunión",
-            "Seguimiento comercial",
-        ],
-        summary=summary,
+    if "funnel" in bottleneck:
+        return bp(
+            ["Puntos de contacto aislados", "Contenido sin secuencia", "Interés no nutrido", "Seguimiento débil", "Oportunidad dispersa"],
+            ["Recorrido comercial incompleto", "Falta de conexión entre contenido, CTA y seguimiento", "Ausencia de retargeting/nurturing"],
+            ["Ordenar etapas del funnel", "Crear rutas por temperatura", "Conectar contenido con CTA", "Activar seguimiento/retargeting", "Medir avance por etapa"],
+            ["Mapa de etapas", "Retargeting", "Nurturing", "CRM/seguimiento", "Métricas por etapa"],
+            "El problema principal no es una pieza aislada, sino la falta de continuidad entre atención, interés y oportunidad comercial.",
+        )
+
+    if "posicion" in bottleneck:
+        return bp(
+            ["Presencia pública", "Oferta visible", "Comparación con alternativas", "Diferencia poco defendible", "Elección por precio"],
+            ["Diferenciación insuficiente frente a competidores", "Posición de marca poco distintiva", "Comparación por precio o disponibilidad"],
+            ["Definir categoría de elección", "Clarificar ventaja competitiva", "Mostrar criterio diferencial", "Construir autoridad", "Defender valor frente a precio"],
+            ["Territorio de marca", "Comparativas", "Argumentos de valor", "Prueba de autoridad", "Objeciones de precio"],
+            "El recorrido se rompe durante la comparación: el mercado puede entender la oferta, pero no ve una razón suficientemente distintiva para preferirla.",
+        )
+
+    if "propuesta" in bottleneck or "valor" in bottleneck:
+        return bp(
+            ["Presencia pública", "Contenido genérico", "Interés superficial", "Comparación por similitud", "Consulta poco calificada"],
+            ["Propuesta de valor poco clara", "Razón de elección insuficiente", "Beneficio diferencial no demostrado"],
+            ["Definir mensaje diferencial", "Explicar criterio de elección", "Conectar oferta con dolor real", "Probar valor con evidencia", "Convertir interés en consulta"],
+            ["Mensaje diferencial", "Criterio de elección", "Prueba social", "Objeciones resueltas", "CTA contextual"],
+            "El recorrido se rompe entre interés y consideración: la marca muestra presencia u oferta, pero no construye una razón clara de elección.",
+        )
+
+    if "contenido" in bottleneck:
+        return bp(
+            ["Publicaciones frecuentes", "Atención visual", "Interacción superficial", "Poca intención comercial", "Consulta fría"],
+            ["Contenido sin función comercial clara", "Falta de contenido de objeciones", "Poca separación entre awareness y conversión"],
+            ["Separar contenido por etapa", "Crear piezas de educación", "Resolver objeciones frecuentes", "Agregar prueba y autoridad", "Dirigir hacia CTA específico"],
+            ["Contenido de criterio", "Contenido de objeciones", "Prueba social", "CTA por temperatura", "Secuencia de nurturing"],
+            "El contenido puede generar atención, pero no está guiando suficientemente al usuario hacia confianza, preferencia y acción.",
+        )
+
+    if "awareness" in bottleneck:
+        return bp(
+            ["Baja presencia mental", "Alcance insuficiente", "Reconocimiento débil", "Demanda no educada", "Poca intención inicial"],
+            ["Awareness insuficiente", "Mercado poco educado", "Baja familiaridad con la marca"],
+            ["Aumentar presencia calificada", "Educar problema/oportunidad", "Crear autoridad temprana", "Capturar audiencias tibias", "Activar retargeting educativo"],
+            ["Educación de mercado", "Autoridad", "Audiencias tibias", "Retargeting", "Mensajes de problema"],
+            "El recorrido se rompe temprano: el mercado todavía no tiene suficiente presencia mental, educación o familiaridad para avanzar con intención.",
+        )
+
+    return bp(
+        ["Presencia pública", "Contenido o catálogo", "Interés inicial", "Comparación con competidores", "Consulta débil o poco calificada"],
+        ["Falta de claridad estratégica en el recorrido", "CTA débil o poco específico", "Prueba social insuficiente"],
+        ["Clarificar diagnóstico principal", "Ordenar propuesta de valor", "Agregar evidencia de confianza", "Crear CTA específico", "Activar seguimiento comercial"],
+        ["Mensaje diferencial", "Contenido que eduque criterio de elección", "Prueba social visible", "CTA específico", "Seguimiento comercial"],
+        "La presencia pública existe, pero todavía no se traduce en un recorrido comercial suficientemente defendible y medible.",
     )
+
+
+def build_campaign_adapted_blueprint(
+    public_audit: ProspectWithResearchResponse,
+    campaign_performance: CampaignPerformanceResponse,
+) -> FunnelBlueprint:
+    """Adapt the blueprint when campaign evidence points to a specific rupture."""
+    base = public_audit.funnel_blueprint
+
+    if campaign_performance.data_quality == "sin_datos" or campaign_performance.campaigns_analyzed == 0:
+        return base
+
+    text_blob = " ".join([
+        " ".join([finding.title + " " + finding.interpretation for finding in campaign_performance.findings[:8]]),
+        " ".join([finding.pattern + " " + finding.interpretation for finding in campaign_performance.cross_metric_findings[:8]]),
+        " ".join([finding.issue + " " + finding.evidence for finding in campaign_performance.tracking_health[:6]]),
+        " ".join([finding.quality_level + " " + finding.evidence for finding in campaign_performance.lead_quality_assessment[:6]]),
+        " ".join([finding.leak_stage + " " + finding.probable_cause for finding in campaign_performance.funnel_leaks[:6]]),
+        " ".join([action.action + " " + action.evidence for action in campaign_performance.prioritized_actions[:8]]),
+    ]).casefold()
+
+    def blueprint(current_flow, breakpoints, recommended_flow, missing_links, summary):
+        return FunnelBlueprint(
+            current_flow=list(dict.fromkeys(current_flow))[:5],
+            breakpoints=list(dict.fromkeys(breakpoints))[:5],
+            recommended_flow=list(dict.fromkeys(recommended_flow))[:5],
+            missing_links=list(dict.fromkeys(missing_links))[:5],
+            summary=summary,
+        )
+
+    if contains_any(text_blob, ["tracking", "evento", "eventos", "tag", "pixel", "utm", "atribución", "sin eventos"]):
+        return blueprint(
+            ["Campañas activas", "Clicks registrados", "Landing/formulario", "Evento ausente o dudoso", "Decisión sin medición confiable"],
+            ["Tracking roto o incompleto", "No se puede validar CPA/CPL real", "Eventos/UTMs/formularios requieren auditoría"],
+            ["Auditar tags y eventos", "Corregir GA4/pixel/conversiones", "Estandarizar UTMs", "Validar formularios/WhatsApp", "Releer campañas con data confiable"],
+            ["GA4 events", "Pixel/conversion tags", "UTMs", "Thank-you / WhatsApp events", "CRM con fuente"],
+            "El blueprint se adapta a una falla de medición: antes de decidir presupuesto o performance, hay que reconstruir la capa de tracking.",
+        )
+
+    if contains_any(text_blob, ["landing", "formulario", "cvr", "conversión baja", "fricción", "message match", "oferta no convierte"]):
+        return blueprint(
+            ["Anuncio genera interés", "Click hacia landing", "Promesa pierde fuerza", "Fricción en formulario/CTA", "Lead insuficiente"],
+            ["Fricción de landing o CTA", "Message match débil entre anuncio y oferta", "Prueba/confianza insuficiente antes del formulario"],
+            ["Alinear anuncio y landing", "Reforzar prueba social", "Reducir fricción del formulario", "Reformular CTA", "Medir conversión final"],
+            ["Message match", "Prueba above the fold", "CTA claro", "Formulario medible", "Evento de conversión"],
+            "El recorrido no se rompe en la captación sino en la conversión: hay interés, pero la landing, el CTA o el formulario no sostienen la promesa.",
+        )
+
+    if contains_any(text_blob, ["calidad baja", "lead quality", "leads de baja calidad", "poca calidad", "capacidad", "no calificados"]):
+        return blueprint(
+            ["Promesa amplia", "Clicks/leads baratos", "Filtro insuficiente", "Consultas poco calificadas", "Equipo comercial pierde tiempo"],
+            ["Baja calidad de lead", "Falta de filtro de intención/capacidad", "Promesa o audiencia demasiado amplia"],
+            ["Reformular promesa", "Agregar filtro de calificación", "Separar audiencias por intención", "Resolver objeciones clave", "Seguimiento por calidad"],
+            ["Filtro de capacidad", "Preguntas de calificación", "Objeciones resueltas", "ICP explícito", "CRM por calidad"],
+            "El blueprint se adapta a un problema de calidad: el sistema genera leads, pero no filtra suficiente intención, capacidad o fit comercial.",
+        )
+
+    if contains_any(text_blob, ["ctr bajo", "cpc alto", "hook", "creatividad", "creativo", "audiencia", "fatiga", "saturación"]):
+        return blueprint(
+            ["Audiencia impactada", "Hook creativo débil", "Baja respuesta relativa", "Costo de click sube", "Poca intención"],
+            ["Problema de hook, creatividad o audiencia", "Pérdida de relevancia publicitaria", "Fatiga o baja conexión mensaje-mercado"],
+            ["Testear nuevos hooks", "Separar ángulos por temperatura", "Ajustar audiencia", "Rotar creatividad", "Medir respuesta por ángulo"],
+            ["Hook matrix", "Ángulos por awareness", "Testing creativo", "Audiencias separadas", "Control de frecuencia"],
+            "El recorrido se rompe al inicio de la pauta: el sistema necesita mejorar la conexión entre audiencia, hook creativo y etapa de consciencia.",
+        )
+
+    if contains_any(text_blob, ["retargeting", "remarketing", "consideration", "conversion", "escalar", "candidato a escalar"]):
+        return blueprint(
+            ["Tráfico frío captura atención", "Usuarios muestran interés", "Audiencia tibia acumulada", "Retargeting responde mejor", "Conversión más cercana"],
+            ["Oportunidad de retargeting no explotada", "Audiencias tibias requieren secuencia", "Falta separar temperatura de campaña"],
+            ["Separar campañas por temperatura", "Crear secuencia de retargeting", "Usar prueba/objeciones", "Escalar ganadores con cautela", "Medir calidad y conversión"],
+            ["Audiencias tibias", "Secuencia por intención", "Creativos de confianza", "Prueba social", "Control de frecuencia"],
+            "El blueprint se adapta a una oportunidad: el retargeting o audiencias tibias muestran mejor intención y requieren una ruta específica.",
+        )
+
+    return base
 
 
 def build_corrective_action_plan(
@@ -1900,9 +1992,27 @@ def render_score_chart_svg(score: CommercialScore) -> str:
 
 
 
+
 def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
     width = 1320
     height = 720
+
+    def short_label(value: str, max_len: int = 22) -> str:
+        safe = h(value or "")
+        return safe if len(safe) <= max_len else safe[:max_len - 1] + "…"
+
+    def pad(values: List[str], fallback: List[str]) -> List[str]:
+        result = list(values or [])
+        for item in fallback:
+            if len(result) >= 5:
+                break
+            result.append(item)
+        return result[:5]
+
+    current_labels = pad(blueprint.current_flow, ["Ruta actual", "Interés", "Comparación", "Fricción", "Consulta"])
+    rebuild_labels = pad(blueprint.recommended_flow, ["Rediseño", "Prueba", "CTA", "Seguimiento", "Medición"])
+    support_labels = pad(blueprint.missing_links, ["Mensaje", "Prueba", "Objeciones", "CTA", "Follow-up"])
+    fault_label = short_label((blueprint.breakpoints or ["Ruptura comercial"])[0], 24)
 
     def grid_lines() -> str:
         parts = []
@@ -1948,7 +2058,7 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
           <polygon points="{hex_points(cx, cy, r + 10)}" fill="{color}" opacity="0.12" filter="url(#blueprintGlowSoft)"/>
           <polygon points="{hex_points(cx, cy, r)}" fill="{fill}" stroke="{color}" stroke-width="3"/>
           <text x="{cx}" y="{cy + 5}" text-anchor="middle" font-size="12" font-weight="900" fill="#e0f2fe">{h(code)}</text>
-          <text x="{cx}" y="{cy + 45}" text-anchor="middle" font-size="10.5" font-weight="750" fill="#dbeafe">{h(label)}</text>
+          <text x="{cx}" y="{cy + 45}" text-anchor="middle" font-size="10.5" font-weight="750" fill="#dbeafe">{short_label(label)}</text>
         </g>'''
 
     def sl_node(cx, cy, code, label):
@@ -1957,15 +2067,21 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
           <polygon points="{hex_points(cx, cy, 27)}" fill="#22143f" stroke="#c084fc" stroke-width="2.4"/>
           <text x="{cx}" y="{cy - 4}" text-anchor="middle" font-size="10" font-weight="900" fill="#f3e8ff">{h(code)}</text>
           <text x="{cx}" y="{cy + 12}" text-anchor="middle" font-size="13" font-weight="900" fill="#c084fc">SL</text>
-          <text x="{cx}" y="{cy + 49}" text-anchor="middle" font-size="10.5" font-weight="750" fill="#f3e8ff">{h(label)}</text>
+          <text x="{cx}" y="{cy + 49}" text-anchor="middle" font-size="10.5" font-weight="750" fill="#f3e8ff">{short_label(label)}</text>
         </g>'''
 
-    current = [((95,250),'A1','Presencia pública'),((245,250),'A2','Contenido / catálogo'),((395,250),'A3','Interés inicial'),((535,250),'A4','Comparación'),((620,350),'A5','Consulta débil')]
+    current = [((95,250),'A1',current_labels[0]),((245,250),'A2',current_labels[1]),((395,250),'A3',current_labels[2]),((535,250),'A4',current_labels[3]),((620,350),'A5',current_labels[4])]
     fault = (635,250)
     dg = (770,250)
-    rebuild = [((875,250),'S1','Mensaje diferencial'),((985,250),'S2','Contenido de valor'),((1095,250),'S3','Prueba social'),((1205,250),'S4','CTA claro'),((1268,360),'S5','Seguimiento')]
+    rebuild = [((875,250),'S1',rebuild_labels[0]),((985,250),'S2',rebuild_labels[1]),((1095,250),'S3',rebuild_labels[2]),((1205,250),'S4',rebuild_labels[3]),((1268,360),'S5',rebuild_labels[4])]
     out = (1268,455)
-    sl_nodes = [((680,500),'SL-01','Mensajes clave',(875,250)),((800,500),'SL-02','Prueba / confianza',(985,250)),((920,500),'SL-03','Objeciones',(1095,250)),((1040,500),'SL-04','CTA / próximos pasos',(1205,250)),((1160,500),'SL-05','Follow-up',(1268,360))]
+    sl_nodes = [
+        ((680,500),'SL-01',support_labels[0],(875,250)),
+        ((800,500),'SL-02',support_labels[1],(985,250)),
+        ((920,500),'SL-03',support_labels[2],(1095,250)),
+        ((1040,500),'SL-04',support_labels[3],(1205,250)),
+        ((1160,500),'SL-05',support_labels[4],(1268,360)),
+    ]
 
     current_trace = path_from([c for c,_,_ in current[:4]], '#93c5fd', 4.4)
     current_glow = path_from([c for c,_,_ in current[:4]], '#38bdf8', 13.0)
@@ -1988,8 +2104,8 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
     fault_node = f'''
     <g>
       <polygon points="{hex_points(fault[0], fault[1], 34)}" fill="#3a2208" stroke="#f59e0b" stroke-width="3.2"/>
-      <text x="{fault[0]}" y="{fault[1] + 5}" text-anchor="middle" font-size="13" font-weight="900" fill="#fcd34d">FAULT</text>
-      <text x="{fault[0]}" y="{fault[1] + 48}" text-anchor="middle" font-size="11" fill="#fde68a">Se pierde avance</text>
+      <text x="{fault[0]}" y="{fault[1] - 2}" text-anchor="middle" font-size="13" font-weight="900" fill="#fcd34d">FAULT</text>
+      <text x="{fault[0]}" y="{fault[1] + 16}" text-anchor="middle" font-size="9.5" font-weight="800" fill="#fde68a">{fault_label}</text>
     </g>'''
     dg_node = f'''
     <g>
@@ -2005,6 +2121,8 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
       <text x="{out[0]}" y="{out[1] + 48}" text-anchor="middle" font-size="11" fill="#dcfce7">Oportunidad</text>
     </g>'''
 
+    summary_line = short_label(blueprint.summary, 158)
+
     return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Commercial system blueprint">
     <defs>
       <radialGradient id="blueprintBg" cx="50%" cy="42%" r="78%"><stop offset="0%" stop-color="#14406f"/><stop offset="100%" stop-color="#061426"/></radialGradient>
@@ -2019,25 +2137,25 @@ def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
     <rect x="24" y="20" width="{width-48}" height="{height-36}" rx="24" fill="url(#blueprintBg)" stroke="#2563eb" stroke-width="1.2"/>
     {grid_lines()}
     <text x="660" y="52" text-anchor="middle" font-size="32" font-weight="900" fill="#e0f2fe">Commercial System Blueprint</text>
-    <text x="660" y="82" text-anchor="middle" font-size="14" fill="#bfdbfe">Mapa técnico integrado del recorrido comercial, ruptura, Diagnosis Gate y ruta de reconstrucción</text>
+    <text x="660" y="82" text-anchor="middle" font-size="14" fill="#bfdbfe">Blueprint dinámico según diagnóstico: ruta actual, ruptura, Diagnosis Gate y reconstrucción</text>
     <path d="M 45 180 L 445 180 L 500 225 L 470 325 L 150 340 L 45 310 Z" fill="#0f2a4a" opacity="0.27" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="12 8"/>
-    <text x="82" y="203" font-size="13" font-weight="900" fill="#bfdbfe">RUTA ACTUAL</text><text x="82" y="221" font-size="11" fill="#dbeafe">ACQUISITION + INTEREST LAYER</text>
+    <text x="82" y="203" font-size="13" font-weight="900" fill="#bfdbfe">RUTA ACTUAL</text><text x="82" y="221" font-size="11" fill="#dbeafe">nodos A dependen del caso</text>
     <path d="M 480 178 L 805 178 L 835 310 L 750 390 L 555 390 L 470 310 Z" fill="#3a2208" opacity="0.30" stroke="#f59e0b" stroke-width="1.7" stroke-dasharray="10 7"/>
-    <text x="550" y="203" font-size="13" font-weight="900" fill="#fcd34d">ZONA DE RUPTURA / VALUE GAP</text>
+    <text x="550" y="203" font-size="13" font-weight="900" fill="#fcd34d">ZONA DE RUPTURA</text>
     <path d="M 840 180 L 1300 180 L 1310 420 L 1210 475 L 850 405 Z" fill="#062d22" opacity="0.30" stroke="#86efac" stroke-width="1.5" stroke-dasharray="12 8"/>
-    <text x="1015" y="203" text-anchor="middle" font-size="13" font-weight="900" fill="#bbf7d0">RUTA RECOMENDADA</text><text x="1015" y="221" text-anchor="middle" font-size="11" fill="#dcfce7">REBUILD + CONVERSION LAYER</text>
+    <text x="1015" y="203" text-anchor="middle" font-size="13" font-weight="900" fill="#bbf7d0">RUTA RECOMENDADA</text><text x="1015" y="221" text-anchor="middle" font-size="11" fill="#dcfce7">nodos S dependen del diagnóstico</text>
     <path d="M 560 440 L 1238 440 L 1270 600 L 535 600 Z" fill="#20123d" opacity="0.30" stroke="#c084fc" stroke-width="1.6" stroke-dasharray="8 7"/>
-    <text x="584" y="462" font-size="14" font-weight="900" fill="#c084fc">SUPPORT LAYER (SL)</text><text x="584" y="480" font-size="11" fill="#e9d5ff">Infraestructura que alimenta la ruta recomendada; no es una etapa extra del funnel.</text>
+    <text x="584" y="462" font-size="14" font-weight="900" fill="#c084fc">SUPPORT LAYER (SL)</text><text x="584" y="480" font-size="11" fill="#e9d5ff">infraestructura específica que alimenta la ruta recomendada</text>
     <g opacity="0.20" filter="url(#traceGlow)">{current_glow}{rebuild_glow}</g>
     {current_trace}{fault_trace}{weak_trace}{dg_trace}{rebuild_trace}{out_trace}{''.join(support_arrows)}
     {current_nodes}{fault_node}{dg_node}{rebuild_nodes}{out_node}{support_nodes}
     <g><rect x="44" y="630" width="1232" height="42" rx="10" fill="#061a2f" stroke="#2563eb" stroke-width="1" opacity="0.92"/>
-      <line x1="70" y1="651" x2="110" y2="651" stroke="#93c5fd" stroke-width="4" stroke-linecap="round"/><text x="124" y="655" font-size="11" fill="#dbeafe">Ruta actual (A1–A5)</text>
+      <line x1="70" y1="651" x2="110" y2="651" stroke="#93c5fd" stroke-width="4" stroke-linecap="round"/><text x="124" y="655" font-size="11" fill="#dbeafe">A = ruta actual</text>
       <line x1="260" y1="651" x2="300" y2="651" stroke="#f59e0b" stroke-width="3" stroke-dasharray="7 6"/><text x="314" y="655" font-size="11" fill="#fef3c7">FAULT / DG</text>
-      <line x1="430" y1="651" x2="470" y2="651" stroke="#34d399" stroke-width="4" stroke-linecap="round"/><text x="484" y="655" font-size="11" fill="#dcfce7">Ruta recomendada (S1–S5)</text>
-      <line x1="705" y1="651" x2="745" y2="651" stroke="#c084fc" stroke-width="3" stroke-dasharray="4 6"/><text x="759" y="655" font-size="11" fill="#f3e8ff">Support Layer alimenta la ruta verde</text>
-      <text x="1110" y="655" font-size="11" fill="#cbd5e1">OUT = salida de conversión</text></g>
-    <g><rect x="44" y="682" width="1232" height="28" rx="10" fill="#07182c" stroke="#2563eb" stroke-width="1" opacity="0.88"/><text x="660" y="701" text-anchor="middle" font-size="11.5" fill="#bfdbfe">OBJETIVO DEL SISTEMA: llevar al usuario desde atención e interés hacia preferencia, confianza y conversión calificada.</text></g>
+      <line x1="430" y1="651" x2="470" y2="651" stroke="#34d399" stroke-width="4" stroke-linecap="round"/><text x="484" y="655" font-size="11" fill="#dcfce7">S = rediseño recomendado</text>
+      <line x1="705" y1="651" x2="745" y2="651" stroke="#c084fc" stroke-width="3" stroke-dasharray="4 6"/><text x="759" y="655" font-size="11" fill="#f3e8ff">SL alimenta la ruta verde</text>
+      <text x="1065" y="655" font-size="11" fill="#cbd5e1">OUT = salida comercial</text></g>
+    <g><rect x="44" y="682" width="1232" height="28" rx="10" fill="#07182c" stroke="#2563eb" stroke-width="1" opacity="0.88"/><text x="660" y="701" text-anchor="middle" font-size="11.5" fill="#bfdbfe">{summary_line}</text></g>
     </svg>'''
 
 
@@ -4943,6 +5061,11 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
     )
 
     campaign_performance = run_campaign_performance_audit(campaign_request)
+
+    # Adapt blueprint to campaign evidence when performance data reveals a specific rupture.
+    # This prevents the visual blueprint from repeating the same route for every client.
+    adapted_blueprint = build_campaign_adapted_blueprint(public_audit, campaign_performance)
+    public_audit.funnel_blueprint = adapted_blueprint
 
     strategic_from_public_audit = [
         convert_corrective_to_performance_action(action)
