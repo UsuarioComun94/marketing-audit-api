@@ -1318,12 +1318,13 @@ Cómo explicarlo:
 - FAULT muestra el punto de ruptura donde el recorrido pierde continuidad comercial.
 - DG significa Diagnosis Gate: el diagnóstico que convierte la ruptura en rediseño.
 - S1–S5 muestran la ruta de reconstrucción recomendada.
-- El support layer se explica afuera del plano para evitar ruido visual: mensaje, educación, prueba, confianza y seguimiento.
+- SL-01–SL-05 muestran el support layer: mensajes, prueba, objeciones, CTA y seguimiento.
+- Las conexiones moradas muestran que el support layer alimenta la ruta verde; no es una ruta paralela del funnel.
 - OUT representa la salida deseada: oportunidad comercial más calificada.
-- La relación central es ruta actual → ruptura → diagnosis gate → rediseño.
+- La relación central es ruta actual → ruptura → diagnosis gate → rediseño → soporte → conversión.
 
 Guion de lectura:
-Este blueprint no es un calendario de implementación; es un plano del sistema comercial. La ruta azul muestra lo que existe, FAULT muestra dónde se rompe, DG explica por qué empieza el rediseño y la ruta verde muestra cómo debería reconstruirse el sistema para convertir presencia en preferencia y preferencia en consulta.
+Este blueprint no es un calendario de implementación; es un plano del sistema comercial. La ruta azul muestra lo que existe, FAULT muestra dónde se rompe, DG explica por qué empieza el rediseño, la ruta verde muestra cómo debería reconstruirse el sistema y el Support Layer muestra qué activos sostienen esa reconstrucción.
 
 ## 10. Blueprint diagram
 ```mermaid
@@ -1523,211 +1524,146 @@ def render_score_chart_svg(score: CommercialScore) -> str:
 
 
 
+
 def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
-    width = 1120
-    height = 660
+    width = 1320
+    height = 720
 
     def grid_lines() -> str:
         parts = []
         for x in range(0, width + 1, 24):
             major = x % 120 == 0
-            parts.append(
-                f'<line x1="{x}" y1="0" x2="{x}" y2="{height}" stroke="#7dd3fc" stroke-width="{1.0 if major else 0.55}" opacity="{0.22 if major else 0.08}"/>'
-            )
+            parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{height}" stroke="#7dd3fc" stroke-width="{1.0 if major else 0.55}" opacity="{0.20 if major else 0.07}"/>')
         for y in range(0, height + 1, 24):
             major = y % 120 == 0
-            parts.append(
-                f'<line x1="0" y1="{y}" x2="{width}" y2="{y}" stroke="#7dd3fc" stroke-width="{1.0 if major else 0.55}" opacity="{0.22 if major else 0.08}"/>'
-            )
+            parts.append(f'<line x1="0" y1="{y}" x2="{width}" y2="{y}" stroke="#7dd3fc" stroke-width="{1.0 if major else 0.55}" opacity="{0.20 if major else 0.07}"/>')
         return ''.join(parts)
 
-    current_coords = [
-        (125, 305),
-        (270, 260),
-        (410, 292),
-        (518, 365),
-        (625, 445),
-    ]
+    def hex_points(cx: int, cy: int, r: int = 22) -> str:
+        coords = [(cx+r,cy),(cx+r*.5,cy+r*.866),(cx-r*.5,cy+r*.866),(cx-r,cy),(cx-r*.5,cy-r*.866),(cx+r*.5,cy-r*.866)]
+        return ' '.join([f'{x:.1f},{y:.1f}' for x,y in coords])
 
-    rebuild_coords = [
-        (690, 365),
-        (780, 285),
-        (910, 285),
-        (1010, 360),
-        (1040, 455),
-    ]
-
-    fault_center = (585, 385)
-    conversion_output = (1040, 455)
-
-    def path_from(points: list[tuple[int, int]], color: str, width_px: float, dash: str = "") -> str:
+    def path_from(points, color, width_px, dash='') -> str:
         if not points:
-            return ""
-        d = f"M {points[0][0]} {points[0][1]}"
-        for index in range(1, len(points)):
-            prev_x, prev_y = points[index - 1]
-            x, y = points[index]
-            mid_x = (prev_x + x) / 2
-            d += f" C {mid_x:.1f} {prev_y}, {mid_x:.1f} {y}, {x} {y}"
-        dash_attr = f' stroke-dasharray="{dash}"' if dash else ""
-        return f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{width_px}" stroke-linecap="round" stroke-linejoin="round" opacity="0.90"{dash_attr}/>'
+            return ''
+        d = f'M {points[0][0]} {points[0][1]}'
+        for i in range(1, len(points)):
+            px, py = points[i-1]
+            x, y = points[i]
+            mx = (px+x)/2
+            d += f' C {mx:.1f} {py}, {mx:.1f} {y}, {x} {y}'
+        dash_attr = f' stroke-dasharray="{dash}"' if dash else ''
+        return f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{width_px}" stroke-linecap="round" stroke-linejoin="round" opacity="0.92"{dash_attr}/>'
 
-    def hex_points(cx: int, cy: int, r: int = 23) -> str:
-        coords = [
-            (cx + r, cy),
-            (cx + r * 0.5, cy + r * 0.866),
-            (cx - r * 0.5, cy + r * 0.866),
-            (cx - r, cy),
-            (cx - r * 0.5, cy - r * 0.866),
-            (cx + r * 0.5, cy - r * 0.866),
-        ]
-        return " ".join([f"{x:.1f},{y:.1f}" for x, y in coords])
+    def arrow_path(points, color, width_px, marker, dash='') -> str:
+        if not points:
+            return ''
+        d = f'M {points[0][0]} {points[0][1]}'
+        for i in range(1, len(points)):
+            px, py = points[i-1]
+            x, y = points[i]
+            mx = (px+x)/2
+            d += f' C {mx:.1f} {py}, {mx:.1f} {y}, {x} {y}'
+        dash_attr = f' stroke-dasharray="{dash}"' if dash else ''
+        return f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{width_px}" stroke-linecap="round" stroke-linejoin="round" opacity="0.88" marker-end="url(#{marker})"{dash_attr}/>'
 
-    def node(cx: int, cy: int, code: str, color: str, fill: str, r: int = 23) -> str:
+    def node(cx, cy, code, label, color, fill, r=24):
         return f'''
         <g>
-          <polygon points="{hex_points(cx, cy, r + 11)}" fill="{color}" opacity="0.12" filter="url(#blueprintGlowSoft)"/>
+          <polygon points="{hex_points(cx, cy, r + 10)}" fill="{color}" opacity="0.12" filter="url(#blueprintGlowSoft)"/>
           <polygon points="{hex_points(cx, cy, r)}" fill="{fill}" stroke="{color}" stroke-width="3"/>
           <text x="{cx}" y="{cy + 5}" text-anchor="middle" font-size="12" font-weight="900" fill="#e0f2fe">{h(code)}</text>
-        </g>
-        '''
+          <text x="{cx}" y="{cy + 45}" text-anchor="middle" font-size="10.5" font-weight="750" fill="#dbeafe">{h(label)}</text>
+        </g>'''
 
-    def gate(cx: int, cy: int, code: str, color: str) -> str:
+    def sl_node(cx, cy, code, label):
         return f'''
         <g>
-          <rect x="{cx - 18}" y="{cy - 18}" width="36" height="36" transform="rotate(45 {cx} {cy})"
-                fill="#061a2f" stroke="{color}" stroke-width="2.4"/>
-          <text x="{cx}" y="{cy + 4}" text-anchor="middle" font-size="9.5" font-weight="900" fill="{color}">{h(code)}</text>
-        </g>
-        '''
+          <polygon points="{hex_points(cx, cy, 27)}" fill="#22143f" stroke="#c084fc" stroke-width="2.4"/>
+          <text x="{cx}" y="{cy - 4}" text-anchor="middle" font-size="10" font-weight="900" fill="#f3e8ff">{h(code)}</text>
+          <text x="{cx}" y="{cy + 12}" text-anchor="middle" font-size="13" font-weight="900" fill="#c084fc">SL</text>
+          <text x="{cx}" y="{cy + 49}" text-anchor="middle" font-size="10.5" font-weight="750" fill="#f3e8ff">{h(label)}</text>
+        </g>'''
 
-    def small_tick(cx: int, cy: int, color: str) -> str:
-        return f'''
-        <g opacity="0.68">
-          <line x1="{cx - 9}" y1="{cy}" x2="{cx + 9}" y2="{cy}" stroke="{color}" stroke-width="1.2"/>
-          <line x1="{cx}" y1="{cy - 9}" x2="{cx}" y2="{cy + 9}" stroke="{color}" stroke-width="1.2"/>
-        </g>
-        '''
+    current = [((95,250),'A1','Presencia pública'),((245,250),'A2','Contenido / catálogo'),((395,250),'A3','Interés inicial'),((535,250),'A4','Comparación'),((620,350),'A5','Consulta débil')]
+    fault = (635,250)
+    dg = (770,250)
+    rebuild = [((875,250),'S1','Mensaje diferencial'),((985,250),'S2','Contenido de valor'),((1095,250),'S3','Prueba social'),((1205,250),'S4','CTA claro'),((1268,360),'S5','Seguimiento')]
+    out = (1268,455)
+    sl_nodes = [((680,500),'SL-01','Mensajes clave',(875,250)),((800,500),'SL-02','Prueba / confianza',(985,250)),((920,500),'SL-03','Objeciones',(1095,250)),((1040,500),'SL-04','CTA / próximos pasos',(1205,250)),((1160,500),'SL-05','Follow-up',(1268,360))]
 
-    main_path = path_from(current_coords, "#93c5fd", 4.2)
-    main_path_glow = path_from(current_coords, "#38bdf8", 14.0)
+    current_trace = path_from([c for c,_,_ in current[:4]], '#93c5fd', 4.4)
+    current_glow = path_from([c for c,_,_ in current[:4]], '#38bdf8', 13.0)
+    fault_trace = arrow_path([(535,250), fault], '#f59e0b', 2.8, 'arrowAmber', '7 6')
+    weak_trace = arrow_path([(535,250), (620,350)], '#93c5fd', 2.3, 'arrowBlue', '7 6')
+    dg_trace = arrow_path([fault, dg], '#f59e0b', 2.8, 'arrowAmber', '7 6')
+    rebuild_trace = path_from([dg]+[c for c,_,_ in rebuild[:4]], '#34d399', 4.4)
+    rebuild_glow = path_from([dg]+[c for c,_,_ in rebuild[:4]], '#22c55e', 13.0)
+    out_trace = arrow_path([(1205,250),(1268,360),out], '#34d399', 4.2, 'arrowGreen')
 
-    # Rebuild route starts at S1. The short amber transition through DG explains why the redesign starts.
-    rebuild_path = path_from(rebuild_coords, "#34d399", 4.4)
-    rebuild_path_glow = path_from(rebuild_coords, "#22c55e", 14.0)
+    support_arrows = []
+    for (cx, cy), code, label, target in sl_nodes:
+        tx, ty = target
+        support_arrows.append(arrow_path([(cx,cy-27),(cx,410),(tx,ty+35)], '#c084fc', 2.0, 'arrowPurple', '4 6'))
 
-    diagnosis_gate = (638, 386)
-    transition_path = path_from([fault_center, diagnosis_gate, rebuild_coords[0]], "#f59e0b", 2.4, "8 7")
+    current_nodes = ''.join([node(cx,cy,code,label,'#93c5fd','#0f2a4a') for (cx,cy),code,label in current])
+    rebuild_nodes = ''.join([node(cx,cy,code,label,'#34d399','#062d22') for (cx,cy),code,label in rebuild])
+    support_nodes = ''.join([sl_node(cx,cy,code,label) for (cx,cy),code,label,_ in sl_nodes])
 
-    system_zones = f'''
-    <g opacity="0.92">
-      <path d="M 76 180 L 455 160 L 535 225 L 500 404 L 162 420 L 78 338 Z"
-            fill="#0f2a4a" opacity="0.25" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="12 8"/>
-      <text x="112" y="198" font-size="12" font-weight="900" fill="#bfdbfe">CURRENT COMMERCIAL PATH</text>
-
-      <path d="M 456 232 L 730 230 L 780 384 L 628 500 L 464 432 Z"
-            fill="#3a2208" opacity="0.28" stroke="#f59e0b" stroke-width="1.7" stroke-dasharray="10 7"/>
-      <text x="512" y="252" font-size="12" font-weight="900" fill="#fcd34d">FAULT / VALUE GAP</text>
-
-      <path d="M 700 178 L 1050 184 L 1062 475 L 875 542 L 715 430 Z"
-            fill="#062d22" opacity="0.28" stroke="#34d399" stroke-width="1.5" stroke-dasharray="12 8"/>
-      <text x="766" y="198" font-size="12" font-weight="900" fill="#bbf7d0">REBUILD ROUTE</text>
-    </g>
-    '''
-
-    nodes_svg = []
-    for index, (cx, cy) in enumerate(current_coords):
-        nodes_svg.append(node(cx, cy, f"A{index + 1}", "#93c5fd", "#0f2a4a"))
-
-    for index, (cx, cy) in enumerate(rebuild_coords):
-        nodes_svg.append(node(cx, cy, f"S{index + 1}", "#34d399", "#062d22"))
-
-    technical_ticks = []
-    for cx, cy in current_coords + rebuild_coords:
-        technical_ticks.append(small_tick(cx, cy, "#7dd3fc"))
-
-    fault_marker = f'''
+    fault_node = f'''
     <g>
-      <ellipse cx="{fault_center[0]}" cy="{fault_center[1]}" rx="94" ry="62" fill="#f59e0b" opacity="0.13" filter="url(#blueprintGlowSoft)"/>
-      <ellipse cx="{fault_center[0]}" cy="{fault_center[1]}" rx="74" ry="50" fill="none" stroke="#f59e0b" stroke-width="2.2" stroke-dasharray="9 7"/>
-      <line x1="{fault_center[0] - 62}" y1="{fault_center[1] - 42}" x2="{fault_center[0] + 62}" y2="{fault_center[1] + 42}" stroke="#f59e0b" stroke-width="2" opacity="0.85"/>
-      <line x1="{fault_center[0] - 62}" y1="{fault_center[1] + 42}" x2="{fault_center[0] + 62}" y2="{fault_center[1] - 42}" stroke="#f59e0b" stroke-width="2" opacity="0.85"/>
-      <circle cx="{fault_center[0]}" cy="{fault_center[1]}" r="19" fill="#3a2208" stroke="#f59e0b" stroke-width="3"/>
-      <text x="{fault_center[0]}" y="{fault_center[1] + 4}" text-anchor="middle" font-size="11" font-weight="900" fill="#fcd34d">FAULT</text>
-    </g>
-    '''
-
-    title_block = f'''
-    <text x="{width/2}" y="52" text-anchor="middle" font-size="30" font-weight="900" fill="#e0f2fe">Commercial System Blueprint</text>
-    <text x="{width/2}" y="80" text-anchor="middle" font-size="13" fill="#93c5fd">Integrated architecture map · hex nodes + diagnosis gate</text>
-    '''
-
-    legend_codes = f'''
+      <polygon points="{hex_points(fault[0], fault[1], 34)}" fill="#3a2208" stroke="#f59e0b" stroke-width="3.2"/>
+      <text x="{fault[0]}" y="{fault[1] + 5}" text-anchor="middle" font-size="13" font-weight="900" fill="#fcd34d">FAULT</text>
+      <text x="{fault[0]}" y="{fault[1] + 48}" text-anchor="middle" font-size="11" fill="#fde68a">Se pierde avance</text>
+    </g>'''
+    dg_node = f'''
     <g>
-      <rect x="76" y="580" width="968" height="34" rx="10" fill="#061a2f" stroke="#2563eb" stroke-width="1" opacity="0.92"/>
-      <text x="108" y="602" font-size="11" font-weight="900" fill="#bfdbfe">A1–A5: current route</text>
-      <text x="350" y="602" font-size="11" font-weight="900" fill="#fcd34d">FAULT + DG: diagnosis gate</text>
-      <text x="640" y="602" font-size="11" font-weight="900" fill="#bbf7d0">S1–S5: rebuild route</text>
-      <text x="892" y="602" font-size="11" font-weight="900" fill="#cbd5e1">support layer explained below</text>
-    </g>
-    '''
-
-    dimension_lines = f'''
-    <g opacity="0.72">
-      <line x1="82" y1="630" x2="1038" y2="630" stroke="#60a5fa" stroke-width="1.3"/>
-      <line x1="82" y1="622" x2="82" y2="638" stroke="#60a5fa" stroke-width="1.3"/>
-      <line x1="1038" y1="622" x2="1038" y2="638" stroke="#60a5fa" stroke-width="1.3"/>
-      <text x="{width/2}" y="650" text-anchor="middle" font-size="11" fill="#bfdbfe">VISIBILITY → PREFERENCE → QUALIFIED CONVERSION</text>
-    </g>
-    '''
+      <polygon points="{hex_points(dg[0], dg[1], 28)}" fill="#112816" stroke="#eab308" stroke-width="2.8"/>
+      <text x="{dg[0]}" y="{dg[1] - 3}" text-anchor="middle" font-size="12" font-weight="900" fill="#fef3c7">DG</text>
+      <text x="{dg[0]}" y="{dg[1] + 13}" text-anchor="middle" font-size="8.5" font-weight="800" fill="#fef3c7">GATE</text>
+      <text x="{dg[0]}" y="{dg[1] + 48}" text-anchor="middle" font-size="11" fill="#fef3c7">Diagnosis Gate</text>
+    </g>'''
+    out_node = f'''
+    <g>
+      <polygon points="{hex_points(out[0], out[1], 30)}" fill="#062d22" stroke="#86efac" stroke-width="3"/>
+      <text x="{out[0]}" y="{out[1] + 5}" text-anchor="middle" font-size="12" font-weight="900" fill="#bbf7d0">OUT</text>
+      <text x="{out[0]}" y="{out[1] + 48}" text-anchor="middle" font-size="11" fill="#dcfce7">Oportunidad</text>
+    </g>'''
 
     return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Commercial system blueprint">
     <defs>
-      <radialGradient id="blueprintBg" cx="50%" cy="42%" r="78%">
-        <stop offset="0%" stop-color="#14406f"/>
-        <stop offset="100%" stop-color="#061426"/>
-      </radialGradient>
-      <filter id="blueprintGlowSoft" x="-60%" y="-60%" width="220%" height="220%">
-        <feGaussianBlur stdDeviation="8"/>
-      </filter>
-      <filter id="traceGlow" x="-45%" y="-45%" width="190%" height="190%">
-        <feGaussianBlur stdDeviation="5"/>
-      </filter>
+      <radialGradient id="blueprintBg" cx="50%" cy="42%" r="78%"><stop offset="0%" stop-color="#14406f"/><stop offset="100%" stop-color="#061426"/></radialGradient>
+      <filter id="blueprintGlowSoft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="8"/></filter>
+      <filter id="traceGlow" x="-45%" y="-45%" width="190%" height="190%"><feGaussianBlur stdDeviation="5"/></filter>
+      <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#93c5fd"/></marker>
+      <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#34d399"/></marker>
+      <marker id="arrowAmber" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#f59e0b"/></marker>
+      <marker id="arrowPurple" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#c084fc"/></marker>
     </defs>
-
     <rect width="{width}" height="{height}" rx="26" fill="#061426"/>
-    <rect x="24" y="22" width="{width - 48}" height="{height - 44}" rx="24" fill="url(#blueprintBg)" stroke="#2563eb" stroke-width="1.2"/>
+    <rect x="24" y="20" width="{width-48}" height="{height-36}" rx="24" fill="url(#blueprintBg)" stroke="#2563eb" stroke-width="1.2"/>
     {grid_lines()}
-    {title_block}
-    {system_zones}
-
-    <g opacity="0.20" filter="url(#traceGlow)">
-      {main_path_glow}
-      {rebuild_path_glow}
-    </g>
-    {main_path}
-    {transition_path}
-    {rebuild_path}
-
-    <g opacity="0.50">
-      {''.join(technical_ticks)}
-    </g>
-
-    <g>
-      {''.join(nodes_svg)}
-    </g>
-
-    {fault_marker}
-    {gate(diagnosis_gate[0], diagnosis_gate[1], "DG", "#f59e0b")}
-
-    <circle cx="{conversion_output[0]}" cy="{conversion_output[1]}" r="28" fill="#34d399" opacity="0.12" filter="url(#blueprintGlowSoft)"/>
-    <circle cx="{conversion_output[0]}" cy="{conversion_output[1]}" r="18" fill="#062d22" stroke="#34d399" stroke-width="3"/>
-    <text x="{conversion_output[0]}" y="{conversion_output[1] + 4}" text-anchor="middle" font-size="10" font-weight="900" fill="#bbf7d0">OUT</text>
-
-    {legend_codes}
-    {dimension_lines}
-    <text x="{width - 64}" y="{height - 18}" text-anchor="end" font-size="10" fill="#60a5fa" opacity="0.75">Blueprint draft · integrated commercial architecture</text>
-</svg>'''
+    <text x="660" y="52" text-anchor="middle" font-size="32" font-weight="900" fill="#e0f2fe">Commercial System Blueprint</text>
+    <text x="660" y="82" text-anchor="middle" font-size="14" fill="#bfdbfe">Mapa técnico integrado del recorrido comercial, ruptura, Diagnosis Gate y ruta de reconstrucción</text>
+    <path d="M 45 180 L 445 180 L 500 225 L 470 325 L 150 340 L 45 310 Z" fill="#0f2a4a" opacity="0.27" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="12 8"/>
+    <text x="82" y="203" font-size="13" font-weight="900" fill="#bfdbfe">RUTA ACTUAL</text><text x="82" y="221" font-size="11" fill="#dbeafe">ACQUISITION + INTEREST LAYER</text>
+    <path d="M 480 178 L 805 178 L 835 310 L 750 390 L 555 390 L 470 310 Z" fill="#3a2208" opacity="0.30" stroke="#f59e0b" stroke-width="1.7" stroke-dasharray="10 7"/>
+    <text x="550" y="203" font-size="13" font-weight="900" fill="#fcd34d">ZONA DE RUPTURA / VALUE GAP</text>
+    <path d="M 840 180 L 1300 180 L 1310 420 L 1210 475 L 850 405 Z" fill="#062d22" opacity="0.30" stroke="#86efac" stroke-width="1.5" stroke-dasharray="12 8"/>
+    <text x="1015" y="203" text-anchor="middle" font-size="13" font-weight="900" fill="#bbf7d0">RUTA RECOMENDADA</text><text x="1015" y="221" text-anchor="middle" font-size="11" fill="#dcfce7">REBUILD + CONVERSION LAYER</text>
+    <path d="M 560 440 L 1238 440 L 1270 600 L 535 600 Z" fill="#20123d" opacity="0.30" stroke="#c084fc" stroke-width="1.6" stroke-dasharray="8 7"/>
+    <text x="584" y="462" font-size="14" font-weight="900" fill="#c084fc">SUPPORT LAYER (SL)</text><text x="584" y="480" font-size="11" fill="#e9d5ff">Infraestructura que alimenta la ruta recomendada; no es una etapa extra del funnel.</text>
+    <g opacity="0.20" filter="url(#traceGlow)">{current_glow}{rebuild_glow}</g>
+    {current_trace}{fault_trace}{weak_trace}{dg_trace}{rebuild_trace}{out_trace}{''.join(support_arrows)}
+    {current_nodes}{fault_node}{dg_node}{rebuild_nodes}{out_node}{support_nodes}
+    <g><rect x="44" y="630" width="1232" height="42" rx="10" fill="#061a2f" stroke="#2563eb" stroke-width="1" opacity="0.92"/>
+      <line x1="70" y1="651" x2="110" y2="651" stroke="#93c5fd" stroke-width="4" stroke-linecap="round"/><text x="124" y="655" font-size="11" fill="#dbeafe">Ruta actual (A1–A5)</text>
+      <line x1="260" y1="651" x2="300" y2="651" stroke="#f59e0b" stroke-width="3" stroke-dasharray="7 6"/><text x="314" y="655" font-size="11" fill="#fef3c7">FAULT / DG</text>
+      <line x1="430" y1="651" x2="470" y2="651" stroke="#34d399" stroke-width="4" stroke-linecap="round"/><text x="484" y="655" font-size="11" fill="#dcfce7">Ruta recomendada (S1–S5)</text>
+      <line x1="705" y1="651" x2="745" y2="651" stroke="#c084fc" stroke-width="3" stroke-dasharray="4 6"/><text x="759" y="655" font-size="11" fill="#f3e8ff">Support Layer alimenta la ruta verde</text>
+      <text x="1110" y="655" font-size="11" fill="#cbd5e1">OUT = salida de conversión</text></g>
+    <g><rect x="44" y="682" width="1232" height="28" rx="10" fill="#07182c" stroke="#2563eb" stroke-width="1" opacity="0.88"/><text x="660" y="701" text-anchor="middle" font-size="11.5" fill="#bfdbfe">OBJETIVO DEL SISTEMA: llevar al usuario desde atención e interés hacia preferencia, confianza y conversión calificada.</text></g>
+    </svg>'''
 
 
 def density_color(value: int) -> str:
@@ -2048,20 +1984,20 @@ def build_visual_report_html(
     )
 
     blueprint_connection_items = ''.join([
-        '<li><strong>Nodos hexagonales:</strong> cada hexágono representa un punto funcional del sistema comercial. A1–A5 pertenecen a la ruta actual; S1–S5 pertenecen a la ruta reconstruida.</li>',
-        '<li><strong>Ruta azul A1–A5:</strong> muestra lo que hoy existe: presencia, contenido, interés, comparación y consulta. No significa que todo esté mal; significa que el recorrido actual todavía no es suficientemente defendible.</li>',
-        '<li><strong>FAULT:</strong> marca la ruptura principal. Es el punto donde la atención o el interés dejan de avanzar porque falta propuesta de valor clara, prueba social, confianza o CTA específico.</li>',
-        '<li><strong>DG / Diagnosis Gate:</strong> explica por qué la ruta verde nace cerca de FAULT. No es que la solución salga mágicamente del problema; el diagnóstico convierte la ruptura en una decisión de rediseño.</li>',
-        '<li><strong>Ruta verde S1–S5:</strong> muestra el sistema recomendado: mensaje diferencial, contenido educativo, prueba de confianza, CTA claro y seguimiento comercial.</li>',
-        '<li><strong>Support layer:</strong> los eslabones faltantes ya no aparecen como línea rosa dentro del plano para evitar ruido visual. Se explican abajo porque sostienen todo el rediseño: mensaje, educación, prueba, confianza y seguimiento.</li>',
-        '<li><strong>OUT:</strong> representa la salida buscada: no más publicaciones aisladas, sino oportunidades comerciales mejor calificadas y más fáciles de defender.</li>',
+        '<li><strong>Nodos hexagonales:</strong> cada hexágono representa un punto funcional del sistema comercial. A1–A5 son la ruta actual; S1–S5 son la ruta recomendada; SL-01–SL-05 son nodos de soporte.</li>',
+        '<li><strong>Ruta azul A1–A5:</strong> muestra lo que hoy existe: presencia pública, contenido, interés, comparación y consulta débil. Es el recorrido actual antes del rediseño.</li>',
+        '<li><strong>FAULT:</strong> marca la ruptura principal. Ahí el usuario deja de avanzar porque la propuesta de valor, la confianza, el CTA o la diferenciación no son suficientemente claros.</li>',
+        '<li><strong>DG / Diagnosis Gate:</strong> explica la transición entre problema y solución. La ruta verde no nace mágicamente del fallo; nace del diagnóstico que convierte la ruptura en rediseño.</li>',
+        '<li><strong>Ruta verde S1–S5:</strong> muestra el recorrido reconstruido: mensaje diferencial, contenido de valor, prueba social, CTA claro y seguimiento comercial.</li>',
+        '<li><strong>Support Layer SL:</strong> representa la infraestructura que alimenta la ruta recomendada. No es una etapa extra del funnel; son activos que hacen posible que S1–S5 funcionen: mensajes, prueba, objeciones, CTA y follow-up.</li>',
+        '<li><strong>Conexiones moradas:</strong> muestran cómo los nodos SL alimentan la ruta verde. Sirven para explicar que la conversión no depende solo de publicar más, sino de sostener el recorrido con evidencia, claridad y seguimiento.</li>',
+        '<li><strong>OUT:</strong> representa la salida buscada: oportunidad comercial más calificada, más defendible y con menor fricción.</li>',
     ])
 
     blueprint_script = (
-        "Este blueprint se presenta como arquitectura comercial. "
-        "Primero explicás la ruta azul: lo que ya existe. Después mostrás FAULT: dónde se rompe el avance. "
-        "Luego señalás DG: el diagnóstico que transforma la ruptura en rediseño. Finalmente explicás la ruta verde: "
-        "cómo se reconstruye el sistema para llevar al público desde presencia hasta una oportunidad comercial calificada."
+        "Este blueprint se lee de izquierda a derecha. Primero está la ruta azul: lo que la empresa ya hace. "
+        "Luego aparece FAULT: el punto donde el avance se rompe. DG es la compuerta de diagnóstico: convierte la ruptura en criterio de rediseño. "
+        "La ruta verde muestra cómo debería moverse el cliente después del rediseño. Abajo, el Support Layer alimenta esa ruta verde con mensajes, prueba, manejo de objeciones, CTA y seguimiento."
     )
 
     return f'''<!doctype html>
