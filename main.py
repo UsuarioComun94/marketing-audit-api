@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 app = FastAPI(
     title="Marketing Audit API",
     description="API para auditar prospectos, investigar presencia pública y devolver información estructurada a un Custom GPT.",
-    version="1.3.0",
+    version="1.4.0",
     servers=[
         {
             "url": "https://marketing-audit-api.onrender.com",
@@ -362,6 +362,36 @@ class CampaignMetric(BaseModel):
     cpl: Optional[float] = None
     cpa: Optional[float] = None
     lead_quality_score: Optional[float] = Field(None, description="Score 0-100 si existe")
+
+    # Enrichment fields for deeper analysis. All optional to keep backward compatibility.
+    previous_spend: Optional[float] = Field(None, description="Gasto del período anterior comparable")
+    previous_impressions: Optional[int] = Field(None, description="Impresiones del período anterior comparable")
+    previous_clicks: Optional[int] = Field(None, description="Clicks del período anterior comparable")
+    previous_ctr_percent: Optional[float] = Field(None, description="CTR anterior en porcentaje")
+    previous_cpc: Optional[float] = Field(None, description="CPC anterior")
+    previous_cpm: Optional[float] = Field(None, description="CPM anterior")
+    previous_leads: Optional[int] = Field(None, description="Leads del período anterior comparable")
+    previous_conversions: Optional[int] = Field(None, description="Conversiones del período anterior comparable")
+    previous_cpl: Optional[float] = Field(None, description="CPL anterior")
+    previous_cpa: Optional[float] = Field(None, description="CPA anterior")
+    previous_frequency: Optional[float] = Field(None, description="Frecuencia anterior")
+    previous_lead_quality_score: Optional[float] = Field(None, description="Score de calidad anterior")
+
+    hook: Optional[str] = Field(None, description="Hook o ángulo principal del anuncio")
+    angle: Optional[str] = Field(None, description="Ángulo creativo: inversión, financiación, seguridad, amenities, etc.")
+    creative_format: Optional[str] = Field(None, description="Formato creativo: video, carrusel, imagen, search, etc.")
+    ad_promise: Optional[str] = Field(None, description="Promesa principal del anuncio")
+    landing_url: Optional[str] = None
+    landing_message: Optional[str] = Field(None, description="Mensaje principal de la landing")
+    audience: Optional[str] = Field(None, description="Audiencia o segmento")
+    utms_present: Optional[bool] = Field(None, description="Si la campaña tiene UTMs consistentes")
+    events_configured: Optional[bool] = Field(None, description="Si hay eventos configurados en GA4/Pixel/CAPI")
+    conversion_event_name: Optional[str] = None
+    crm_stage: Optional[str] = None
+    meetings: Optional[int] = None
+    opportunities: Optional[int] = None
+    close_rate_percent: Optional[float] = None
+    mobile_share_percent: Optional[float] = None
     notes: Optional[str] = None
 
 
@@ -400,6 +430,181 @@ class PerformanceAction(BaseModel):
     data_required: bool = False
 
 
+class DerivedCampaignMetrics(BaseModel):
+    campaign_name: str
+    channel: Optional[str] = None
+    spend: Optional[float] = None
+    impressions: Optional[int] = None
+    clicks: Optional[int] = None
+    leads: Optional[int] = None
+    conversions: Optional[int] = None
+    ctr_percent: Optional[float] = None
+    cpc: Optional[float] = None
+    cpm: Optional[float] = None
+    cpl: Optional[float] = None
+    cpa: Optional[float] = None
+    cvr_percent: Optional[float] = None
+    lead_quality_rate_percent: Optional[float] = None
+    frequency: Optional[float] = None
+    sample_status: str
+    tracking_reliability: str
+
+
+class PerformanceMetricDelta(BaseModel):
+    campaign_name: str
+    delta_spend_percent: Optional[float] = None
+    delta_impressions_percent: Optional[float] = None
+    delta_clicks_percent: Optional[float] = None
+    delta_ctr_percent: Optional[float] = None
+    delta_cpc_percent: Optional[float] = None
+    delta_cpm_percent: Optional[float] = None
+    delta_leads_percent: Optional[float] = None
+    delta_cpl_percent: Optional[float] = None
+    delta_cpa_percent: Optional[float] = None
+    delta_frequency_percent: Optional[float] = None
+    delta_lead_quality_percent: Optional[float] = None
+    interpretation: str
+
+
+class CrossMetricFinding(BaseModel):
+    pattern: str
+    evidence: str
+    interpretation: str
+    affected_campaigns: List[str]
+    severity: str
+    confidence: str
+    recommended_action: str
+
+
+class TrackingHealthFinding(BaseModel):
+    campaign_name: Optional[str] = None
+    issue: str
+    severity: str
+    evidence: str
+    business_risk: str
+    recommended_fix: str
+    validation_metric: str
+
+
+class LeadQualityAssessment(BaseModel):
+    campaign_name: str
+    lead_quality_score: Optional[float] = None
+    quality_level: str
+    evidence: str
+    recommendation: str
+
+
+class CostQualityQuadrant(BaseModel):
+    campaign_name: str
+    quadrant: str
+    cpl: Optional[float] = None
+    quality_score: Optional[float] = None
+    recommendation: str
+    confidence: str
+
+
+class BudgetReallocationRecommendation(BaseModel):
+    campaign_name: str
+    action: str
+    recommended_change_percent: Optional[float] = None
+    reason: str
+    risk: str
+    confidence: str
+
+
+class CreativeHookInsight(BaseModel):
+    hook: str
+    affected_campaigns: List[str]
+    signal: str
+    interpretation: str
+    recommended_next_test: str
+
+
+class LandingFrictionAssessment(BaseModel):
+    campaign_name: str
+    friction_score: int
+    evidence: str
+    likely_issue: str
+    recommended_fix: str
+
+
+class MessageMatchAssessment(BaseModel):
+    campaign_name: str
+    message_match_score: int
+    mismatch_detected: bool
+    evidence: str
+    recommended_fix: str
+
+
+class FunnelLeakFinding(BaseModel):
+    campaign_name: str
+    leak_stage: str
+    evidence: str
+    probable_cause: str
+    recommended_action: str
+    metric_to_validate: str
+
+
+class ExperimentRecommendation(BaseModel):
+    title: str
+    hypothesis: str
+    change: str
+    primary_metric: str
+    secondary_metric: str
+    success_criteria: str
+    minimum_duration: str
+    risk: str
+    do_not_touch: str
+
+
+class DataCompletenessScore(BaseModel):
+    score: int
+    missing_fields: List[str]
+    impact_on_analysis: str
+    next_data_to_collect: List[str]
+
+
+class CommercialReadinessScore(BaseModel):
+    overall: int
+    tracking_readiness: int
+    offer_clarity: int
+    message_match: int
+    funnel_continuity: int
+    lead_quality: int
+    creative_relevance: int
+    landing_strength: int
+    cta_clarity: int
+    sales_follow_up: int
+    budget_efficiency: int
+    strongest_area: str
+    weakest_area: str
+    recommended_focus: str
+
+
+class MapCoherenceCheck(BaseModel):
+    score: int
+    alignment_detected: List[str]
+    inconsistencies: List[str]
+    correction_needed: List[str]
+
+
+class ProposalGuidance(BaseModel):
+    what_to_sell: List[str]
+    what_not_to_sell_yet: List[str]
+    what_to_show_in_meeting: List[str]
+    what_data_to_request: List[str]
+    what_to_promise: List[str]
+    what_not_to_promise: List[str]
+    closing_angle: str
+
+
+class TimedActionPlan(BaseModel):
+    today_48h: List[str]
+    next_7_days: List[str]
+    next_14_30_days: List[str]
+    next_60_90_days: List[str]
+
+
 class CampaignPerformanceResponse(BaseModel):
     company_name: str
     audit_type: str
@@ -411,6 +616,25 @@ class CampaignPerformanceResponse(BaseModel):
     budget_actions: List[PerformanceAction]
     tracking_actions: List[PerformanceAction]
     prioritized_actions: List[PerformanceAction]
+    derived_metrics: List[DerivedCampaignMetrics]
+    metric_deltas: List[PerformanceMetricDelta]
+    internal_benchmarks: Dict[str, Optional[float]]
+    cross_metric_findings: List[CrossMetricFinding]
+    tracking_health: List[TrackingHealthFinding]
+    lead_quality_assessment: List[LeadQualityAssessment]
+    cost_quality_matrix: List[CostQualityQuadrant]
+    budget_reallocation: List[BudgetReallocationRecommendation]
+    creative_hook_insights: List[CreativeHookInsight]
+    landing_friction: List[LandingFrictionAssessment]
+    message_match: List[MessageMatchAssessment]
+    funnel_leaks: List[FunnelLeakFinding]
+    experiment_recommendations: List[ExperimentRecommendation]
+    data_completeness: DataCompletenessScore
+    sample_size_warnings: List[str]
+    confidence_by_finding: List[str]
+    timed_action_plan: TimedActionPlan
+    discovery_questions: List[str]
+    proposal_guidance: ProposalGuidance
     next_data_needed: List[str]
     summary: str
 
@@ -431,6 +655,12 @@ class FullCommercialSystemResponse(BaseModel):
     public_commercial_audit: ProspectWithResearchResponse
     campaign_performance: CampaignPerformanceResponse
     unified_priorities: List[PerformanceAction]
+    commercial_readiness_score: CommercialReadinessScore
+    data_completeness_score: DataCompletenessScore
+    map_coherence_check: MapCoherenceCheck
+    discovery_questions: List[str]
+    proposal_guidance: ProposalGuidance
+    timed_action_plan: TimedActionPlan
     system_summary: str
     recommended_next_step: str
 
@@ -3537,6 +3767,837 @@ def build_next_data_needed(request: CampaignPerformanceRequest) -> List[str]:
     return needed
 
 
+
+def calc_cpc_value(campaign: CampaignMetric) -> Optional[float]:
+    if campaign.cpc is not None:
+        return campaign.cpc
+    if campaign.spend is not None and campaign.clicks and campaign.clicks > 0:
+        return campaign.spend / campaign.clicks
+    return None
+
+
+def calc_cpm_value(campaign: CampaignMetric) -> Optional[float]:
+    if campaign.cpm is not None:
+        return campaign.cpm
+    if campaign.spend is not None and campaign.impressions and campaign.impressions > 0:
+        return (campaign.spend / campaign.impressions) * 1000
+    return None
+
+
+def calc_cvr_percent(campaign: CampaignMetric) -> Optional[float]:
+    leads = campaign.leads or campaign.form_submits or campaign.whatsapp_clicks or campaign.calls or campaign.conversions
+    if campaign.clicks and campaign.clicks > 0 and leads is not None:
+        return (leads / campaign.clicks) * 100
+    return None
+
+
+def median_or_none(values: List[Optional[float]]) -> Optional[float]:
+    clean = sorted([float(value) for value in values if value is not None])
+    if not clean:
+        return None
+    midpoint = len(clean) // 2
+    if len(clean) % 2:
+        return clean[midpoint]
+    return (clean[midpoint - 1] + clean[midpoint]) / 2
+
+
+def pct_delta(current: Optional[float], previous: Optional[float]) -> Optional[float]:
+    if current is None or previous is None or previous == 0:
+        return None
+    return ((current - previous) / abs(previous)) * 100
+
+
+def quality_score_from_campaign(campaign: CampaignMetric) -> Optional[float]:
+    if campaign.lead_quality_score is not None:
+        return max(0, min(float(campaign.lead_quality_score), 100))
+    rate = calc_lead_quality_rate(campaign)
+    if rate is not None:
+        return max(0, min(float(rate), 100))
+    notes = (campaign.notes or "").casefold()
+    if "alta" in notes or "calidad alta" in notes:
+        return 80
+    if "media-alta" in notes:
+        return 70
+    if "media" in notes:
+        return 55
+    if "baja" in notes or "poco calificado" in notes:
+        return 25
+    return None
+
+
+def quality_level(score: Optional[float]) -> str:
+    if score is None:
+        return "desconocida"
+    if score >= 75:
+        return "alta"
+    if score >= 55:
+        return "media"
+    if score >= 35:
+        return "baja-media"
+    return "baja"
+
+
+def sample_status(campaign: CampaignMetric) -> str:
+    clicks = campaign.clicks or 0
+    leads = campaign.leads or campaign.form_submits or campaign.whatsapp_clicks or campaign.calls or 0
+    if clicks < 100 and leads < 5:
+        return "muestra_insuficiente"
+    if clicks < 300 or leads < 10:
+        return "muestra_media"
+    return "muestra_suficiente"
+
+
+def tracking_reliability(campaign: CampaignMetric) -> str:
+    clicks = campaign.clicks or 0
+    leads = campaign.leads or campaign.form_submits or campaign.whatsapp_clicks or campaign.calls or 0
+    events = campaign.key_events or campaign.conversions or campaign.sales or 0
+    if campaign.events_configured is False or (clicks >= 100 and leads == 0 and events == 0):
+        return "crítica"
+    if campaign.utms_present is False or (clicks >= 100 and events == 0 and leads > 0):
+        return "media-baja"
+    if campaign.events_configured is True or events > 0 or leads > 0:
+        return "aceptable"
+    return "desconocida"
+
+
+def derive_campaign_metrics(request: CampaignPerformanceRequest) -> List[DerivedCampaignMetrics]:
+    derived = []
+    for campaign in request.campaigns:
+        derived.append(DerivedCampaignMetrics(
+            campaign_name=campaign_label(campaign),
+            channel=campaign.channel,
+            spend=campaign.spend,
+            impressions=campaign.impressions,
+            clicks=campaign.clicks,
+            leads=campaign.leads or campaign.form_submits or campaign.whatsapp_clicks or campaign.calls,
+            conversions=campaign.conversions or campaign.sales,
+            ctr_percent=calc_ctr_percent(campaign),
+            cpc=calc_cpc_value(campaign),
+            cpm=calc_cpm_value(campaign),
+            cpl=calc_cpl(campaign),
+            cpa=calc_cpa(campaign),
+            cvr_percent=calc_cvr_percent(campaign),
+            lead_quality_rate_percent=quality_score_from_campaign(campaign),
+            frequency=campaign.frequency,
+            sample_status=sample_status(campaign),
+            tracking_reliability=tracking_reliability(campaign),
+        ))
+    return derived
+
+
+def build_internal_benchmarks(derived: List[DerivedCampaignMetrics]) -> Dict[str, Optional[float]]:
+    return {
+        "median_ctr_percent": median_or_none([item.ctr_percent for item in derived]),
+        "median_cpc": median_or_none([item.cpc for item in derived]),
+        "median_cpm": median_or_none([item.cpm for item in derived]),
+        "median_cpl": median_or_none([item.cpl for item in derived]),
+        "median_cpa": median_or_none([item.cpa for item in derived]),
+        "median_cvr_percent": median_or_none([item.cvr_percent for item in derived]),
+        "median_lead_quality_score": median_or_none([item.lead_quality_rate_percent for item in derived]),
+    }
+
+
+def build_metric_deltas(request: CampaignPerformanceRequest) -> List[PerformanceMetricDelta]:
+    deltas: List[PerformanceMetricDelta] = []
+    for campaign in request.campaigns:
+        current_ctr = calc_ctr_percent(campaign)
+        current_cpc = calc_cpc_value(campaign)
+        current_cpm = calc_cpm_value(campaign)
+        current_cpl = calc_cpl(campaign)
+        current_cpa = calc_cpa(campaign)
+        current_quality = quality_score_from_campaign(campaign)
+
+        previous_ctr = campaign.previous_ctr_percent
+        if previous_ctr is None and campaign.previous_impressions and campaign.previous_clicks is not None and campaign.previous_impressions > 0:
+            previous_ctr = (campaign.previous_clicks / campaign.previous_impressions) * 100
+        previous_cpc = campaign.previous_cpc
+        if previous_cpc is None and campaign.previous_spend is not None and campaign.previous_clicks and campaign.previous_clicks > 0:
+            previous_cpc = campaign.previous_spend / campaign.previous_clicks
+        previous_cpm = campaign.previous_cpm
+        if previous_cpm is None and campaign.previous_spend is not None and campaign.previous_impressions and campaign.previous_impressions > 0:
+            previous_cpm = (campaign.previous_spend / campaign.previous_impressions) * 1000
+        previous_cpl = campaign.previous_cpl
+        if previous_cpl is None and campaign.previous_spend is not None and campaign.previous_leads and campaign.previous_leads > 0:
+            previous_cpl = campaign.previous_spend / campaign.previous_leads
+        previous_cpa = campaign.previous_cpa
+        if previous_cpa is None and campaign.previous_spend is not None and campaign.previous_conversions and campaign.previous_conversions > 0:
+            previous_cpa = campaign.previous_spend / campaign.previous_conversions
+
+        delta_ctr = pct_delta(current_ctr, previous_ctr)
+        delta_cpc = pct_delta(current_cpc, previous_cpc)
+        delta_cpl = pct_delta(current_cpl, previous_cpl)
+        interpretation = "Sin período anterior suficiente para interpretar tendencia."
+        if delta_ctr is not None and delta_cpc is not None and delta_cpl is not None:
+            if delta_ctr < -15 and delta_cpc > 15 and delta_cpl > 20:
+                interpretation = "La respuesta relativa empeoró: baja CTR, sube CPC y sube CPL. Posible fatiga creativa, audiencia deteriorada o pérdida de relevancia."
+            elif delta_ctr > 10 and delta_cpl < -10:
+                interpretation = "La campaña mejora eficiencia: sube CTR y baja CPL. Candidata a escalar con control si la calidad acompaña."
+            elif delta_cpc < -15 and delta_cpl > 20:
+                interpretation = "Clicks más baratos pero peor costo por lead. Posible caída de calidad o fricción posterior al click."
+
+        if any(value is not None for value in [campaign.previous_spend, campaign.previous_impressions, campaign.previous_clicks, previous_ctr, previous_cpl, previous_cpa]):
+            deltas.append(PerformanceMetricDelta(
+                campaign_name=campaign_label(campaign),
+                delta_spend_percent=pct_delta(campaign.spend, campaign.previous_spend),
+                delta_impressions_percent=pct_delta(campaign.impressions, campaign.previous_impressions),
+                delta_clicks_percent=pct_delta(campaign.clicks, campaign.previous_clicks),
+                delta_ctr_percent=delta_ctr,
+                delta_cpc_percent=delta_cpc,
+                delta_cpm_percent=pct_delta(current_cpm, previous_cpm),
+                delta_leads_percent=pct_delta(campaign.leads, campaign.previous_leads),
+                delta_cpl_percent=delta_cpl,
+                delta_cpa_percent=pct_delta(current_cpa, previous_cpa),
+                delta_frequency_percent=pct_delta(campaign.frequency, campaign.previous_frequency),
+                delta_lead_quality_percent=pct_delta(current_quality, campaign.previous_lead_quality_score),
+                interpretation=interpretation,
+            ))
+    return deltas
+
+
+def build_cross_metric_findings(request: CampaignPerformanceRequest, derived: List[DerivedCampaignMetrics], benchmarks: Dict[str, Optional[float]]) -> List[CrossMetricFinding]:
+    findings: List[CrossMetricFinding] = []
+    median_ctr = benchmarks.get("median_ctr_percent") or request.target_ctr_percent
+    median_cpl = benchmarks.get("median_cpl")
+    median_cpc = benchmarks.get("median_cpc")
+
+    for campaign, metrics in zip(request.campaigns, derived):
+        label = metrics.campaign_name
+        evidence = []
+        if metrics.ctr_percent is not None:
+            evidence.append(f"CTR={metrics.ctr_percent:.2f}%")
+        if metrics.cpc is not None:
+            evidence.append(f"CPC={metrics.cpc:.2f} {request.currency}")
+        if metrics.cpl is not None:
+            evidence.append(f"CPL={metrics.cpl:.2f} {request.currency}")
+        if metrics.cvr_percent is not None:
+            evidence.append(f"CVR={metrics.cvr_percent:.2f}%")
+        evidence_text = ", ".join(evidence) or "datos parciales"
+
+        if metrics.ctr_percent is not None and metrics.ctr_percent < request.target_ctr_percent and metrics.impressions and metrics.impressions >= 1000:
+            findings.append(CrossMetricFinding(
+                pattern="CTR bajo con volumen de impresiones",
+                evidence=evidence_text,
+                interpretation="Hay exposición, pero el anuncio no está generando respuesta proporcional. Posible problema de hook, creatividad, audiencia o promesa.",
+                affected_campaigns=[label],
+                severity="media-alta",
+                confidence="media" if metrics.sample_status != "muestra_insuficiente" else "baja",
+                recommended_action="Testear nuevos hooks, reformular promesa inicial o separar audiencia por temperatura.",
+            ))
+
+        if metrics.ctr_percent is not None and metrics.ctr_percent >= max(median_ctr, request.target_ctr_percent) and metrics.cvr_percent is not None and metrics.cvr_percent < request.target_landing_conversion_rate_percent:
+            findings.append(CrossMetricFinding(
+                pattern="CTR alto con conversión baja",
+                evidence=evidence_text,
+                interpretation="El anuncio genera interés, pero la landing, oferta, CTA o formulario no sostienen la promesa posterior al click.",
+                affected_campaigns=[label],
+                severity="alta",
+                confidence="media-alta",
+                recommended_action="Auditar message match anuncio→landing, prueba social, CTA, formulario y velocidad/fricción mobile.",
+            ))
+
+        if median_cpc and median_cpl and metrics.cpc is not None and metrics.cpl is not None and metrics.cpc < median_cpc * 0.75 and metrics.cpl > median_cpl * 1.25:
+            findings.append(CrossMetricFinding(
+                pattern="CPC bajo con CPL alto",
+                evidence=evidence_text,
+                interpretation="El tráfico es barato, pero no se transforma en oportunidad. Posible tráfico de baja intención, audiencia amplia o landing débil.",
+                affected_campaigns=[label],
+                severity="alta",
+                confidence="media",
+                recommended_action="No escalar por CPC barato; revisar audiencia, promesa, landing y filtros de calificación.",
+            ))
+
+        if campaign.frequency is not None and campaign.frequency >= 2.5 and metrics.ctr_percent is not None and metrics.ctr_percent < max(median_ctr * 0.85, request.target_ctr_percent):
+            findings.append(CrossMetricFinding(
+                pattern="Frecuencia alta con CTR débil",
+                evidence=evidence_text + f", frecuencia={campaign.frequency:.2f}",
+                interpretation="La audiencia puede estar saturada o la creatividad perdió novedad.",
+                affected_campaigns=[label],
+                severity="media",
+                confidence="media",
+                recommended_action="Rotar creativos, limitar frecuencia, ampliar audiencia o separar retargeting por ventanas.",
+            ))
+
+        clicks = metrics.clicks or 0
+        leads = metrics.leads or 0
+        events = campaign.key_events or campaign.conversions or campaign.sales or 0
+        if clicks >= 100 and leads == 0 and events == 0:
+            findings.append(CrossMetricFinding(
+                pattern="Clicks altos sin eventos ni leads",
+                evidence=evidence_text + f", clicks={clicks}",
+                interpretation="No se puede distinguir entre mala conversión real y tracking roto. La lectura de CPA/CPL queda contaminada.",
+                affected_campaigns=[label],
+                severity="crítica",
+                confidence="alta",
+                recommended_action="Corregir tracking antes de tomar decisiones de presupuesto.",
+            ))
+
+    return findings
+
+
+def build_tracking_health(request: CampaignPerformanceRequest) -> List[TrackingHealthFinding]:
+    findings: List[TrackingHealthFinding] = []
+    for campaign in request.campaigns:
+        label = campaign_label(campaign)
+        clicks = campaign.clicks or 0
+        leads = campaign.leads or campaign.form_submits or campaign.whatsapp_clicks or campaign.calls or 0
+        events = campaign.key_events or campaign.conversions or campaign.sales or 0
+        if campaign.events_configured is False or (clicks >= 100 and leads == 0 and events == 0):
+            findings.append(TrackingHealthFinding(
+                campaign_name=label,
+                issue="Tracking crítico o conversiones no registradas",
+                severity="crítica",
+                evidence=f"Clicks={clicks}, leads={leads}, eventos={events}, events_configured={campaign.events_configured}",
+                business_risk="Se pueden pausar campañas que sí funcionan o escalar campañas que no generan negocio real.",
+                recommended_fix="Auditar Pixel/CAPI/GA4, eventos de formulario, WhatsApp, llamadas, thank-you page y conversiones importadas.",
+                validation_metric="Eventos registrados correctamente y consistencia entre Ads, GA4 y CRM.",
+            ))
+        if campaign.utms_present is False:
+            findings.append(TrackingHealthFinding(
+                campaign_name=label,
+                issue="UTMs ausentes o inconsistentes",
+                severity="media-alta",
+                evidence="La campaña declara utms_present=false.",
+                business_risk="No se podrá conectar campaña, landing, CRM y calidad real de lead.",
+                recommended_fix="Estandarizar UTMs por canal, campaña, adset, anuncio, hook y etapa del funnel.",
+                validation_metric="100% de leads con fuente/medio/campaña/anuncio trazables.",
+            ))
+    if not request.campaigns:
+        findings.append(TrackingHealthFinding(
+            campaign_name=None,
+            issue="Tracking pendiente de validar",
+            severity="media",
+            evidence="No hay campañas cargadas.",
+            business_risk="Las decisiones de presupuesto no deben tomarse sin eventos y UTMs confiables.",
+            recommended_fix="Cargar export de Ads + GA4/Pixel/CRM con eventos de contacto y calidad.",
+            validation_metric="Data completeness y tracking readiness > 80/100.",
+        ))
+    return findings
+
+
+def build_lead_quality_assessment(request: CampaignPerformanceRequest) -> List[LeadQualityAssessment]:
+    results: List[LeadQualityAssessment] = []
+    for campaign in request.campaigns:
+        score = quality_score_from_campaign(campaign)
+        level = quality_level(score)
+        cpl = calc_cpl(campaign)
+        evidence = []
+        if score is not None:
+            evidence.append(f"score={score:.0f}/100")
+        if campaign.qualified_leads is not None:
+            evidence.append(f"calificados={campaign.qualified_leads}")
+        if campaign.bad_leads is not None:
+            evidence.append(f"malos={campaign.bad_leads}")
+        if cpl is not None:
+            evidence.append(f"CPL={cpl:.2f} {request.currency}")
+        recommendation = "Cargar calidad real de lead por CRM antes de decidir escalado." if score is None else "Mantener lectura de calidad en cada decisión de presupuesto."
+        if score is not None and score < 35:
+            recommendation = "No escalar por volumen barato: ajustar promesa, audiencia y filtros de calificación."
+        elif score is not None and score >= 75 and cpl is not None:
+            recommendation = "Evaluar escalado gradual si tracking y muestra son suficientes."
+        results.append(LeadQualityAssessment(
+            campaign_name=campaign_label(campaign),
+            lead_quality_score=score,
+            quality_level=level,
+            evidence=", ".join(evidence) or "calidad no cargada",
+            recommendation=recommendation,
+        ))
+    return results
+
+
+def build_cost_quality_matrix(request: CampaignPerformanceRequest, benchmarks: Dict[str, Optional[float]]) -> List[CostQualityQuadrant]:
+    matrix: List[CostQualityQuadrant] = []
+    median_cpl = benchmarks.get("median_cpl") or request.target_cpl
+    for campaign in request.campaigns:
+        cpl = calc_cpl(campaign)
+        score = quality_score_from_campaign(campaign)
+        if cpl is None and score is None:
+            continue
+        cost_high = cpl is not None and median_cpl is not None and cpl > median_cpl
+        cost_low = cpl is not None and median_cpl is not None and cpl <= median_cpl
+        quality_high = score is not None and score >= 60
+        quality_low = score is not None and score < 45
+        quadrant = "sin_clasificar"
+        recommendation = "Completar CPL y calidad para ubicar la campaña."
+        confidence = "baja"
+        if cost_low and quality_high:
+            quadrant = "barato_alta_calidad"
+            recommendation = "Escalar con incremento gradual y monitorear frecuencia/calidad."
+            confidence = "media-alta"
+        elif cost_low and quality_low:
+            quadrant = "barato_baja_calidad"
+            recommendation = "No escalar todavía; ajustar promesa, audiencia y filtro comercial."
+            confidence = "media"
+        elif cost_high and quality_high:
+            quadrant = "caro_alta_calidad"
+            recommendation = "Optimizar antes de pausar; puede valer la pena si genera oportunidades reales."
+            confidence = "media"
+        elif cost_high and quality_low:
+            quadrant = "caro_baja_calidad"
+            recommendation = "Pausar, rehacer o mover presupuesto a campañas más eficientes."
+            confidence = "alta"
+        matrix.append(CostQualityQuadrant(
+            campaign_name=campaign_label(campaign),
+            quadrant=quadrant,
+            cpl=cpl,
+            quality_score=score,
+            recommendation=recommendation,
+            confidence=confidence,
+        ))
+    return matrix
+
+
+def build_budget_reallocation(request: CampaignPerformanceRequest, matrix: List[CostQualityQuadrant]) -> List[BudgetReallocationRecommendation]:
+    recommendations: List[BudgetReallocationRecommendation] = []
+    for item in matrix:
+        if item.quadrant == "barato_alta_calidad":
+            recommendations.append(BudgetReallocationRecommendation(
+                campaign_name=item.campaign_name,
+                action="aumentar_presupuesto_gradual",
+                recommended_change_percent=20,
+                reason="CPL relativo favorable y calidad alta.",
+                risk="Escalar demasiado rápido puede saturar audiencia o bajar calidad.",
+                confidence=item.confidence,
+            ))
+        elif item.quadrant == "caro_baja_calidad":
+            recommendations.append(BudgetReallocationRecommendation(
+                campaign_name=item.campaign_name,
+                action="reducir_o_pausar",
+                recommended_change_percent=-50,
+                reason="CPL alto y calidad baja.",
+                risk="Si la muestra es chica, validar antes de pausar definitivamente.",
+                confidence=item.confidence,
+            ))
+        elif item.quadrant == "barato_baja_calidad":
+            recommendations.append(BudgetReallocationRecommendation(
+                campaign_name=item.campaign_name,
+                action="mantener_con_filtro",
+                recommended_change_percent=0,
+                reason="Costo bajo pero calidad débil; primero mejorar filtro y promesa.",
+                risk="Escalar puede llenar ventas de leads malos.",
+                confidence=item.confidence,
+            ))
+        elif item.quadrant == "caro_alta_calidad":
+            recommendations.append(BudgetReallocationRecommendation(
+                campaign_name=item.campaign_name,
+                action="optimizar_sin_pausar",
+                recommended_change_percent=0,
+                reason="La calidad justifica análisis; optimizar creativo, landing y segmentación antes de cortar.",
+                risk="Pausar puede eliminar una fuente de oportunidades valiosas.",
+                confidence=item.confidence,
+            ))
+    if not recommendations and not request.campaigns:
+        recommendations.append(BudgetReallocationRecommendation(
+            campaign_name="pendiente",
+            action="sin_reasignacion_hasta_cargar_datos",
+            recommended_change_percent=None,
+            reason="No hay campañas para comparar.",
+            risk="Reasignar presupuesto sin CPL, calidad y tracking puede aumentar desperdicio.",
+            confidence="preparada",
+        ))
+    return recommendations
+
+
+def infer_hook(campaign: CampaignMetric) -> str:
+    if campaign.hook:
+        return campaign.hook
+    if campaign.angle:
+        return campaign.angle
+    name = campaign.campaign_name.casefold()
+    notes = (campaign.notes or "").casefold()
+    combined = name + " " + notes
+    if "seguridad" in combined or "capital" in combined or "invers" in combined:
+        return "seguridad / inversión"
+    if "financi" in combined:
+        return "financiación"
+    if "amenit" in combined or "diseño" in combined or "estilo" in combined:
+        return "diseño / amenities"
+    if "retarget" in combined:
+        return "retargeting"
+    return campaign.campaign_name
+
+
+def build_creative_hook_insights(request: CampaignPerformanceRequest, derived: List[DerivedCampaignMetrics]) -> List[CreativeHookInsight]:
+    grouped: Dict[str, List[tuple[CampaignMetric, DerivedCampaignMetrics]]] = {}
+    for campaign, metrics in zip(request.campaigns, derived):
+        grouped.setdefault(infer_hook(campaign), []).append((campaign, metrics))
+    insights: List[CreativeHookInsight] = []
+    for hook, rows in grouped.items():
+        avg_ctr = median_or_none([metrics.ctr_percent for _, metrics in rows])
+        avg_cpl = median_or_none([metrics.cpl for _, metrics in rows])
+        avg_quality = median_or_none([metrics.lead_quality_rate_percent for _, metrics in rows])
+        campaigns = [metrics.campaign_name for _, metrics in rows]
+        signal = f"CTR mediano={avg_ctr:.2f}%" if avg_ctr is not None else "CTR no disponible"
+        if avg_cpl is not None:
+            signal += f", CPL mediano={avg_cpl:.2f} {request.currency}"
+        if avg_quality is not None:
+            signal += f", calidad mediana={avg_quality:.0f}/100"
+        interpretation = "Ángulo pendiente de validar."
+        next_test = "Probar variantes con promesas y objeciones distintas."
+        if avg_ctr is not None and avg_quality is not None and avg_ctr >= request.target_ctr_percent and avg_quality >= 60:
+            interpretation = "Ángulo con señales de respuesta y calidad. Puede ser base de nuevos tests."
+            next_test = "Crear 2-3 variantes del mismo ángulo con diferente prueba, CTA y objeción."
+        elif avg_ctr is not None and avg_ctr < request.target_ctr_percent:
+            interpretation = "Ángulo con baja respuesta inicial. Puede servir para awareness, pero no parece fuerte para conversión."
+            next_test = "Cambiar hook, promesa o primer frame antes de aumentar presupuesto."
+        insights.append(CreativeHookInsight(
+            hook=hook,
+            affected_campaigns=campaigns,
+            signal=signal,
+            interpretation=interpretation,
+            recommended_next_test=next_test,
+        ))
+    return insights
+
+
+def build_landing_friction(request: CampaignPerformanceRequest, derived: List[DerivedCampaignMetrics]) -> List[LandingFrictionAssessment]:
+    assessments: List[LandingFrictionAssessment] = []
+    for campaign, metrics in zip(request.campaigns, derived):
+        if metrics.clicks is None and metrics.ctr_percent is None:
+            continue
+        friction = 35
+        evidence = []
+        if metrics.ctr_percent is not None and metrics.ctr_percent >= request.target_ctr_percent:
+            friction += 15
+            evidence.append(f"CTR aceptable/alto={metrics.ctr_percent:.2f}%")
+        if metrics.cvr_percent is not None and metrics.cvr_percent < request.target_landing_conversion_rate_percent:
+            friction += 30
+            evidence.append(f"CVR bajo={metrics.cvr_percent:.2f}%")
+        if campaign.landing_visits and (campaign.leads or 0) == 0:
+            friction += 25
+            evidence.append(f"visitas landing={campaign.landing_visits}, leads=0")
+        if campaign.mobile_share_percent is not None and campaign.mobile_share_percent > 70 and metrics.cvr_percent is not None and metrics.cvr_percent < request.target_landing_conversion_rate_percent:
+            friction += 10
+            evidence.append("alto tráfico mobile con baja conversión")
+        if evidence:
+            assessments.append(LandingFrictionAssessment(
+                campaign_name=metrics.campaign_name,
+                friction_score=max(0, min(friction, 100)),
+                evidence=", ".join(evidence),
+                likely_issue="La landing, formulario, CTA o prueba de confianza no sostienen la promesa del anuncio.",
+                recommended_fix="Revisar message match, prueba social above the fold, CTA, formulario, velocidad y experiencia mobile.",
+            ))
+    return assessments
+
+
+def build_message_match(request: CampaignPerformanceRequest) -> List[MessageMatchAssessment]:
+    assessments: List[MessageMatchAssessment] = []
+    for campaign in request.campaigns:
+        promise = (campaign.ad_promise or campaign.hook or campaign.angle or "").casefold()
+        landing = (campaign.landing_message or "").casefold()
+        score = 70
+        mismatch = False
+        evidence = "No hay promesa/landing suficientes para evaluar message match."
+        if promise and landing:
+            overlap = set(promise.split()) & set(landing.split())
+            if len(overlap) < 2:
+                score = 35
+                mismatch = True
+                evidence = f"Promesa='{campaign.ad_promise or campaign.hook or campaign.angle}' vs landing='{campaign.landing_message}'."
+            else:
+                evidence = "Promesa y landing comparten términos principales."
+        elif promise and not landing:
+            score = 50
+            evidence = "Hay promesa de anuncio, pero no se cargó mensaje de landing."
+        if mismatch or score < 70:
+            assessments.append(MessageMatchAssessment(
+                campaign_name=campaign_label(campaign),
+                message_match_score=score,
+                mismatch_detected=mismatch,
+                evidence=evidence,
+                recommended_fix="Alinear headline, prueba social, CTA y oferta de la landing con el hook del anuncio.",
+            ))
+    return assessments
+
+
+def build_funnel_leaks(request: CampaignPerformanceRequest, derived: List[DerivedCampaignMetrics]) -> List[FunnelLeakFinding]:
+    leaks: List[FunnelLeakFinding] = []
+    for campaign, metrics in zip(request.campaigns, derived):
+        label = metrics.campaign_name
+        if metrics.impressions and metrics.impressions >= 1000 and metrics.ctr_percent is not None and metrics.ctr_percent < request.target_ctr_percent:
+            leaks.append(FunnelLeakFinding(
+                campaign_name=label,
+                leak_stage="Awareness",
+                evidence=f"Impresiones={metrics.impressions}, CTR={metrics.ctr_percent:.2f}%",
+                probable_cause="Hook, creatividad, audiencia o promesa inicial poco relevante.",
+                recommended_action="Testear hooks y separar mensajes por temperatura.",
+                metric_to_validate="CTR, CPC y engagement de calidad.",
+            ))
+        if metrics.ctr_percent is not None and metrics.ctr_percent >= request.target_ctr_percent and metrics.cvr_percent is not None and metrics.cvr_percent < request.target_landing_conversion_rate_percent:
+            leaks.append(FunnelLeakFinding(
+                campaign_name=label,
+                leak_stage="Consideration / Landing",
+                evidence=f"CTR={metrics.ctr_percent:.2f}%, CVR={metrics.cvr_percent:.2f}%",
+                probable_cause="La landing, CTA o prueba de confianza no convierte el interés.",
+                recommended_action="Rehacer bloque inicial de landing, CTA y prueba social.",
+                metric_to_validate="CVR landing→lead, CPL y calidad del lead.",
+            ))
+        if metrics.leads and campaign.meetings is not None and campaign.meetings < max(1, metrics.leads * 0.15):
+            leaks.append(FunnelLeakFinding(
+                campaign_name=label,
+                leak_stage="Sales / Follow-up",
+                evidence=f"Leads={metrics.leads}, reuniones={campaign.meetings}",
+                probable_cause="Lead follow-up, velocidad de contacto o calificación débil.",
+                recommended_action="Crear seguimiento comercial y SLA de contacto.",
+                metric_to_validate="tasa lead→reunión y tiempo de primera respuesta.",
+            ))
+    return leaks
+
+
+def build_experiment_recommendations(
+    request: CampaignPerformanceRequest,
+    cross_findings: List[CrossMetricFinding],
+    landing_friction: List[LandingFrictionAssessment],
+    hook_insights: List[CreativeHookInsight],
+) -> List[ExperimentRecommendation]:
+    experiments: List[ExperimentRecommendation] = []
+    if any("CTR bajo" in finding.pattern for finding in cross_findings):
+        experiments.append(ExperimentRecommendation(
+            title="Test de hooks para recuperar respuesta inicial",
+            hypothesis="Si cambiamos el hook principal hacia dolor, seguridad, prueba o beneficio concreto, subirá el CTR sin deteriorar calidad.",
+            change="Crear 3 variantes de hook para campañas con CTR bajo.",
+            primary_metric="CTR",
+            secondary_metric="CPC y calidad de lead",
+            success_criteria="+20% CTR sin caída de calidad respecto al control.",
+            minimum_duration="7–14 días o hasta alcanzar muestra mínima.",
+            risk="Confundir engagement superficial con intención real.",
+            do_not_touch="No cambiar audiencia, landing y presupuesto al mismo tiempo que el hook.",
+        ))
+    if landing_friction:
+        experiments.append(ExperimentRecommendation(
+            title="Test de landing para cerrar fuga post-click",
+            hypothesis="Si alineamos headline, prueba social y CTA con la promesa del anuncio, aumentará la tasa landing→lead.",
+            change="Crear variante de landing con mensaje específico, prueba social visible y CTA de menor fricción.",
+            primary_metric="CVR landing→lead",
+            secondary_metric="CPL y lead quality score",
+            success_criteria="+20% CVR sin caída de calidad.",
+            minimum_duration="7–14 días o hasta 300+ clicks.",
+            risk="Aumentar leads pero bajar calidad si el CTA es demasiado amplio.",
+            do_not_touch="No cambiar tracking ni evento primario durante el test.",
+        ))
+    if hook_insights:
+        best = next((item for item in hook_insights if "respuesta" in item.interpretation or "calidad" in item.interpretation), None)
+        if best:
+            experiments.append(ExperimentRecommendation(
+                title=f"Profundizar ángulo ganador: {best.hook}",
+                hypothesis="Si expandimos un ángulo con señal de calidad, podemos aumentar volumen manteniendo intención.",
+                change="Crear variantes del ángulo ganador con objeciones, prueba y CTA distintos.",
+                primary_metric="CPL de lead calificado",
+                secondary_metric="CTR, frecuencia y tasa de reunión",
+                success_criteria="Mantener CPL relativo y calidad mientras sube volumen.",
+                minimum_duration="14 días o muestra mínima de leads calificados.",
+                risk="Saturar un ángulo ganador si se escala demasiado rápido.",
+                do_not_touch="No duplicar presupuesto más de 20–30% sin monitoreo.",
+            ))
+    if not experiments:
+        experiments.append(ExperimentRecommendation(
+            title="Preparar primer ciclo de experimentos",
+            hypothesis="Con datos de campaña y tracking confiable se podrán aislar fugas por creativo, landing, audiencia o seguimiento.",
+            change="Cargar métricas completas y definir un control antes de modificar múltiples variables.",
+            primary_metric="CPL de lead calificado",
+            secondary_metric="CTR, CVR, reuniones y CPA",
+            success_criteria="Decisiones basadas en muestra suficiente y tracking confiable.",
+            minimum_duration="7–14 días por test.",
+            risk="Tomar decisiones con datos incompletos.",
+            do_not_touch="No mezclar cambios de creativo, audiencia, landing y tracking en el mismo test.",
+        ))
+    return experiments[:6]
+
+
+def build_data_completeness(request: CampaignPerformanceRequest) -> DataCompletenessScore:
+    checks = {
+        "gasto": any(c.spend is not None for c in request.campaigns),
+        "impresiones": any(c.impressions is not None for c in request.campaigns),
+        "clicks": any(c.clicks is not None for c in request.campaigns),
+        "leads": any(c.leads is not None or c.form_submits is not None or c.whatsapp_clicks is not None for c in request.campaigns),
+        "conversiones/ventas": any(c.conversions is not None or c.sales is not None or c.revenue is not None for c in request.campaigns),
+        "calidad de lead": any(c.qualified_leads is not None or c.bad_leads is not None or c.lead_quality_score is not None for c in request.campaigns),
+        "eventos/tracking": any(c.key_events is not None or c.events_configured is not None for c in request.campaigns),
+        "UTMs": any(c.utms_present is not None for c in request.campaigns),
+        "landing/formulario": any(c.landing_visits is not None or c.form_starts is not None or c.form_submits is not None for c in request.campaigns),
+        "CRM/reuniones": any(c.meetings is not None or c.opportunities is not None or c.crm_stage is not None for c in request.campaigns),
+        "período anterior": any(c.previous_spend is not None or c.previous_clicks is not None or c.previous_leads is not None for c in request.campaigns),
+    }
+    if not request.campaigns:
+        return DataCompletenessScore(
+            score=0,
+            missing_fields=list(checks.keys()),
+            impact_on_analysis="Sin campañas, el sistema solo puede devolver acciones preparadas e inferencias estratégicas.",
+            next_data_to_collect=build_next_data_needed(request),
+        )
+    present = sum(1 for value in checks.values() if value)
+    score = round((present / len(checks)) * 100)
+    missing = [name for name, ok in checks.items() if not ok]
+    impact = "Alta capacidad analítica." if score >= 80 else "Análisis útil pero todavía incompleto." if score >= 50 else "Alta incertidumbre: faltan datos clave para decisiones de presupuesto."
+    return DataCompletenessScore(
+        score=score,
+        missing_fields=missing,
+        impact_on_analysis=impact,
+        next_data_to_collect=missing[:8] or ["Datos históricos por período para detectar tendencia y fatiga."],
+    )
+
+
+def build_sample_size_warnings(request: CampaignPerformanceRequest) -> List[str]:
+    warnings = []
+    for campaign in request.campaigns:
+        clicks = campaign.clicks or 0
+        leads = campaign.leads or campaign.form_submits or campaign.whatsapp_clicks or campaign.calls or 0
+        if clicks < 100 and leads < 5:
+            warnings.append(f"{campaign_label(campaign)}: muestra insuficiente; evitar decisiones fuertes hasta superar 100–300 clicks o 5–10 leads.")
+        elif leads < 5:
+            warnings.append(f"{campaign_label(campaign)}: pocos leads; no concluir calidad todavía.")
+    return warnings
+
+
+def build_confidence_notes(cross_findings: List[CrossMetricFinding], tracking: List[TrackingHealthFinding], data_score: DataCompletenessScore) -> List[str]:
+    notes = []
+    if data_score.score < 50:
+        notes.append("Confianza general baja-media: faltan datos de tracking, calidad, CRM o histórico.")
+    elif data_score.score < 80:
+        notes.append("Confianza general media: hay datos suficientes para priorizar, pero conviene completar CRM/histórico.")
+    else:
+        notes.append("Confianza general alta: dataset suficientemente completo para decisiones accionables.")
+    if any(item.severity == "crítica" for item in tracking):
+        notes.append("Las conclusiones de CPA/CPL deben leerse con cautela hasta corregir tracking crítico.")
+    for finding in cross_findings[:5]:
+        notes.append(f"{finding.pattern}: confianza {finding.confidence}; severidad {finding.severity}.")
+    return notes
+
+
+def build_timed_action_plan(data_score: DataCompletenessScore, tracking: List[TrackingHealthFinding], budget: List[BudgetReallocationRecommendation], experiments: List[ExperimentRecommendation]) -> TimedActionPlan:
+    today = []
+    if any(item.severity == "crítica" for item in tracking):
+        today.append("Corregir tracking crítico antes de tomar decisiones de presupuesto.")
+    today.append("Identificar campañas con desperdicio evidente y bloquear escalado de campañas con baja calidad.")
+    if data_score.score < 70:
+        today.append("Completar datos mínimos: gasto, clicks, leads, eventos, calidad y CRM.")
+
+    seven = ["Reformular CTA y prueba social en puntos de contacto principales."]
+    if budget:
+        seven.append("Aplicar reasignación gradual: reducir desperdicio y escalar solo campañas con calidad suficiente.")
+    if experiments:
+        seven.append("Lanzar primer ciclo de tests con una variable por vez.")
+
+    thirty = ["Rediseñar landing o message match donde exista CTR alto con CVR bajo.", "Separar campañas por temperatura: frío, tibio, templado, caliente y retargeting."]
+    ninety = ["Crear sistema de seguimiento comercial y scoring de leads en CRM.", "Conectar campañas, GA4/Pixel/CAPI y CRM para reporting de calidad real."]
+    return TimedActionPlan(today_48h=today, next_7_days=seven, next_14_30_days=thirty, next_60_90_days=ninety)
+
+
+def build_discovery_questions() -> List[str]:
+    return [
+        "¿Qué porcentaje de leads agenda reunión?",
+        "¿Qué campañas generan clientes reales, no solo leads?",
+        "¿Qué objeciones aparecen con más frecuencia en ventas?",
+        "¿Cuál es el tiempo medio desde primer contacto hasta decisión?",
+        "¿Qué evento se usa como conversión principal y dónde se dispara?",
+        "¿Los leads tienen UTMs y fuente/campaña en CRM?",
+        "¿Cuál es la tasa de contacto, reunión, oportunidad y cierre por canal?",
+        "¿Qué lead se considera calificado y quién lo valida?",
+    ]
+
+
+def build_proposal_guidance(data_score: DataCompletenessScore) -> ProposalGuidance:
+    return ProposalGuidance(
+        what_to_sell=[
+            "Diagnóstico profundo de sistema comercial y performance.",
+            "Corrección de tracking, eventos, UTMs y reporting de calidad.",
+            "Rediseño de propuesta de valor, CTA, prueba social y ruta de conversión.",
+            "Plan de experimentos para hooks, landing, audiencias y retargeting.",
+        ],
+        what_not_to_sell_yet=[
+            "Calendario completo de contenidos antes de ordenar mensaje y medición.",
+            "Escalado agresivo de campañas sin tracking y calidad validados.",
+            "Implementación táctica completa sin discovery comercial.",
+        ],
+        what_to_show_in_meeting=[
+            "Heatmap de intención y zona bloqueada.",
+            "Blueprint con FAULT, DG, ruta verde y Support Layer.",
+            "Matriz costo/calidad y riesgos de presupuesto.",
+            "Preguntas de datos necesarias para pasar de inferencia a evidencia.",
+        ],
+        what_data_to_request=data_score.next_data_to_collect,
+        what_to_promise=[
+            "Mayor claridad diagnóstica y priorización de decisiones.",
+            "Mejor trazabilidad entre campañas, leads y oportunidades.",
+            "Sistema de pruebas para mejorar conversión y calidad.",
+        ],
+        what_not_to_promise=[
+            "Resultados garantizados sin datos ni control de implementación.",
+            "Bajar CPL sin considerar calidad de lead.",
+            "Escalar ventas solo aumentando presupuesto.",
+        ],
+        closing_angle="El problema no es solo publicar o invertir más; es construir un sistema medible que convierta intención en oportunidades calificadas.",
+    )
+
+
+def build_commercial_readiness_score(public_audit: ProspectWithResearchResponse, campaign_performance: CampaignPerformanceResponse) -> CommercialReadinessScore:
+    tracking_score = max(0, min(100, campaign_performance.data_completeness.score + 10))
+    if any(item.severity == "crítica" for item in campaign_performance.tracking_health):
+        tracking_score = min(tracking_score, 40)
+    offer_clarity = max(20, min(100, public_audit.commercial_score.value_proposition * 10))
+    funnel_continuity = max(20, min(100, public_audit.commercial_score.cta_strength * 10))
+    lead_quality = int(median_or_none([item.lead_quality_score for item in campaign_performance.lead_quality_assessment]) or 45)
+    budget_efficiency = 70 if any(item.action == "aumentar_presupuesto_gradual" for item in campaign_performance.budget_reallocation) else 45
+    message_match = 100 - int(median_or_none([100 - item.message_match_score for item in campaign_performance.message_match]) or 35)
+    landing_strength = 100 - int(median_or_none([item.friction_score for item in campaign_performance.landing_friction]) or 45)
+    creative_relevance = 70 if campaign_performance.creative_hook_insights else 45
+    cta_clarity = max(20, min(100, public_audit.commercial_score.cta_strength * 10))
+    sales_follow_up = 55 if any("seguimiento" in action.action.casefold() for action in campaign_performance.strategic_actions) else 40
+    components = [tracking_score, offer_clarity, message_match, funnel_continuity, lead_quality, creative_relevance, landing_strength, cta_clarity, sales_follow_up, budget_efficiency]
+    overall = round(sum(components) / len(components))
+    component_map = {
+        "tracking_readiness": tracking_score,
+        "offer_clarity": offer_clarity,
+        "message_match": message_match,
+        "funnel_continuity": funnel_continuity,
+        "lead_quality": lead_quality,
+        "creative_relevance": creative_relevance,
+        "landing_strength": landing_strength,
+        "cta_clarity": cta_clarity,
+        "sales_follow_up": sales_follow_up,
+        "budget_efficiency": budget_efficiency,
+    }
+    weakest = min(component_map, key=component_map.get)
+    strongest = max(component_map, key=component_map.get)
+    return CommercialReadinessScore(
+        overall=overall,
+        tracking_readiness=int(tracking_score),
+        offer_clarity=int(offer_clarity),
+        message_match=int(message_match),
+        funnel_continuity=int(funnel_continuity),
+        lead_quality=int(lead_quality),
+        creative_relevance=int(creative_relevance),
+        landing_strength=int(landing_strength),
+        cta_clarity=int(cta_clarity),
+        sales_follow_up=int(sales_follow_up),
+        budget_efficiency=int(budget_efficiency),
+        strongest_area=strongest,
+        weakest_area=weakest,
+        recommended_focus=f"Priorizar {weakest.replace('_', ' ')} antes de escalar el sistema.",
+    )
+
+
+def build_map_coherence_check(public_audit: ProspectWithResearchResponse, campaign_performance: CampaignPerformanceResponse) -> MapCoherenceCheck:
+    alignment = []
+    inconsistencies = []
+    corrections = []
+    density = public_audit.customer_intent_density_map
+    blocked = f"{density.blocked_zone.x} / {density.blocked_zone.y}"
+    alignment.append(f"Heatmap marca bloqueo en {blocked}; blueprint debe leerse desde FAULT hacia DG y ruta verde.")
+    if any("CTR alto con conversión baja" in item.pattern for item in campaign_performance.cross_metric_findings):
+        alignment.append("Performance detecta interés post-click con baja conversión; coincide con FAULT entre interés, confianza y acción.")
+    if any(item.issue.startswith("Tracking crítico") for item in campaign_performance.tracking_health):
+        inconsistencies.append("Hay tracking crítico: los mapas pueden ser estratégicamente coherentes, pero la evidencia de CPA/CPL no es confiable todavía.")
+        corrections.append("Corregir tracking antes de usar performance para confirmar el heatmap.")
+    if any("baja calidad" in item.quadrant for item in campaign_performance.cost_quality_matrix):
+        alignment.append("La matriz costo/calidad refuerza la necesidad del Support Layer: prueba, objeciones, CTA y follow-up.")
+    score = 85 - len(inconsistencies) * 15
+    return MapCoherenceCheck(
+        score=max(40, score),
+        alignment_detected=alignment,
+        inconsistencies=inconsistencies,
+        correction_needed=corrections or ["Mantener explicación separada: heatmap diagnostica intención; blueprint explica rediseño."],
+    )
+
 def run_campaign_performance_audit(request: CampaignPerformanceRequest) -> CampaignPerformanceResponse:
     data_quality = infer_campaign_data_quality(request)
     has_data = data_quality not in ["sin_datos", "baja"] or has_meaningful_campaign_data(request.campaigns)
@@ -3551,6 +4612,72 @@ def run_campaign_performance_audit(request: CampaignPerformanceRequest) -> Campa
     temperature_action = build_temperature_separation_action(request)
     if temperature_action:
         performance_actions.append(temperature_action)
+
+    derived_metrics = derive_campaign_metrics(request)
+    internal_benchmarks = build_internal_benchmarks(derived_metrics)
+    metric_deltas = build_metric_deltas(request)
+    cross_metric_findings = build_cross_metric_findings(request, derived_metrics, internal_benchmarks)
+    tracking_health = build_tracking_health(request)
+    lead_quality_assessment = build_lead_quality_assessment(request)
+    cost_quality_matrix = build_cost_quality_matrix(request, internal_benchmarks)
+    budget_reallocation = build_budget_reallocation(request, cost_quality_matrix)
+    creative_hook_insights = build_creative_hook_insights(request, derived_metrics)
+    landing_friction = build_landing_friction(request, derived_metrics)
+    message_match = build_message_match(request)
+    funnel_leaks = build_funnel_leaks(request, derived_metrics)
+    experiment_recommendations = build_experiment_recommendations(request, cross_metric_findings, landing_friction, creative_hook_insights)
+    data_completeness = build_data_completeness(request)
+    sample_size_warnings = build_sample_size_warnings(request)
+    confidence_by_finding = build_confidence_notes(cross_metric_findings, tracking_health, data_completeness)
+    timed_action_plan = build_timed_action_plan(data_completeness, tracking_health, budget_reallocation, experiment_recommendations)
+    discovery_questions = build_discovery_questions()
+    proposal_guidance = build_proposal_guidance(data_completeness)
+
+    # Turn richer findings into actionable items so they appear in the prioritized list.
+    for finding in cross_metric_findings:
+        performance_actions.append(make_action(
+            category="cruce_metricas",
+            action=finding.recommended_action,
+            trigger=finding.pattern,
+            evidence=finding.evidence,
+            priority="crítica" if finding.severity == "crítica" else "alta" if finding.severity in ["alta", "media-alta"] else "media",
+            effort="medio",
+            expected_impact="Mejorar eficiencia del funnel y evitar decisiones basadas en métricas aisladas.",
+            verification_metric="CTR, CPC, CVR, CPL, calidad de lead y reuniones.",
+            related_campaign=", ".join(finding.affected_campaigns),
+            confidence=finding.confidence,
+            data_required=False,
+        ))
+
+    for item in tracking_health:
+        tracking_actions.append(make_action(
+            category="tracking",
+            action=item.recommended_fix,
+            trigger=item.issue,
+            evidence=item.evidence,
+            priority="crítica" if item.severity == "crítica" else "alta" if item.severity in ["alta", "media-alta"] else "media",
+            effort="medio",
+            expected_impact="Mejorar confiabilidad de CPA/CPL y atribución real de oportunidades.",
+            verification_metric=item.validation_metric,
+            related_campaign=item.campaign_name,
+            confidence="alta" if item.severity == "crítica" else "media",
+            data_required=False,
+        ))
+
+    for item in budget_reallocation:
+        budget_actions.append(make_action(
+            category="presupuesto",
+            action=item.action,
+            trigger="Matriz costo/calidad y benchmarks internos.",
+            evidence=item.reason,
+            priority="alta" if item.action in ["reducir_o_pausar", "aumentar_presupuesto_gradual"] else "media",
+            effort="bajo",
+            expected_impact="Asignar presupuesto según eficiencia y calidad, no solo volumen de leads.",
+            verification_metric="CPL, CPL calificado, CPA, frecuencia, calidad y reuniones.",
+            related_campaign=item.campaign_name,
+            confidence=item.confidence,
+            data_required=False,
+        ))
 
     # Ensure the requested performance rules exist even before data is available.
     if not request.campaigns:
@@ -3630,41 +4757,29 @@ def run_campaign_performance_audit(request: CampaignPerformanceRequest) -> Campa
                 data_required=True,
             ),
         ])
-        tracking_actions.append(make_action(
-            category="tracking",
-            action="Corregir tracking si hay clicks pero no eventos",
-            trigger="Pendiente de clicks y eventos posteriores.",
-            evidence="No hay campañas cargadas todavía.",
-            priority="media",
-            effort="medio",
-            expected_impact="Preparar medición confiable antes de tomar decisiones de presupuesto.",
-            verification_metric="Eventos GA4/Pixel/CAPI y conversiones importadas.",
-            confidence="preparada",
-            data_required=True,
-        ))
 
     all_actions = strategic_actions + performance_actions + budget_actions + tracking_actions
-    prioritized_actions = prioritize_actions(all_actions, limit=15)
+    prioritized_actions = prioritize_actions(all_actions, limit=20)
 
     if data_quality == "sin_datos":
         summary = (
-            "No hay campañas cargadas todavía. El endpoint queda preparado con reglas estratégicas y de performance; "
+            "No hay campañas cargadas todavía. El endpoint queda preparado con reglas estratégicas, performance, tracking, calidad, presupuesto y experimentos; "
             "las acciones tácticas aparecen como preparadas y requieren datos para activarse con evidencia."
         )
-    elif findings:
+    elif cross_metric_findings or findings:
         summary = (
-            f"Se analizaron {len(request.campaigns)} campañas y se detectaron {len(findings)} hallazgos accionables. "
-            "Las recomendaciones priorizan presupuesto, tracking, creatividad, landing, audiencia y retargeting."
+            f"Se analizaron {len(request.campaigns)} campañas. Además de hallazgos básicos, se detectaron {len(cross_metric_findings)} cruces métricos, "
+            f"{len(tracking_health)} alertas de tracking y {len(funnel_leaks)} fugas de funnel."
         )
     else:
         summary = (
-            f"Se analizaron {len(request.campaigns)} campañas. No hay suficientes anomalías fuertes con los umbrales actuales, "
-            "pero se devuelven acciones estratégicas y oportunidades de ordenamiento por temperatura."
+            f"Se analizaron {len(request.campaigns)} campañas. No hay anomalías fuertes con los umbrales actuales, "
+            "pero se devuelven benchmarks internos, guardrails, experimentos y próximos datos necesarios."
         )
 
     return CampaignPerformanceResponse(
         company_name=request.company_name,
-        audit_type="campaign_performance_rules_v1",
+        audit_type="campaign_intelligence_rules_v2",
         data_quality=data_quality,
         campaigns_analyzed=len(request.campaigns),
         findings=findings,
@@ -3673,6 +4788,25 @@ def run_campaign_performance_audit(request: CampaignPerformanceRequest) -> Campa
         budget_actions=budget_actions,
         tracking_actions=tracking_actions,
         prioritized_actions=prioritized_actions,
+        derived_metrics=derived_metrics,
+        metric_deltas=metric_deltas,
+        internal_benchmarks=internal_benchmarks,
+        cross_metric_findings=cross_metric_findings,
+        tracking_health=tracking_health,
+        lead_quality_assessment=lead_quality_assessment,
+        cost_quality_matrix=cost_quality_matrix,
+        budget_reallocation=budget_reallocation,
+        creative_hook_insights=creative_hook_insights,
+        landing_friction=landing_friction,
+        message_match=message_match,
+        funnel_leaks=funnel_leaks,
+        experiment_recommendations=experiment_recommendations,
+        data_completeness=data_completeness,
+        sample_size_warnings=sample_size_warnings,
+        confidence_by_finding=confidence_by_finding,
+        timed_action_plan=timed_action_plan,
+        discovery_questions=discovery_questions,
+        proposal_guidance=proposal_guidance,
         next_data_needed=build_next_data_needed(request),
         summary=summary,
     )
@@ -3763,16 +4897,25 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
             "primero corregir mensaje/CTA/confianza, luego presupuesto/tracking, y después escalar o pausar según evidencia."
         )
 
+    commercial_readiness_score = build_commercial_readiness_score(public_audit, campaign_performance)
+    map_coherence_check = build_map_coherence_check(public_audit, campaign_performance)
+
     return FullCommercialSystemResponse(
         company_name=request.company_name,
-        audit_type="full_commercial_system_audit_v1",
+        audit_type="full_commercial_system_audit_v2",
         public_commercial_audit=public_audit,
         campaign_performance=campaign_performance,
         unified_priorities=unified_priorities,
+        commercial_readiness_score=commercial_readiness_score,
+        data_completeness_score=campaign_performance.data_completeness,
+        map_coherence_check=map_coherence_check,
+        discovery_questions=campaign_performance.discovery_questions,
+        proposal_guidance=campaign_performance.proposal_guidance,
+        timed_action_plan=campaign_performance.timed_action_plan,
         system_summary=system_summary,
         recommended_next_step=(
-            "Cargar un export real de campañas y eventos para pasar de acciones preparadas a decisiones con evidencia."
+            "Cargar un export real de campañas, eventos, calidad de lead, CRM y período anterior para pasar de acciones preparadas a decisiones con evidencia."
             if campaign_performance.data_quality == "sin_datos"
-            else "Revisar prioridades unificadas y ejecutar primero acciones de tracking, CTA, landing y presupuesto de alto impacto."
+            else "Revisar primero tracking, data completeness, mapa de coherencia y acciones con impacto alto/esfuerzo bajo."
         ),
     )
