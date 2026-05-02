@@ -1495,188 +1495,226 @@ def render_score_chart_svg(score: CommercialScore) -> str:
 
 
 
+
 def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
     width = 1120
     height = 720
-    margin = 46
 
-    left_x = 84
-    mid_x = 430
-    right_x = 758
+    current_items = blueprint.current_flow or []
+    break_items = blueprint.breakpoints or []
+    recommended_items = blueprint.recommended_flow or []
+    missing_links = blueprint.missing_links or []
 
-    top_y = 142
-    node_w = 260
-    node_h = 48
-    gap_y = 26
-
-    current_items = blueprint.current_flow
-    break_items = blueprint.breakpoints
-    recommended_items = blueprint.recommended_flow
-
-    def y_for(index: int) -> int:
-        return top_y + index * (node_h + gap_y)
-
-    def sanitize_label(value: str, max_len: int = 38) -> str:
+    def short(value: str, max_len: int = 34) -> str:
         safe = h(value)
         return safe if len(safe) <= max_len else safe[:max_len - 1] + "…"
 
     def grid_lines() -> str:
         parts = []
         for x in range(0, width + 1, 24):
-            opacity = 0.10 if x % 96 else 0.22
-            stroke_w = 0.7 if x % 96 else 1.1
+            major = x % 120 == 0
             parts.append(
-                f'<line x1="{x}" y1="0" x2="{x}" y2="{height}" stroke="#60a5fa" stroke-width="{stroke_w}" opacity="{opacity}"/>'
+                f'<line x1="{x}" y1="0" x2="{x}" y2="{height}" stroke="#7dd3fc" stroke-width="{1.0 if major else 0.55}" opacity="{0.22 if major else 0.09}"/>'
             )
         for y in range(0, height + 1, 24):
-            opacity = 0.10 if y % 96 else 0.22
-            stroke_w = 0.7 if y % 96 else 1.1
+            major = y % 120 == 0
             parts.append(
-                f'<line x1="0" y1="{y}" x2="{width}" y2="{y}" stroke="#60a5fa" stroke-width="{stroke_w}" opacity="{opacity}"/>'
+                f'<line x1="0" y1="{y}" x2="{width}" y2="{y}" stroke="#7dd3fc" stroke-width="{1.0 if major else 0.55}" opacity="{0.22 if major else 0.09}"/>'
             )
         return ''.join(parts)
 
-    def blueprint_node(x: int, y: int, label: str, kind: str, index: int) -> str:
-        if kind == "current":
-            stroke = "#93c5fd"
-            fill = "#0f2a4a"
-            number = f"A-{index + 1:02d}"
-        elif kind == "break":
-            stroke = "#f59e0b"
-            fill = "#3a2208"
-            number = f"R-{index + 1:02d}"
-        else:
-            stroke = "#34d399"
-            fill = "#062d22"
-            number = f"S-{index + 1:02d}"
+    # Integrated commercial system path. These are not separate columns:
+    # they form a single technical route with a fault zone and rebuild bypass.
+    current_coords = [
+        (105, 255),
+        (245, 220),
+        (385, 245),
+        (505, 320),
+        (610, 405),
+    ]
 
-        label_text = sanitize_label(label, 36)
-        corner = 10
+    rebuild_coords = [
+        (650, 320),
+        (740, 235),
+        (875, 230),
+        (965, 310),
+        (1015, 410),
+    ]
 
+    fault_center = (575, 335)
+    conversion_output = (1015, 410)
+
+    def node(cx: int, cy: int, label: str, code: str, color: str, fill: str, r: int = 14) -> str:
+        label_text = short(label, 31)
         return f'''
         <g>
-          <rect x="{x}" y="{y}" width="{node_w}" height="{node_h}" rx="8" fill="{fill}" opacity="0.88" stroke="{stroke}" stroke-width="2"/>
-          <path d="M {x + corner} {y} L {x} {y} L {x} {y + corner}" fill="none" stroke="{stroke}" stroke-width="1.2" opacity="0.95"/>
-          <path d="M {x + node_w - corner} {y} L {x + node_w} {y} L {x + node_w} {y + corner}" fill="none" stroke="{stroke}" stroke-width="1.2" opacity="0.95"/>
-          <path d="M {x + corner} {y + node_h} L {x} {y + node_h} L {x} {y + node_h - corner}" fill="none" stroke="{stroke}" stroke-width="1.2" opacity="0.95"/>
-          <path d="M {x + node_w - corner} {y + node_h} L {x + node_w} {y + node_h} L {x + node_w} {y + node_h - corner}" fill="none" stroke="{stroke}" stroke-width="1.2" opacity="0.95"/>
-          <text x="{x + 14}" y="{y + 17}" font-size="10" font-weight="800" fill="{stroke}" opacity="0.92">{number}</text>
-          <text x="{x + node_w / 2}" y="{y + 32}" text-anchor="middle" font-size="13" font-weight="800" fill="#e0f2fe">{label_text}</text>
+          <circle cx="{cx}" cy="{cy}" r="{r + 8}" fill="{color}" opacity="0.12" filter="url(#blueprintGlowSoft)"/>
+          <circle cx="{cx}" cy="{cy}" r="{r}" fill="{fill}" stroke="{color}" stroke-width="2.5"/>
+          <text x="{cx}" y="{cy + 4}" text-anchor="middle" font-size="10" font-weight="900" fill="#e0f2fe">{h(code)}</text>
+          <rect x="{cx - 92}" y="{cy + 23}" width="184" height="24" rx="12" fill="#061a2f" stroke="{color}" stroke-width="1" opacity="0.92"/>
+          <text x="{cx}" y="{cy + 39}" text-anchor="middle" font-size="10.5" font-weight="800" fill="#dbeafe">{label_text}</text>
         </g>
         '''
 
-    def vertical_connectors(x: int, count: int, color: str) -> str:
-        parts = []
-        center_x = x + node_w / 2
-        for i in range(count - 1):
-            y1 = y_for(i) + node_h
-            y2 = y_for(i + 1)
-            parts.append(
-                f'<line x1="{center_x}" y1="{y1}" x2="{center_x}" y2="{y2}" stroke="{color}" stroke-width="2" opacity="0.78"/>'
-            )
-            parts.append(
-                f'<polygon points="{center_x-5},{y2-2} {center_x+5},{y2-2} {center_x},{y2+7}" fill="{color}" opacity="0.78"/>'
-            )
-        return ''.join(parts)
-
-    def horizontal_transfer(x1: int, y1: int, x2: int, y2: int, color: str, label: str) -> str:
-        start_x = x1 + node_w + 18
-        end_x = x2 - 18
-        start_y = y1 + node_h / 2
-        end_y = y2 + node_h / 2
-        mid_x = (start_x + end_x) / 2
-        label_y = min(start_y, end_y) - 10
-
+    def leader_callout(x1: int, y1: int, x2: int, y2: int, label: str, color: str, align: str = "start") -> str:
+        label_text = short(label, 42)
+        text_x = x2 + 8 if align == "start" else x2 - 8
+        anchor = "start" if align == "start" else "end"
+        rect_x = x2 if align == "start" else x2 - 238
         return f'''
         <g>
-          <path d="M {start_x} {start_y} C {mid_x} {start_y}, {mid_x} {end_y}, {end_x} {end_y}"
-                fill="none" stroke="{color}" stroke-width="2.2" stroke-dasharray="8 7" opacity="0.82"/>
-          <polygon points="{end_x},{end_y} {end_x-10},{end_y-6} {end_x-10},{end_y+6}" fill="{color}" opacity="0.82"/>
-          <rect x="{mid_x - 56}" y="{label_y - 14}" width="112" height="20" rx="10" fill="#061a2f" stroke="{color}" stroke-width="1" opacity="0.92"/>
-          <text x="{mid_x}" y="{label_y}" text-anchor="middle" font-size="10" font-weight="800" fill="{color}">{h(label)}</text>
+          <path d="M {x1} {y1} L {x2} {y2}" fill="none" stroke="{color}" stroke-width="1.4" stroke-dasharray="5 5" opacity="0.88"/>
+          <circle cx="{x1}" cy="{y1}" r="3.5" fill="{color}"/>
+          <rect x="{rect_x}" y="{y2 - 15}" width="238" height="30" rx="8" fill="#061a2f" stroke="{color}" stroke-width="1" opacity="0.96"/>
+          <text x="{text_x}" y="{y2 + 4}" text-anchor="{anchor}" font-size="10.5" font-weight="800" fill="{color}">{label_text}</text>
         </g>
         '''
 
-    nodes = []
-    for index, item in enumerate(current_items):
-        nodes.append(blueprint_node(left_x, y_for(index), item, "current", index))
-    for index, item in enumerate(break_items):
-        nodes.append(blueprint_node(mid_x, y_for(index), item, "break", index))
-    for index, item in enumerate(recommended_items):
-        nodes.append(blueprint_node(right_x, y_for(index), item, "recommended", index))
+    def path_from(points: list[tuple[int, int]], color: str, width_px: float, dash: str = "") -> str:
+        if not points:
+            return ""
+        d = f"M {points[0][0]} {points[0][1]}"
+        for index in range(1, len(points)):
+            prev_x, prev_y = points[index - 1]
+            x, y = points[index]
+            mid_x = (prev_x + x) / 2
+            d += f" C {mid_x:.1f} {prev_y}, {mid_x:.1f} {y}, {x} {y}"
+        dash_attr = f' stroke-dasharray="{dash}"' if dash else ""
+        return f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{width_px}" stroke-linecap="round" stroke-linejoin="round" opacity="0.88"{dash_attr}/>'
 
-    connectors = []
-    connectors.append(vertical_connectors(left_x, len(current_items), "#93c5fd"))
-    connectors.append(vertical_connectors(mid_x, len(break_items), "#f59e0b"))
-    connectors.append(vertical_connectors(right_x, len(recommended_items), "#34d399"))
+    # Main traces and technical layers.
+    main_path = path_from(current_coords, "#93c5fd", 4.2)
+    main_path_glow = path_from(current_coords, "#38bdf8", 13.0)
+    rebuild_path = path_from([fault_center] + rebuild_coords, "#34d399", 4.4)
+    rebuild_path_glow = path_from([fault_center] + rebuild_coords, "#22c55e", 13.0)
+    missing_path = path_from([(310, 505), (470, 535), (650, 520), (815, 555)], "#fb7185", 2.6, "10 8")
 
-    rupture_y_index = min(2, max(0, len(current_items) - 1))
-    recommended_y_index = min(0, max(0, len(recommended_items) - 1))
-    connectors.append(horizontal_transfer(left_x, y_for(rupture_y_index), mid_x, y_for(0), "#f59e0b", "FAULT LINE"))
-    connectors.append(horizontal_transfer(mid_x, y_for(0), right_x, y_for(recommended_y_index), "#34d399", "REBUILD"))
-
-    bracket_y = height - 118
-    summary_text = sanitize_label(blueprint.summary, 132)
-
-    annotations = f'''
+    system_zones = f'''
     <g opacity="0.92">
-      <line x1="{left_x}" y1="{bracket_y}" x2="{left_x + node_w}" y2="{bracket_y}" stroke="#93c5fd" stroke-width="1.4"/>
-      <line x1="{left_x}" y1="{bracket_y - 7}" x2="{left_x}" y2="{bracket_y + 7}" stroke="#93c5fd" stroke-width="1.4"/>
-      <line x1="{left_x + node_w}" y1="{bracket_y - 7}" x2="{left_x + node_w}" y2="{bracket_y + 7}" stroke="#93c5fd" stroke-width="1.4"/>
-      <text x="{left_x + node_w / 2}" y="{bracket_y + 22}" text-anchor="middle" font-size="10" fill="#bfdbfe">CURRENT PATH</text>
+      <path d="M 70 175 L 430 155 L 520 215 L 480 370 L 155 410 L 70 335 Z"
+            fill="#0f2a4a" opacity="0.28" stroke="#93c5fd" stroke-width="1.6" stroke-dasharray="12 8"/>
+      <text x="104" y="186" font-size="12" font-weight="900" fill="#bfdbfe">ACQUISITION + INTEREST LAYER</text>
 
-      <line x1="{mid_x}" y1="{bracket_y}" x2="{mid_x + node_w}" y2="{bracket_y}" stroke="#f59e0b" stroke-width="1.4"/>
-      <line x1="{mid_x}" y1="{bracket_y - 7}" x2="{mid_x}" y2="{bracket_y + 7}" stroke="#f59e0b" stroke-width="1.4"/>
-      <line x1="{mid_x + node_w}" y1="{bracket_y - 7}" x2="{mid_x + node_w}" y2="{bracket_y + 7}" stroke="#f59e0b" stroke-width="1.4"/>
-      <text x="{mid_x + node_w / 2}" y="{bracket_y + 22}" text-anchor="middle" font-size="10" fill="#fcd34d">BREAKPOINTS</text>
+      <path d="M 440 210 L 710 210 L 765 360 L 620 470 L 455 410 Z"
+            fill="#3a2208" opacity="0.30" stroke="#f59e0b" stroke-width="1.8" stroke-dasharray="10 7"/>
+      <text x="493" y="228" font-size="12" font-weight="900" fill="#fcd34d">FAULT / VALUE GAP ZONE</text>
 
-      <line x1="{right_x}" y1="{bracket_y}" x2="{right_x + node_w}" y2="{bracket_y}" stroke="#34d399" stroke-width="1.4"/>
-      <line x1="{right_x}" y1="{bracket_y - 7}" x2="{right_x}" y2="{bracket_y + 7}" stroke="#34d399" stroke-width="1.4"/>
-      <line x1="{right_x + node_w}" y1="{bracket_y - 7}" x2="{right_x + node_w}" y2="{bracket_y + 7}" stroke="#34d399" stroke-width="1.4"/>
-      <text x="{right_x + node_w / 2}" y="{bracket_y + 22}" text-anchor="middle" font-size="10" fill="#bbf7d0">RECOMMENDED BUILD</text>
+      <path d="M 665 165 L 1040 175 L 1060 450 L 870 520 L 700 415 Z"
+            fill="#062d22" opacity="0.30" stroke="#34d399" stroke-width="1.6" stroke-dasharray="12 8"/>
+      <text x="740" y="186" font-size="12" font-weight="900" fill="#bbf7d0">REBUILD + CONVERSION LAYER</text>
     </g>
     '''
 
+    nodes_svg = []
+    for index, (cx, cy) in enumerate(current_coords):
+        label = current_items[index] if index < len(current_items) else f"Current step {index + 1}"
+        nodes_svg.append(node(cx, cy, label, f"A{index + 1}", "#93c5fd", "#0f2a4a"))
+
+    for index, (cx, cy) in enumerate(rebuild_coords):
+        label = recommended_items[index] if index < len(recommended_items) else f"Recommended step {index + 1}"
+        nodes_svg.append(node(cx, cy, label, f"S{index + 1}", "#34d399", "#062d22"))
+
+    fault_marker = f'''
+    <g>
+      <ellipse cx="{fault_center[0]}" cy="{fault_center[1]}" rx="92" ry="64" fill="#f59e0b" opacity="0.13" filter="url(#blueprintGlowSoft)"/>
+      <ellipse cx="{fault_center[0]}" cy="{fault_center[1]}" rx="74" ry="50" fill="none" stroke="#f59e0b" stroke-width="2.2" stroke-dasharray="9 7"/>
+      <line x1="{fault_center[0] - 62}" y1="{fault_center[1] - 42}" x2="{fault_center[0] + 62}" y2="{fault_center[1] + 42}" stroke="#f59e0b" stroke-width="2" opacity="0.85"/>
+      <line x1="{fault_center[0] - 62}" y1="{fault_center[1] + 42}" x2="{fault_center[0] + 62}" y2="{fault_center[1] - 42}" stroke="#f59e0b" stroke-width="2" opacity="0.85"/>
+      <circle cx="{fault_center[0]}" cy="{fault_center[1]}" r="17" fill="#3a2208" stroke="#f59e0b" stroke-width="3"/>
+      <text x="{fault_center[0]}" y="{fault_center[1] + 4}" text-anchor="middle" font-size="11" font-weight="900" fill="#fcd34d">FAULT</text>
+    </g>
+    '''
+
+    callouts = []
+    # Rupture callouts around the fault zone.
+    break_targets = [
+        (fault_center[0] - 30, fault_center[1] - 20, 245, 118, "end"),
+        (fault_center[0] + 35, fault_center[1] - 8, 778, 110, "start"),
+        (fault_center[0] + 20, fault_center[1] + 28, 806, 515, "start"),
+    ]
+    for index, item in enumerate(break_items[:3]):
+        x1, y1, x2, y2, align = break_targets[index]
+        callouts.append(leader_callout(x1, y1, x2, y2, item, "#f59e0b", align))
+
+    # Missing links as lower diagnostic layer.
+    missing_callouts = []
+    for index, item in enumerate(missing_links[:3]):
+        x = 120 + index * 300
+        y = 590
+        missing_callouts.append(
+            f'''
+            <g>
+              <rect x="{x}" y="{y}" width="250" height="32" rx="9" fill="#2a0d16" stroke="#fb7185" stroke-width="1" opacity="0.92"/>
+              <text x="{x + 12}" y="{y + 20}" font-size="10.5" font-weight="800" fill="#fecdd3">MISSING · {short(item, 29)}</text>
+            </g>
+            '''
+        )
+
     title_block = f'''
-    <text x="{width/2}" y="48" text-anchor="middle" font-size="28" font-weight="900" fill="#e0f2fe">Commercial Funnel Blueprint</text>
-    <text x="{width/2}" y="76" text-anchor="middle" font-size="13" fill="#93c5fd">Technical map of current path, commercial rupture points and recommended rebuild</text>
-
-    <text x="{left_x + node_w/2}" y="112" text-anchor="middle" font-size="17" font-weight="900" fill="#bfdbfe">01 · CURRENT FLOW</text>
-    <text x="{mid_x + node_w/2}" y="112" text-anchor="middle" font-size="17" font-weight="900" fill="#f59e0b">02 · RUPTURE ZONE</text>
-    <text x="{right_x + node_w/2}" y="112" text-anchor="middle" font-size="17" font-weight="900" fill="#34d399">03 · REBUILD FLOW</text>
+    <text x="{width/2}" y="48" text-anchor="middle" font-size="29" font-weight="900" fill="#e0f2fe">Commercial System Blueprint</text>
+    <text x="{width/2}" y="75" text-anchor="middle" font-size="13" fill="#93c5fd">Integrated technical map of the commercial path, rupture zone and rebuild route</text>
     '''
 
-    summary = f'''
-    <rect x="{margin}" y="{height - 68}" width="{width - margin*2}" height="38" rx="12" fill="#061a2f" stroke="#2563eb" stroke-width="1" opacity="0.92"/>
-    <text x="{width/2}" y="{height - 44}" text-anchor="middle" font-size="12" fill="#dbeafe">{summary_text}</text>
+    dimension_lines = f'''
+    <g opacity="0.72">
+      <line x1="82" y1="658" x2="1038" y2="658" stroke="#60a5fa" stroke-width="1.3"/>
+      <line x1="82" y1="650" x2="82" y2="666" stroke="#60a5fa" stroke-width="1.3"/>
+      <line x1="1038" y1="650" x2="1038" y2="666" stroke="#60a5fa" stroke-width="1.3"/>
+      <text x="{width/2}" y="682" text-anchor="middle" font-size="11" fill="#bfdbfe">END-TO-END COMMERCIAL SYSTEM · VISIBILITY → PREFERENCE → QUALIFIED CONVERSION</text>
+    </g>
     '''
 
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Commercial funnel blueprint">
+    summary_text = short(blueprint.summary, 142)
+    summary_plate = f'''
+    <rect x="64" y="620" width="992" height="30" rx="10" fill="#061a2f" stroke="#2563eb" stroke-width="1" opacity="0.92"/>
+    <text x="{width/2}" y="640" text-anchor="middle" font-size="11.5" fill="#dbeafe">{summary_text}</text>
+    '''
+
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Commercial system blueprint">
     <defs>
-      <radialGradient id="blueprintGlow" cx="50%" cy="42%" r="75%">
-        <stop offset="0%" stop-color="#14345f"/>
+      <radialGradient id="blueprintBg" cx="50%" cy="42%" r="78%">
+        <stop offset="0%" stop-color="#14406f"/>
         <stop offset="100%" stop-color="#061426"/>
       </radialGradient>
-      <filter id="blueprintShadow" x="-25%" y="-25%" width="150%" height="150%">
-        <feDropShadow dx="0" dy="8" stdDeviation="7" flood-color="#020617" flood-opacity="0.35"/>
+      <filter id="blueprintGlowSoft" x="-60%" y="-60%" width="220%" height="220%">
+        <feGaussianBlur stdDeviation="8"/>
+      </filter>
+      <filter id="traceGlow" x="-45%" y="-45%" width="190%" height="190%">
+        <feGaussianBlur stdDeviation="5"/>
       </filter>
     </defs>
 
     <rect width="{width}" height="{height}" rx="26" fill="#061426"/>
-    <rect x="24" y="22" width="{width - 48}" height="{height - 44}" rx="24" fill="url(#blueprintGlow)" stroke="#2563eb" stroke-width="1.2"/>
+    <rect x="24" y="22" width="{width - 48}" height="{height - 44}" rx="24" fill="url(#blueprintBg)" stroke="#2563eb" stroke-width="1.2"/>
     {grid_lines()}
 
     {title_block}
+    {system_zones}
 
-    <g filter="url(#blueprintShadow)">
-      {''.join(nodes)}
+    <g opacity="0.22" filter="url(#traceGlow)">
+      {main_path_glow}
+      {rebuild_path_glow}
+    </g>
+    {main_path}
+    {rebuild_path}
+    {missing_path}
+
+    <g>
+      {''.join(nodes_svg)}
     </g>
 
-    {''.join(connectors)}
-    {annotations}
-    {summary}
+    {fault_marker}
+    {''.join(callouts)}
+    {''.join(missing_callouts)}
 
-    <text x="{width - 64}" y="{height - 18}" text-anchor="end" font-size="10" fill="#60a5fa" opacity="0.75">Blueprint draft · diagnostic system map</text>
+    <circle cx="{conversion_output[0]}" cy="{conversion_output[1]}" r="28" fill="#34d399" opacity="0.12" filter="url(#blueprintGlowSoft)"/>
+    <circle cx="{conversion_output[0]}" cy="{conversion_output[1]}" r="18" fill="#062d22" stroke="#34d399" stroke-width="3"/>
+    <text x="{conversion_output[0]}" y="{conversion_output[1] + 4}" text-anchor="middle" font-size="10" font-weight="900" fill="#bbf7d0">OUT</text>
+
+    {summary_plate}
+    {dimension_lines}
+
+    <text x="{width - 64}" y="{height - 18}" text-anchor="end" font-size="10" fill="#60a5fa" opacity="0.75">Blueprint draft · integrated commercial architecture</text>
 </svg>'''
 
 
