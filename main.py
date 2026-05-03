@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 app = FastAPI(
     title="Marketing Audit API",
     description="API para auditar prospectos, investigar presencia pública y devolver información estructurada a un Custom GPT.",
-    version="1.4.0",
+    version="1.5.0",
     servers=[
         {
             "url": "https://marketing-audit-api.onrender.com",
@@ -31,9 +31,11 @@ COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
 COMPOSIO_BASE_URL = "https://backend.composio.dev/api/v3.1"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com")
 VISUAL_REPORT_STORE: Dict[str, str] = {}
+REPORTS_DIR = os.getenv("REPORTS_DIR", "/tmp/marketing_audit_reports")
+os.makedirs(REPORTS_DIR, exist_ok=True)
 
-ANALYSIS_VERSION = "v1.20"
-RULESET_VERSION = "2026-05-03-analysis-trace-v1"
+ANALYSIS_VERSION = "v1.21"
+RULESET_VERSION = "2026-05-03-declared-sources-report-persistence-v1"
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
@@ -952,6 +954,88 @@ def normalize_search_result(item: dict, category: str, query: str) -> PublicSour
     )
 
 
+def clean_public_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    cleaned = url.strip()
+    return cleaned or None
+
+
+def build_declared_public_sources(request: PublicPresenceRequest) -> List[PublicSourceResult]:
+    declared: List[PublicSourceResult] = []
+    declared_map = [
+        ("declared_website", "Sitio web provisto por el usuario", clean_public_url(request.website)),
+        ("declared_instagram", "Instagram provisto por el usuario", clean_public_url(request.instagram)),
+        ("declared_tiktok", "TikTok provisto por el usuario", clean_public_url(getattr(request, "tiktok", None))),
+        ("declared_facebook", "Facebook provisto por el usuario", clean_public_url(getattr(request, "facebook", None))),
+        ("declared_youtube", "YouTube provisto por el usuario", clean_public_url(getattr(request, "youtube", None))),
+        ("declared_linkedin", "LinkedIn provisto por el usuario", clean_public_url(request.linkedin)),
+    ]
+    for category, title, url in declared_map:
+        if not url:
+            continue
+        declared.append(PublicSourceResult(
+            category=category,
+            query=url,
+            title=title,
+            url=url,
+            displayed_url=url,
+            snippet="Fuente pública declarada por el usuario. La búsqueda externa puede enriquecerla, pero no debe reemplazarla ni negar su existencia.",
+            source="provided_url",
+        ))
+    return declared
+
+
+def dedupe_public_sources(sources: List[PublicSourceResult]) -> List[PublicSourceResult]:
+    deduped: List[PublicSourceResult] = []
+    seen = set()
+    for source in sources:
+        key = (source.url or source.displayed_url or source.title or source.query or "").strip().casefold()
+        if not key:
+            key = f"{source.category}:{source.title}:{source.snippet}".casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(source)
+    return deduped
+
+
+def execute_duckduckgo_query(query: str, num_results: int = 5, user_id: str = "default") -> Dict[str, Any]:
+    payload = {"user_id": user_id, "version": "latest", "arguments": {"query": query, "num_results": num_results}}
+    return composio_post("/tools/execute/COMPOSIO_SEARCH_DUCK_DUCK_GO_SEARCH", payload=payload)
+
+
+def find_duckduckgo_results(raw_response: Dict[str, Any]) -> List[dict]:
+    candidates: List[Any] = []
+    data = raw_response.get("data") if isinstance(raw_response, dict) else None
+    if isinstance(data, dict):
+        for key in ["results", "organic_results", "items"]:
+            if isinstance(data.get(key), list):
+                candidates = data.get(key)
+                break
+        if not candidates and isinstance(data.get("response"), dict):
+            response = data.get("response")
+            for key in ["results", "organic_results", "items"]:
+                if isinstance(response.get(key), list):
+                    candidates = response.get(key)
+                    break
+    elif isinstance(data, list):
+        candidates = data
+    return [item for item in candidates if isinstance(item, dict)]
+
+
+def normalize_duckduckgo_result(item: dict, category: str, query: str) -> PublicSourceResult:
+    return PublicSourceResult(
+        category=f"{category}_fallback",
+        query=query,
+        title=item.get("title") or item.get("name"),
+        url=item.get("url") or item.get("link") or item.get("href"),
+        displayed_url=item.get("displayed_url") or item.get("displayed_link") or item.get("url"),
+        snippet=item.get("snippet") or item.get("description") or item.get("body"),
+        source="duckduckgo_fallback",
+    )
+
+
 def build_public_presence_queries(request: PublicPresenceRequest) -> List[Dict[str, str]]:
     location = " ".join([part for part in [request.city, request.country] if part])
     base = request.company_name
@@ -988,6 +1072,15 @@ def build_source_signal(source: PublicSourceResult) -> str:
         source.snippet or "",
         source.url or "",
     ]).casefold()
+
+    if source.source == "provided_url" or source.category.startswith("declared_"):
+        if "tiktok" in text:
+            return "Fuente pública declarada por el usuario: perfil de TikTok. Sirve para auditar adaptación nativa, hook y riesgo estructural de retención; la extracción automática puede ser limitada."
+        if "instagram" in text:
+            return "Fuente pública declarada por el usuario: perfil de Instagram. Sirve para evaluar comunicación visual, Reels, prueba social, CTA y coherencia con la oferta; la extracción automática puede ser limitada."
+        if "linkedin" in text:
+            return "Fuente pública declarada por el usuario: perfil de LinkedIn. Sirve para evaluar autoridad, credibilidad y comunicación B2B."
+        return "Fuente pública declarada por el usuario. La búsqueda externa debe enriquecerla, no reemplazarla ni negar su existencia."
 
     if source.category == "official_presence":
         return "Señal de presencia oficial o catálogo digital. Sirve para evaluar si la marca comunica diferenciación o solo disponibilidad."
@@ -3003,6 +3096,28 @@ def build_visual_report_html(
     description="Ejecuta la auditoría integrada y genera un reporte visual con embudo, heatmap, blueprint y score chart en SVG/HTML.",
     dependencies=[Security(verify_api_key)],
 )
+
+def save_visual_report_html(report_id: str, report_html: str) -> str:
+    VISUAL_REPORT_STORE[report_id] = report_html
+    file_path = os.path.join(REPORTS_DIR, f"{report_id}.html")
+    with open(file_path, "w", encoding="utf-8") as report_file:
+        report_file.write(report_html)
+    return file_path
+
+
+def load_visual_report_html(report_id: str) -> Optional[str]:
+    report_html = VISUAL_REPORT_STORE.get(report_id)
+    if report_html:
+        return report_html
+    file_path = os.path.join(REPORTS_DIR, f"{report_id}.html")
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as report_file:
+            report_html = report_file.read()
+        VISUAL_REPORT_STORE[report_id] = report_html
+        return report_html
+    return None
+
+
 def create_visual_audit_report(request: ProspectWithResearchRequest):
     result = audit_prospect_with_research(request)
 
@@ -3022,7 +3137,7 @@ def create_visual_audit_report(request: ProspectWithResearchRequest):
     )
 
     report_id = uuid.uuid4().hex
-    VISUAL_REPORT_STORE[report_id] = report_html
+    save_visual_report_html(report_id, report_html)
     report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
 
     return VisualReportResponse(
@@ -3052,15 +3167,35 @@ def create_visual_audit_report(request: ProspectWithResearchRequest):
     summary="Open a generated visual audit report",
 )
 def get_visual_audit_report(report_id: str):
-    report_html = VISUAL_REPORT_STORE.get(report_id)
-
+    report_html = load_visual_report_html(report_id)
     if not report_html:
         raise HTTPException(
             status_code=404,
-            detail="Reporte no encontrado o expirado. Generá un nuevo visual report.",
+            detail=(
+                "Reporte no encontrado o expirado. Generá un nuevo visual report. "
+                "Si el servicio fue reiniciado en Render, el almacenamiento temporal puede haberse limpiado."
+            ),
         )
-
     return HTMLResponse(content=report_html)
+
+
+@app.get(
+    "/deliverables/report-health",
+    operation_id="getReportStorageHealth",
+    summary="Check visual report storage health",
+)
+def get_report_storage_health():
+    try:
+        disk_reports = [name for name in os.listdir(REPORTS_DIR) if name.endswith(".html")]
+    except Exception:
+        disk_reports = []
+    return {
+        "status": "ok",
+        "reports_dir": REPORTS_DIR,
+        "memory_reports": len(VISUAL_REPORT_STORE),
+        "disk_reports": len(disk_reports),
+        "note": "En Render, /tmp puede perderse tras reinicios. Para producción conviene usar storage externo persistente.",
+    }
 
 
 @app.get("/")
@@ -3422,46 +3557,81 @@ def execute_composio_tool(request: ToolExecuteRequest):
 )
 def research_company_public_presence(request: PublicPresenceRequest):
     if "SEARCH_API_SEARCH" not in ALLOWED_COMPOSIO_TOOLS:
-        raise HTTPException(
-            status_code=403,
-            detail="SEARCH_API_SEARCH no está permitido en ALLOWED_COMPOSIO_TOOLS.",
-        )
+        raise HTTPException(status_code=403, detail="SEARCH_API_SEARCH no está permitido en ALLOWED_COMPOSIO_TOOLS.")
 
     queries = build_public_presence_queries(request)
-    sources: List[PublicSourceResult] = []
+    declared_sources = build_declared_public_sources(request)
+    discovered_sources: List[PublicSourceResult] = []
+    fallback_sources: List[PublicSourceResult] = []
     errors: List[str] = []
-
     safe_num = max(1, min(request.num_results_per_query, 10))
 
     for query_item in queries:
         category = query_item["category"]
         query = query_item["query"]
-
         try:
             raw_response = execute_search_api_query(query=query, num_results=safe_num, user_id="default")
             organic_results = find_organic_results(raw_response)
-
             for item in organic_results[:safe_num]:
                 if isinstance(item, dict):
-                    sources.append(normalize_search_result(item=item, category=category, query=query))
-
+                    discovered_sources.append(normalize_search_result(item=item, category=category, query=query))
         except HTTPException as exc:
             errors.append(f"{category}: {exc.detail}")
         except Exception as exc:
             errors.append(f"{category}: {str(exc)}")
 
+    if len(discovered_sources) < 3 and "COMPOSIO_SEARCH_DUCK_DUCK_GO_SEARCH" in ALLOWED_COMPOSIO_TOOLS:
+        fallback_queries = [
+            f"{request.company_name} {request.city or ''} {request.country or ''}".strip(),
+            f"{request.company_name} Instagram TikTok LinkedIn".strip(),
+            f"{request.company_name} recursos humanos Córdoba".strip(),
+        ]
+        if request.website:
+            fallback_queries.append(f"{request.company_name} {request.website}".strip())
+        if request.instagram:
+            fallback_queries.append(f"{request.company_name} {request.instagram}".strip())
+        if getattr(request, "tiktok", None):
+            fallback_queries.append(f"{request.company_name} {request.tiktok}".strip())
+        if request.linkedin:
+            fallback_queries.append(f"{request.company_name} {request.linkedin}".strip())
+
+        for fallback_query in list(dict.fromkeys(fallback_queries))[:6]:
+            try:
+                raw_fallback = execute_duckduckgo_query(query=fallback_query, num_results=max(3, min(safe_num, 5)), user_id="default")
+                for item in find_duckduckgo_results(raw_fallback)[:max(3, min(safe_num, 5))]:
+                    fallback_sources.append(normalize_duckduckgo_result(item=item, category="fallback_public_search", query=fallback_query))
+            except Exception as exc:
+                errors.append(f"fallback_public_search: {str(exc)}")
+
+    sources = dedupe_public_sources(declared_sources + discovered_sources + fallback_sources)
+    declared_count = len(declared_sources)
+    discovered_count = len(dedupe_public_sources(discovered_sources + fallback_sources))
     queries_used = [item["query"] for item in queries]
 
-    if len(sources) >= 8:
+    if discovered_count >= 8:
         confidence = "media-alta"
-    elif len(sources) >= 3:
+    elif discovered_count >= 3:
         confidence = "media"
+    elif declared_count > 0:
+        confidence = "media-baja"
     else:
         confidence = "baja"
 
-    if sources:
+    if declared_count and discovered_count:
         summary = (
-            f"Se encontraron {len(sources)} fuentes públicas relacionadas con {request.company_name}. "
+            f"Se recibieron {declared_count} fuentes públicas declaradas por el usuario y se encontraron "
+            f"{discovered_count} fuentes adicionales relacionadas con {request.company_name}. "
+            "Los links provistos se consideran fuentes públicas válidas; la búsqueda externa funciona como enriquecimiento."
+        )
+    elif declared_count:
+        summary = (
+            f"Se recibieron {declared_count} fuentes públicas declaradas por el usuario para {request.company_name}, "
+            "pero la búsqueda externa no encontró suficientes fuentes adicionales para enriquecer la validación. "
+            "Esto no significa que la presencia pública no exista: significa que la extracción automática fue limitada."
+        )
+    elif discovered_count:
+        summary = (
+            f"Se encontraron {discovered_count} fuentes públicas relacionadas con {request.company_name}. "
             "La información puede usarse como base para validar presencia digital, perfiles sociales, reputación y contexto competitivo."
         )
     else:
@@ -3480,7 +3650,10 @@ def research_company_public_presence(request: PublicPresenceRequest):
         sources_found=sources,
         presence_summary=summary,
         research_confidence=confidence,
-        next_step="Usar estas fuentes como insumo para auditProspect y luego generar un diagnóstico comercial breve.",
+        next_step=(
+            "Usar fuentes declaradas + fuentes encontradas como insumo. Si redes como TikTok/Instagram no permiten extracción completa, "
+            "pedir muestras de contenido y métricas internas para validar retención real."
+        ),
         raw_result_count=len(sources),
     )
 
@@ -5853,7 +6026,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
             analysis_trace=analysis_trace,
         )
         report_id = uuid.uuid4().hex
-        VISUAL_REPORT_STORE[report_id] = report_html
+        save_visual_report_html(report_id, report_html)
         visual_report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
         visual_report_status = "generated"
     except Exception as exc:
