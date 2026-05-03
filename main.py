@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 app = FastAPI(
     title="Marketing Audit API",
     description="API para auditar prospectos, investigar presencia pública y devolver información estructurada a un Custom GPT.",
-    version="1.7.0",
+    version="1.7.1",
     servers=[
         {
             "url": "https://marketing-audit-api.onrender.com",
@@ -34,8 +34,8 @@ VISUAL_REPORT_STORE: Dict[str, str] = {}
 REPORTS_DIR = os.getenv("REPORTS_DIR", "/tmp/marketing_audit_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
-ANALYSIS_VERSION = "v1.24"
-RULESET_VERSION = "2026-05-03-stability-lock-v1"
+ANALYSIS_VERSION = "v1.25"
+RULESET_VERSION = "2026-05-03-stability-verdict-v1"
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
@@ -156,6 +156,7 @@ class PublicPresenceRequest(BaseModel):
     youtube: Optional[str] = Field(None, description="Canal de YouTube conocido")
     linkedin: Optional[str] = Field(None, description="Perfil de LinkedIn conocido")
     num_results_per_query: int = Field(5, description="Cantidad de resultados por búsqueda")
+    research_mode: str = Field("live_public_search", description="Modo de investigación: live_public_search o declared_only")
     research_mode: str = Field("live_public_search", description="Modo de investigación: live_public_search o declared_only")
     research_mode: str = Field("live_public_search", description="Modo de investigación: live_public_search o declared_only")
 
@@ -769,6 +770,7 @@ class FullCommercialSystemRequest(ProspectWithResearchRequest):
     min_lead_quality_rate_percent: float = 50.0
     social_content_notes: Optional[str] = Field(None, description="Notas específicas sobre contenido orgánico, TikTok, Reels o piezas recientes")
     social_content_samples: List[SocialContentSample] = Field(default_factory=list, description="Muestras recientes de contenido orgánico para auditar adaptación por plataforma")
+    research_mode: str = Field("live_public_search", description="Modo de investigación: live_public_search o declared_only")
 
 
 class AnalysisTrace(BaseModel):
@@ -819,6 +821,16 @@ class StableAuditOutput(BaseModel):
     commercial_score_overall: Optional[float] = None
     social_content_fit_score: Optional[int] = None
     visual_report_url: Optional[str] = None
+
+    # Stability Verdict fields
+    stability_status: str
+    needs_second_run: bool
+    report_use: str
+    safe_to_present: bool
+    safe_to_execute_actions: bool
+    instability_risks: List[str] = Field(default_factory=list)
+    stability_reason: str
+    comparison_rule: str
     stability_note: str
 
 
@@ -6551,11 +6563,123 @@ def build_strategic_measures_matrix(
     )
 
 
+
+def build_stability_verdict(
+    request: FullCommercialSystemRequest,
+    public_audit: ProspectWithResearchResponse,
+    social_fit: Optional[SocialContentFitResponse],
+    campaign_performance: Optional[CampaignPerformanceResponse],
+    analysis_trace: AnalysisTrace,
+    visual_report_url: Optional[str],
+) -> Dict[str, Any]:
+    risks: List[str] = []
+
+    research_mode = getattr(analysis_trace, "research_mode", "live_public_search")
+    diagnostic_gates = analysis_trace.diagnostic_gates or {}
+    has_campaigns = bool(getattr(request, "campaigns", None))
+    has_social_samples = bool(getattr(request, "social_content_samples", None))
+    has_canonical_hash = bool(analysis_trace.canonical_input_hash or analysis_trace.input_hash)
+    has_sources_hash = bool(analysis_trace.sources_hash)
+    has_visual_report = bool(visual_report_url)
+
+    if not has_canonical_hash:
+        risks.append("Falta canonical_input_hash; no se puede comparar input de forma estable.")
+    if not has_sources_hash:
+        risks.append("Falta sources_hash; no se puede comparar evidencia pública de forma estable.")
+    if research_mode == "live_public_search":
+        risks.append("La búsqueda pública live puede variar entre corridas.")
+    if not has_visual_report:
+        risks.append("No se generó visual_report_url; el entregable visual debe regenerarse o revisarse.")
+    if social_fit and social_fit.overall_social_content_fit_score < 62 and not has_social_samples:
+        risks.append("Social Content Fit se basa en links/notas; es riesgo estructural, no retención comprobada.")
+    if has_campaigns and campaign_performance and campaign_performance.data_completeness.score < 70:
+        risks.append("Hay campañas, pero la completitud de datos es limitada.")
+    if has_campaigns and campaign_performance and any(item.severity == "crítica" for item in campaign_performance.tracking_health):
+        risks.append("Tracking crítico: CPA/CPL o conversiones pueden no ser confiables.")
+
+    # Status hierarchy
+    if not has_canonical_hash or not has_sources_hash:
+        status = "variable"
+    elif research_mode == "declared_only" and not has_campaigns and not diagnostic_gates.get("social_overlay_can_override_base", False):
+        status = "locked"
+    elif research_mode == "declared_only":
+        status = "comparable"
+    elif research_mode == "live_public_search" and has_canonical_hash and has_sources_hash:
+        status = "comparable"
+    else:
+        status = "preliminary"
+
+    # Preliminary is a usage label when evidence is limited, but it should not downgrade locked reproducibility.
+    evidence_is_preliminary = (
+        not has_campaigns
+        or public_audit.research_confidence in ["baja", "media-baja"]
+        or (social_fit is not None and social_fit.overall_social_content_fit_score < 62 and not has_social_samples)
+    )
+
+    if status == "locked":
+        needs_second_run = False
+        safe_to_present = True
+        report_use = "usable_for_preliminary_report"
+        reason = (
+            "Payload canónico presente, fuentes declaradas/estables, sin campañas reales variables y social overlay limitado por diagnostic gates."
+        )
+    elif status == "comparable":
+        needs_second_run = False
+        safe_to_present = True
+        report_use = "usable_if_hashes_are_saved"
+        reason = (
+            "El análisis tiene hashes y versiones comparables. Guardar canonical_input_hash, sources_hash, versions y modules_used."
+        )
+    elif status == "preliminary":
+        needs_second_run = False
+        safe_to_present = True
+        report_use = "exploratory_preliminary_report"
+        reason = (
+            "El análisis es útil como diagnóstico preliminar, pero requiere más evidencia para decisiones operativas fuertes."
+        )
+    else:
+        needs_second_run = True
+        safe_to_present = False
+        report_use = "needs_fixed_payload_or_second_run"
+        reason = (
+            "Faltan condiciones mínimas de estabilidad; conviene repetir con JSON fijo o declared_only."
+        )
+
+    if evidence_is_preliminary and status in ["locked", "comparable"]:
+        reason = reason + " Evidencia todavía preliminar: no equivale a comportamiento real comprobado."
+        if report_use == "usable_if_hashes_are_saved":
+            report_use = "usable_for_preliminary_report_with_hashes"
+
+    safe_to_execute_actions = bool(
+        has_campaigns
+        and campaign_performance is not None
+        and campaign_performance.data_completeness.score >= 75
+        and not any(item.severity == "crítica" for item in campaign_performance.tracking_health)
+    )
+
+    return {
+        "stability_status": status,
+        "needs_second_run": needs_second_run,
+        "report_use": report_use,
+        "safe_to_present": safe_to_present,
+        "safe_to_execute_actions": safe_to_execute_actions,
+        "instability_risks": list(dict.fromkeys(risks)),
+        "stability_reason": reason,
+        "comparison_rule": (
+            "Comparar auditorías por canonical_input_hash + sources_hash + analysis_version + "
+            "ruleset_version + analysis_mode + modules_used. raw_input_hash es diagnóstico, no criterio principal."
+        ),
+    }
+
+
+
 def build_stable_audit_output(
     public_audit: ProspectWithResearchResponse,
     social_fit: SocialContentFitResponse,
     analysis_trace: AnalysisTrace,
     visual_report_url: Optional[str],
+    request: FullCommercialSystemRequest,
+    campaign_performance: CampaignPerformanceResponse,
 ) -> StableAuditOutput:
     awareness_distribution = {
         item.stage: item.weight
@@ -6564,6 +6688,14 @@ def build_stable_audit_output(
     heatmap_dominant = f"{public_audit.customer_intent_density_map.dominant_zone.x} / {public_audit.customer_intent_density_map.dominant_zone.y}"
     heatmap_blocked = f"{public_audit.customer_intent_density_map.blocked_zone.x} / {public_audit.customer_intent_density_map.blocked_zone.y}"
     primary_bottleneck = public_audit.audit.primary_bottleneck if public_audit.audit else ""
+    stability_verdict = build_stability_verdict(
+        request=request,
+        public_audit=public_audit,
+        social_fit=social_fit,
+        campaign_performance=campaign_performance,
+        analysis_trace=analysis_trace,
+        visual_report_url=visual_report_url,
+    )
 
     return StableAuditOutput(
         canonical_input_hash=analysis_trace.canonical_input_hash or analysis_trace.input_hash,
@@ -6586,9 +6718,17 @@ def build_stable_audit_output(
         commercial_score_overall=getattr(public_audit.commercial_score, "overall", None),
         social_content_fit_score=social_fit.overall_social_content_fit_score if social_fit else None,
         visual_report_url=visual_report_url,
+        stability_status=stability_verdict["stability_status"],
+        needs_second_run=stability_verdict["needs_second_run"],
+        report_use=stability_verdict["report_use"],
+        safe_to_present=stability_verdict["safe_to_present"],
+        safe_to_execute_actions=stability_verdict["safe_to_execute_actions"],
+        instability_risks=stability_verdict["instability_risks"],
+        stability_reason=stability_verdict["stability_reason"],
+        comparison_rule=stability_verdict["comparison_rule"],
         stability_note=(
-            "Este bloque es la salida estable recomendada para comparación. "
-            "Usar canonical_input_hash + sources_hash + versions + modules_used para verificar equivalencia entre auditorías."
+            "Este bloque es la salida estable recomendada para comparación y decisión operativa. "
+            "Si stability_status es locked o comparable, no hace falta correr dos veces; guardá hashes y versión."
         ),
     )
 
@@ -6732,6 +6872,8 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         social_fit=social_content_fit,
         analysis_trace=analysis_trace,
         visual_report_url=visual_report_url,
+        request=request,
+        campaign_performance=campaign_performance,
     )
 
     return FullCommercialSystemResponse(
