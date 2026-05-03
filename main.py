@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 app = FastAPI(
     title="Marketing Audit API",
     description="API para auditar prospectos, investigar presencia pública y devolver información estructurada a un Custom GPT.",
-    version="1.5.0",
+    version="1.6.0",
     servers=[
         {
             "url": "https://marketing-audit-api.onrender.com",
@@ -34,8 +34,8 @@ VISUAL_REPORT_STORE: Dict[str, str] = {}
 REPORTS_DIR = os.getenv("REPORTS_DIR", "/tmp/marketing_audit_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
-ANALYSIS_VERSION = "v1.21"
-RULESET_VERSION = "2026-05-03-declared-sources-report-persistence-v1"
+ANALYSIS_VERSION = "v1.22"
+RULESET_VERSION = "2026-05-03-commercial-decision-engine-v1"
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
@@ -788,12 +788,53 @@ class AnalysisTrace(BaseModel):
     score_breakdown: Dict[str, Any] = Field(default_factory=dict)
 
 
+class ImplementationVariant(BaseModel):
+    variant_name: str
+    description: str
+    score_1_to_10: int
+    why_this_score: str
+    feasibility: str
+    expected_impact: str
+    risk_level: str
+    best_use_case: str
+    test_metric: str
+    can_be_tested_before_or_after: str
+
+
+class StrategicMeasure(BaseModel):
+    measure_name: str
+    area: str
+    problem_addressed: str
+    evidence_used: List[str]
+    data_considered: List[str]
+    decision_basis: str
+    affected_area: List[str]
+    expected_impact: str
+    priority: str
+    confidence: str
+    validation_metrics: List[str]
+    implementation_variants: List[ImplementationVariant]
+    recommended_testing_sequence: List[str]
+    dependencies: List[str]
+    risks: List[str]
+    what_not_to_give_for_free: str
+
+
+class StrategicMeasuresMatrix(BaseModel):
+    summary: str
+    measures: List[StrategicMeasure]
+    decision_logic: str
+    data_limitations: List[str]
+    next_measurement_layer: List[str]
+
+
 class FullCommercialSystemResponse(BaseModel):
     company_name: str
     audit_type: str
     response_mode: str = "compact"
     analysis_trace: AnalysisTrace
     diagnostic_integration_summary: str
+    strategic_measures_matrix: StrategicMeasuresMatrix
     system_summary: str
     recommended_next_step: str
     visual_report_url: Optional[str] = None
@@ -2638,6 +2679,7 @@ def build_visual_report_html(
     score_svg: str,
     social_content_fit: Optional[SocialContentFitResponse] = None,
     analysis_trace: Optional[AnalysisTrace] = None,
+    strategic_measures_matrix: Optional[StrategicMeasuresMatrix] = None,
 ) -> str:
     sources = ''.join([
         f'''
@@ -2781,6 +2823,34 @@ def build_visual_report_html(
           </div>
         </section>
         """
+
+
+    strategic_measures_section = ""
+    if strategic_measures_matrix:
+        measure_cards = "".join([
+            f"""
+            <div class="action-card">
+              <h3>{h(measure.measure_name)}</h3>
+              <p><strong>Área:</strong> {h(measure.area)} - <strong>Prioridad:</strong> {h(measure.priority)} - <strong>Confianza:</strong> {h(measure.confidence)}</p>
+              <p><strong>Problema:</strong> {h(measure.problem_addressed)}</p>
+              <p><strong>Base de decisión:</strong> {h(measure.decision_basis)}</p>
+              <p><strong>Variante recomendada:</strong> {h(measure.implementation_variants[0].variant_name if measure.implementation_variants else "sin variante")} - <strong>Score:</strong> {h(str(measure.implementation_variants[0].score_1_to_10 if measure.implementation_variants else "N/A"))}/10</p>
+              <p><strong>Métrica:</strong> {h(", ".join(measure.validation_metrics[:3]))}</p>
+            </div>
+            """
+            for measure in strategic_measures_matrix.measures[:6]
+        ])
+        strategic_measures_section = f"""
+        <section class="card full">
+          <h2>Matriz estratégica de medidas comerciales</h2>
+          <p>{h(strategic_measures_matrix.summary)}</p>
+          <div class="script-box">
+            <p><strong>Lógica:</strong> {h(strategic_measures_matrix.decision_logic)}</p>
+          </div>
+          {measure_cards}
+        </section>
+        """
+
 
     return f'''<!doctype html>
 <html lang="es">
@@ -2991,6 +3061,8 @@ def build_visual_report_html(
     {social_section}
 
     {analysis_trace_section}
+
+    {strategic_measures_section}
 
     <section class="grid">
       <div class="card">{score_svg}</div>
@@ -5918,6 +5990,388 @@ def audit_campaign_performance(request: CampaignPerformanceRequest):
     description="Une investigación pública, auditoría comercial, blueprint, heatmap y auditoría de campañas en un sistema único.",
     dependencies=[Security(verify_api_key)],
 )
+
+def bounded_score(value: int) -> int:
+    return max(1, min(10, int(value)))
+
+
+def make_variant(
+    name: str,
+    description: str,
+    score: int,
+    why: str,
+    feasibility: str,
+    impact: str,
+    risk: str,
+    use_case: str,
+    metric: str,
+    sequence_note: str,
+) -> ImplementationVariant:
+    return ImplementationVariant(
+        variant_name=name,
+        description=description,
+        score_1_to_10=bounded_score(score),
+        why_this_score=why,
+        feasibility=feasibility,
+        expected_impact=impact,
+        risk_level=risk,
+        best_use_case=use_case,
+        test_metric=metric,
+        can_be_tested_before_or_after=sequence_note,
+    )
+
+
+def build_measure(
+    measure_name: str,
+    area: str,
+    problem_addressed: str,
+    evidence_used: List[str],
+    data_considered: List[str],
+    decision_basis: str,
+    affected_area: List[str],
+    expected_impact: str,
+    priority: str,
+    confidence: str,
+    validation_metrics: List[str],
+    implementation_variants: List[ImplementationVariant],
+    recommended_testing_sequence: List[str],
+    dependencies: List[str],
+    risks: List[str],
+    what_not_to_give_for_free: str,
+) -> StrategicMeasure:
+    return StrategicMeasure(
+        measure_name=measure_name,
+        area=area,
+        problem_addressed=problem_addressed,
+        evidence_used=list(dict.fromkeys([item for item in evidence_used if item]))[:8],
+        data_considered=list(dict.fromkeys([item for item in data_considered if item]))[:10],
+        decision_basis=decision_basis,
+        affected_area=list(dict.fromkeys(affected_area))[:8],
+        expected_impact=expected_impact,
+        priority=priority,
+        confidence=confidence,
+        validation_metrics=list(dict.fromkeys(validation_metrics))[:8],
+        implementation_variants=implementation_variants[:3],
+        recommended_testing_sequence=recommended_testing_sequence[:4],
+        dependencies=list(dict.fromkeys(dependencies))[:6],
+        risks=list(dict.fromkeys(risks))[:6],
+        what_not_to_give_for_free=what_not_to_give_for_free,
+    )
+
+
+def request_text_for_decisions(request: FullCommercialSystemRequest, public_audit: ProspectWithResearchResponse) -> str:
+    parts = [
+        request.company_name,
+        request.industry,
+        request.city,
+        request.country,
+        request.website,
+        request.instagram,
+        getattr(request, "tiktok", None),
+        request.linkedin,
+        request.offer,
+        request.notes,
+        request.social_content_notes,
+        public_audit.diagnosis_initial,
+        public_audit.audit.primary_bottleneck if public_audit.audit else "",
+    ]
+    for source in public_audit.public_sources_summary:
+        parts.extend([source.category, source.title or "", source.url or "", source.signal])
+    return " ".join([str(part) for part in parts if part]).casefold()
+
+
+def build_strategic_measures_matrix(
+    request: FullCommercialSystemRequest,
+    public_audit: ProspectWithResearchResponse,
+    social_fit: SocialContentFitResponse,
+    campaign_performance: CampaignPerformanceResponse,
+    analysis_trace: AnalysisTrace,
+) -> StrategicMeasuresMatrix:
+    text = request_text_for_decisions(request, public_audit)
+    has_campaigns = campaign_performance.campaigns_analyzed > 0
+    measures: List[StrategicMeasure] = []
+
+    base_data = [
+        "links públicos declarados",
+        "fuentes públicas encontradas/declaradas",
+        "oferta principal",
+        "diagnóstico comercial",
+        "awareness funnel",
+        "heatmap de intención",
+        "blueprint dinámico",
+    ]
+
+    if social_fit:
+        base_data.extend(["social content fit", "adaptación por plataforma", "riesgo estructural de retención"])
+
+    if has_campaigns:
+        base_data.extend(["métricas de campaña", "tracking", "lead quality", "cost quality matrix", "budget reallocation"])
+    else:
+        base_data.append("sin datos reales de campañas: acciones de performance quedan preparadas")
+
+    if contains_any(text, ["diferencial", "no está claro", "genérico", "propuesta de valor", "posicionamiento"]) or public_audit.commercial_score.value_proposition < 70:
+        measures.append(build_measure(
+            measure_name="Clarificar propuesta de valor y posicionamiento",
+            area="Marca / posicionamiento / oferta",
+            problem_addressed="La marca puede comunicar qué hace, pero no necesariamente por qué elegirla frente a alternativas.",
+            evidence_used=[
+                f"Diagnóstico inicial: {public_audit.diagnosis_initial}",
+                f"Score de propuesta de valor: {public_audit.commercial_score.value_proposition}/100",
+                f"Diagnóstico base: {analysis_trace.base_diagnosis}",
+            ],
+            data_considered=base_data + ["propuesta de valor", "diferenciación", "posicionamiento"],
+            decision_basis="La medida se recomienda cuando el diferencial visible es débil o genérico. Sin un criterio claro de elección, el resto del funnel tiende a competir por disponibilidad, precio, urgencia o confianza mínima.",
+            affected_area=["marca", "bio/perfiles", "sitio web", "contenido", "speech comercial", "CTA", "campañas futuras"],
+            expected_impact="Mejorar claridad, recordación, confianza inicial y calidad de consultas.",
+            priority="alta",
+            confidence="media" if public_audit.research_confidence in ["baja", "media-baja"] else "media-alta",
+            validation_metrics=["consultas calificadas", "tasa de respuesta", "reuniones agendadas", "clicks a contacto", "comentarios de intención"],
+            implementation_variants=[
+                make_variant("Propuesta única de elección", "Definir una frase central que explique para quién es la oferta, qué problema resuelve y por qué elegirla.", 9, "Ataca la raíz del posicionamiento y ordena web, perfiles, contenido y campañas.", "media", "alto", "medio", "Cuando el diferencial no está claro o la marca suena genérica.", "consultas calificadas y tasa de avance a reunión", "Conviene testearla antes de escalar campañas."),
+                make_variant("Mensajes por dolor/objeción", "Reformular la comunicación alrededor de problemas concretos del cliente y objeciones frecuentes.", 8, "Hace que el valor sea más tangible y menos abstracto.", "media-alta", "medio-alto", "bajo-medio", "Cuando el público entiende el servicio pero no percibe urgencia o diferencia.", "comentarios de intención, guardados, consultas por tema", "Puede testearse después de definir la propuesta central."),
+                make_variant("Reposicionamiento por autoridad/prueba", "Apoyar el posicionamiento en experiencia, casos, proceso o evidencia operativa.", 7, "Mejora confianza, pero depende de contar con pruebas concretas.", "media", "medio", "medio", "Cuando hay baja confianza o poca prueba social visible.", "reuniones agendadas y objeciones de confianza", "Conviene implementarla junto con prueba social."),
+            ],
+            recommended_testing_sequence=["Primero propuesta única de elección.", "Luego mensajes por dolor/objeción.", "Después autoridad/prueba."],
+            dependencies=["claridad sobre cliente ideal", "servicios prioritarios", "casos o evidencia disponibles"],
+            risks=["quedar demasiado genérico", "prometer más de lo que puede probarse", "mezclar demasiadas audiencias"],
+            what_not_to_give_for_free="No entregar copy final completo ni arquitectura total de marca; entregar diagnóstico y dirección estratégica.",
+        ))
+
+    if contains_any(text, ["b2b", "empresa", "empleados", "trabajo", "postulante", "busca trabajo", "doble audiencia", "personas que buscan"]):
+        measures.append(build_measure(
+            measure_name="Separar rutas y mensajes por audiencia",
+            area="Audiencia / funnel / posicionamiento",
+            problem_addressed="La marca puede estar hablando simultáneamente a postulantes y empresas, dos públicos con motivaciones, objeciones y CTAs distintos.",
+            evidence_used=[
+                "Cliente ideal declarado incluye personas que buscan trabajo y empresas B2B.",
+                f"Oferta declarada: {request.offer or 'no especificada'}",
+                f"Blueprint actual: {' -> '.join(public_audit.funnel_blueprint.current_flow[:3])}",
+            ],
+            data_considered=base_data + ["audiencia", "B2C", "B2B", "CTA", "ruta de conversión"],
+            decision_basis="Cuando una misma comunicación intenta convertir a dos públicos con expectativas distintas, pierde precisión. La separación de rutas ayuda a que cada segmento reciba promesa, prueba y CTA adecuados.",
+            affected_area=["sitio web", "perfiles sociales", "contenido", "CTA", "formularios", "seguimiento", "campañas futuras"],
+            expected_impact="Mayor claridad, mejor calidad de consulta y mejor medición por tipo de lead.",
+            priority="alta",
+            confidence="media-alta",
+            validation_metrics=["consultas por tipo de público", "calidad de consulta", "tasa de reunión B2B", "aplicaciones/postulaciones", "fuente de consulta"],
+            implementation_variants=[
+                make_variant("Separar mensajes dentro del mismo ecosistema", "Mantener los mismos canales, pero ordenar piezas, bios, destacados y CTAs diferenciando postulantes de empresas.", 7, "Es rápido y reduce confusión, aunque no separa completamente la conversión.", "alta", "medio", "bajo", "Cuando se necesita una mejora rápida sin rediseñar activos grandes.", "mensajes/contactos segmentados por audiencia", "Puede probarse primero como corrección rápida."),
+                make_variant("Separar rutas de conversión B2C/B2B", "Crear caminos claros: uno para postulantes y otro para empresas, con CTA, formulario y prueba distinta.", 9, "Es la opción más fuerte porque separa intención, conversión y medición.", "media", "alto", "medio", "Cuando el objetivo es mejorar calidad de leads y preparar campañas.", "tasa de conversión por ruta y calidad de lead", "Conviene después de validar mensajes principales."),
+                make_variant("Separar campañas futuras por audiencia", "Cuando haya pauta, estructurar campañas y eventos diferenciados para postulantes y empresas.", 8, "Permite medir CPL/calidad por segmento y evitar mezclar audiencias en performance.", "media", "alto con datos", "medio", "Cuando existan campañas o presupuesto para adquisición.", "CPL, CPA, calidad de lead y tasa de reunión por audiencia", "Debe aplicarse después de tener tracking mínimo."),
+            ],
+            recommended_testing_sequence=["Primero ordenar mensajes por audiencia.", "Luego crear rutas/formularios diferenciados.", "Finalmente separar campañas y medición."],
+            dependencies=["definir prioridad comercial", "formularios o rutas separadas", "tracking por fuente"],
+            risks=["fragmentar demasiado si no hay volumen", "duplicar trabajo sin medición", "confundir más si las rutas no quedan claras"],
+            what_not_to_give_for_free="No entregar arquitectura completa del funnel B2B/B2C ni formularios finales; venderlo como fase de implementación.",
+        ))
+
+    if social_fit and social_fit.overall_social_content_fit_score < 65:
+        worst_platform = sorted(social_fit.platform_audits, key=lambda x: x.platform_fit_score)[0] if social_fit.platform_audits else None
+        measures.append(build_measure(
+            measure_name="Rediseñar contenido social por lógica de plataforma",
+            area="Contenido orgánico / social content fit / awareness",
+            problem_addressed="El contenido puede existir, pero no estar diseñado para captar atención rápido, retener, comunicar valor y empujar avance comercial en cada red.",
+            evidence_used=[
+                f"Social Content Fit Score: {social_fit.overall_social_content_fit_score}/100",
+                f"Brecha principal: {social_fit.primary_content_gap}",
+                f"Plataforma más débil: {worst_platform.platform if worst_platform else 'sin plataforma'}",
+                social_fit.strategic_summary,
+            ],
+            data_considered=base_data + ["TikTok", "Instagram", "LinkedIn", "hook", "retención potencial", "CTA social"],
+            decision_basis="La medida se recomienda cuando hay riesgo de que el usuario pierda atención antes de entender el valor de la marca. No se afirma baja retención real sin métricas; se trata como riesgo estructural salvo que existan datos internos.",
+            affected_area=["TikTok", "Instagram/Reels", "LinkedIn", "contenido de awareness", "contenido de consideración", "CTA social"],
+            expected_impact="Mejorar retención inicial, claridad del mensaje, avance a perfil/link y calidad de interacción.",
+            priority="alta" if social_fit.overall_social_content_fit_score < 50 else "media-alta",
+            confidence="media" if request.social_content_samples else "baja-media",
+            validation_metrics=["retención a 3s", "porcentaje visto", "completion rate", "shares", "saves", "clicks al perfil", "mensajes generados"],
+            implementation_variants=[
+                make_variant("Hooks por plataforma", "Rediseñar los primeros 0-3 segundos con tensión, objeción, resultado o problema específico.", 9, "Ataca la pérdida de atención inicial, especialmente en TikTok/Reels.", "media-alta", "alto", "bajo-medio", "Cuando el contenido arranca lento o institucional.", "retención a 3s y porcentaje visto", "Debe testearse antes de cambiar todo el calendario."),
+                make_variant("Piezas por etapa del funnel", "Separar piezas de awareness, consideración y conversión para no pedir la misma acción a todos.", 8, "Ordena contenido según intención y evita CTAs genéricos.", "media", "medio-alto", "medio", "Cuando hay mezcla de audiencias o niveles de intención.", "guardados, comentarios de intención, clicks al link", "Puede probarse después de mejorar hooks."),
+                make_variant("Prueba social integrada al contenido", "Incorporar casos, procesos, evidencia o señales de confianza dentro de piezas sociales.", 7, "Mejora confianza, pero depende de contar con evidencia real.", "media", "medio", "medio", "Cuando el problema es confianza o credibilidad.", "consultas calificadas y reducción de objeciones", "Conviene después de definir el mensaje central."),
+            ],
+            recommended_testing_sequence=["Primero testear hooks por plataforma.", "Luego separar piezas por etapa del funnel.", "Después sumar prueba social en piezas ganadoras."],
+            dependencies=["muestras de contenido", "métricas de retención", "definición de audiencia por plataforma"],
+            risks=["confundir riesgo estructural con dato real", "hacer cambios estéticos sin medir retención", "regalar guiones finales"],
+            what_not_to_give_for_free="No entregar guiones finales, calendario completo ni copies terminados; entregar diagnóstico, criterios y dirección de testing.",
+        ))
+
+    if public_audit.commercial_score.cta_strength < 75 or contains_any(text, ["cta", "consultanos", "escribinos", "contacto", "conversión"]):
+        measures.append(build_measure(
+            measure_name="Rediseñar CTA y ruta de conversión",
+            area="CTA / conversión / seguimiento",
+            problem_addressed="La audiencia puede mostrar atención o interés, pero no tener un próximo paso suficientemente claro, específico o adaptado a su temperatura.",
+            evidence_used=[
+                f"Score de CTA: {public_audit.commercial_score.cta_strength}/100",
+                f"Zona bloqueada del heatmap: {public_audit.customer_intent_density_map.blocked_zone}",
+                f"Blueprint breakpoints: {'; '.join(public_audit.funnel_blueprint.breakpoints[:3])}",
+            ],
+            data_considered=base_data + ["CTA", "ruta de conversión", "heatmap", "blueprint", "follow-up"],
+            decision_basis="El CTA no debe evaluarse aislado. Se recomienda rediseñarlo cuando cruza con propuesta de valor, audiencia, confianza y etapa de awareness. El objetivo es convertir interés en acción medible.",
+            affected_area=["web", "bio", "posts", "Reels/TikTok", "formularios", "WhatsApp", "seguimiento comercial"],
+            expected_impact="Aumentar avance desde atención/interés hacia consulta, diagnóstico, aplicación o reunión.",
+            priority="alta",
+            confidence="media",
+            validation_metrics=["clicks a contacto", "formularios", "mensajes", "tasa de reunión", "calidad de consulta", "fuente de consulta"],
+            implementation_variants=[
+                make_variant("CTA por temperatura", "Definir CTA para frío, templado y caliente: guardar/comentar, pedir recurso/caso, solicitar diagnóstico o reunión.", 9, "Respeta distintos niveles de intención y evita forzar una única acción.", "media", "alto", "bajo-medio", "Cuando hay públicos y niveles de awareness distintos.", "avance por etapa y tasa de consulta calificada", "Conviene como primera variante si el funnel es confuso."),
+                make_variant("CTA por audiencia", "Separar CTA para postulantes y empresas: aplicar/registrarse vs consultar/reunión/diagnóstico.", 8, "Reduce fricción y evita mezclar intenciones.", "media-alta", "alto", "medio", "Cuando existen B2C y B2B simultáneamente.", "consultas por tipo de público", "Puede ir junto con separación de rutas."),
+                make_variant("CTA de pre-calificación", "Usar un formulario o pregunta de filtro para mejorar calidad del lead antes de seguimiento.", 7, "Mejora calidad, pero puede bajar volumen si se aplica demasiado pronto.", "media", "medio-alto", "medio", "Cuando llegan consultas poco calificadas.", "calidad de lead, tasa de reunión y tasa de respuesta", "Conviene después de ordenar mensaje y audiencia."),
+            ],
+            recommended_testing_sequence=["Primero CTA por temperatura.", "Luego CTA por audiencia.", "Después pre-calificación si la calidad de consultas es baja."],
+            dependencies=["definición de rutas", "tracking de clicks/mensajes", "criterio de lead calificado"],
+            risks=["pedir demasiado pronto una reunión", "subir fricción antes de generar confianza", "medir solo volumen y no calidad"],
+            what_not_to_give_for_free="No entregar copies finales ni flujos completos de conversión; reservar implementación para propuesta.",
+        ))
+
+    if public_audit.commercial_score.trust_signals < 75 or contains_any(text, ["confianza", "prueba", "casos", "testimonio", "reseña", "autoridad"]):
+        measures.append(build_measure(
+            measure_name="Construir prueba social y evidencia de confianza",
+            area="Confianza / autoridad / conversión",
+            problem_addressed="Puede existir interés, pero faltar evidencia suficiente para que un usuario o empresa avance con confianza.",
+            evidence_used=[
+                f"Score de confianza: {public_audit.commercial_score.trust_signals}/100",
+                "Fuentes públicas declaradas/encontradas y contenido visible.",
+                f"Social proof score si aplica: {social_fit.platform_audits[0].proof_score if social_fit.platform_audits else 'sin dato'}",
+            ],
+            data_considered=base_data + ["confianza", "prueba social", "casos", "reputación", "objeciones"],
+            decision_basis="En servicios de recursos humanos, la confianza afecta decisión B2B, calidad percibida, objeciones y conversión.",
+            affected_area=["web", "LinkedIn", "Instagram", "propuesta comercial", "speech de reunión", "seguimiento"],
+            expected_impact="Aumentar credibilidad y reducir fricción antes de consulta/reunión.",
+            priority="media-alta",
+            confidence="media",
+            validation_metrics=["reuniones agendadas", "objeciones de confianza", "respuestas B2B", "consultas calificadas", "tiempo hasta respuesta"],
+            implementation_variants=[
+                make_variant("Prueba institucional mínima", "Agregar señales básicas: trayectoria, proceso, metodología, equipo, cobertura y formas de trabajo.", 7, "Es factible y mejora confianza base, aunque no reemplaza casos reales.", "alta", "medio", "bajo", "Cuando faltan evidencias visibles.", "tasa de contacto y tiempo de decisión", "Puede aplicarse rápido."),
+                make_variant("Casos / resultados / procesos", "Mostrar ejemplos concretos de procesos, resultados o aprendizajes sin revelar datos sensibles.", 9, "Es más potente para B2B porque transforma promesa en evidencia.", "media", "alto", "medio", "Cuando hay clientes, historias o procesos demostrables.", "reuniones B2B y objeciones reducidas", "Conviene después de definir posicionamiento."),
+                make_variant("Contenido de objeciones", "Crear piezas que respondan dudas frecuentes de empresas y postulantes.", 8, "Convierte contenido en soporte comercial y reduce fricción.", "media-alta", "medio-alto", "bajo-medio", "Cuando hay preguntas repetidas o barreras antes de avanzar.", "comentarios, guardados, respuestas y consultas por objeción", "Puede testearse en paralelo a prueba social."),
+            ],
+            recommended_testing_sequence=["Primero prueba institucional mínima.", "Luego casos/procesos si hay evidencia.", "Después contenido de objeciones."],
+            dependencies=["evidencias reales", "casos autorizados", "objeciones frecuentes"],
+            risks=["usar prueba genérica", "exponer datos sensibles", "hacer claims no demostrables"],
+            what_not_to_give_for_free="No entregar casos redactados completos ni piezas finales; usarlo como recomendación estratégica.",
+        ))
+
+    tracking_critical = any(item.severity == "crítica" for item in campaign_performance.tracking_health)
+    if tracking_critical or not has_campaigns:
+        measures.append(build_measure(
+            measure_name="Preparar tracking, CRM y medición de calidad",
+            area="Tracking / CRM / performance futuro",
+            problem_addressed="Sin medición mínima, futuras campañas pueden optimizar por volumen, no por calidad real de consulta o contratación.",
+            evidence_used=[
+                f"Data completeness: {campaign_performance.data_completeness.score}/100",
+                f"Campaign data quality: {campaign_performance.data_quality}",
+                "No hay campañas reales cargadas." if not has_campaigns else "Hay señales de tracking a revisar.",
+            ],
+            data_considered=base_data + ["eventos", "CRM", "fuente de consulta", "calidad de lead", "tracking"],
+            decision_basis="La medición debe prepararse antes de invertir o escalar. En un negocio con B2B/B2C, no alcanza con contar leads: hay que distinguir fuente, audiencia, calidad y avance comercial.",
+            affected_area=["formularios", "WhatsApp", "CRM", "GA4", "Meta/Google/TikTok Ads", "reporting", "seguimiento comercial"],
+            expected_impact="Mejorar confiabilidad de decisiones, calidad de optimización y atribución.",
+            priority="alta" if has_campaigns else "media-alta",
+            confidence="alta",
+            validation_metrics=["eventos activos", "fuente/campaña por lead", "lead quality", "tasa de contacto", "tasa de reunión", "tasa de cierre"],
+            implementation_variants=[
+                make_variant("Tracking mínimo viable", "Medir clicks a contacto, formularios, WhatsApp, fuente/medio/campaña y tipo de consulta.", 9, "Alta relación impacto/factibilidad antes de campañas.", "alta", "alto", "bajo", "Antes de invertir en pauta o comparar canales.", "porcentaje de leads con fuente y evento correcto", "Debe hacerse antes de performance avanzada."),
+                make_variant("CRM con scoring simple", "Registrar fuente, tipo de audiencia, calidad, estado, reunión y resultado.", 8, "Permite medir calidad real, no solo CPL.", "media", "alto", "medio", "Cuando hay consultas pero no se sabe cuáles sirven.", "lead quality rate y tasa de reunión", "Puede implementarse después del tracking mínimo."),
+                make_variant("Dashboard de campaña + comercial", "Unir campañas, eventos y CRM para ver CPL, calidad y avance por canal.", 7, "Muy útil, pero depende de tener datos y procesos estables.", "media-baja", "alto", "medio", "Cuando ya haya campañas y volumen de leads.", "CPA/calidad por canal y etapa CRM", "Conviene después de CRM mínimo."),
+            ],
+            recommended_testing_sequence=["Primero tracking mínimo viable.", "Luego CRM con scoring simple.", "Después dashboard integrado."],
+            dependencies=["accesos a sitio/formularios", "GA4/píxeles", "criterio de lead calificado", "proceso de seguimiento"],
+            risks=["optimizar campañas con datos incompletos", "confundir lead barato con lead bueno", "no poder atribuir consultas"],
+            what_not_to_give_for_free="No implementar setup técnico completo gratis; incluirlo como fase de medición.",
+        ))
+
+    if has_campaigns:
+        campaign_evidence = [finding.evidence for finding in campaign_performance.findings[:3]]
+        campaign_evidence.extend([finding.evidence for finding in campaign_performance.cross_metric_findings[:3]])
+        measures.append(build_measure(
+            measure_name="Optimizar campañas cruzando costo, calidad, tracking y funnel",
+            area="Performance / campañas / presupuesto",
+            problem_addressed="Las decisiones de pauta no deben tomarse solo por CPL/CPA: hay que cruzar CTR, CPC, CVR, calidad, tracking, etapa y fuente.",
+            evidence_used=campaign_evidence or ["Datos de campaña cargados."],
+            data_considered=base_data + ["CTR", "CPC", "CPM", "CPL/CPA", "CVR", "lead quality", "tracking", "presupuesto", "funnel stage"],
+            decision_basis="Con datos reales, la prioridad de medidas cambia: una campaña barata con mala calidad no se escala; una cara con alta calidad puede optimizarse; una con clicks y eventos cero primero requiere tracking.",
+            affected_area=["presupuesto", "creatividad", "audiencias", "landing", "tracking", "retargeting", "CRM"],
+            expected_impact="Reducir desperdicio, mejorar calidad de lead y priorizar inversión según evidencia.",
+            priority="alta",
+            confidence="media-alta" if campaign_performance.data_quality != "sin_datos" else "media",
+            validation_metrics=["CPL/CPA", "lead quality", "CVR", "tasa de reunión", "tracking reliability", "valor cerrado si existe"],
+            implementation_variants=[
+                make_variant("Pausar/reducir desperdicio evidente", "Reducir campañas con costo alto, baja calidad y muestra suficiente.", 8, "Protege presupuesto, pero requiere guardrails de muestra y tracking.", "media-alta", "alto", "medio", "Cuando hay CPL alto + calidad baja + muestra suficiente.", "ahorro de gasto y calidad de leads restantes", "No aplicar antes de revisar tracking."),
+                make_variant("Escalar ganadoras con cautela", "Aumentar gradualmente campañas con buen costo, buena calidad y tracking confiable.", 9, "Maximiza lo que funciona sin romper aprendizaje.", "media", "alto", "medio", "Cuando hay CPL/CPA bajo + calidad alta.", "CPL, calidad y tasa de reunión post-escalado", "Aplicar después de validar calidad."),
+                make_variant("Tests creativos por hipótesis", "Testear hooks, mensajes, landing o audiencias según patrón detectado.", 8, "Convierte hallazgos en aprendizaje controlado.", "media", "medio-alto", "medio", "Cuando hay CTR/CPC/CVR que señalan problema específico.", "CTR, CPC, CVR y lead quality por variante", "Puede ir en paralelo a ajuste de presupuesto."),
+            ],
+            recommended_testing_sequence=["Primero corregir tracking crítico.", "Luego reducir desperdicio evidente.", "Después escalar ganadoras y testear creatividad."],
+            dependencies=["tracking confiable", "muestra suficiente", "calidad de lead por campaña", "CRM o seguimiento"],
+            risks=["pausar por muestra chica", "escalar lead barato pero malo", "optimizar por métrica equivocada"],
+            what_not_to_give_for_free="No entregar estructura completa de campañas, segmentaciones detalladas ni plan de presupuesto final.",
+        ))
+
+    priority_order = {"crítica": 0, "alta": 1, "media-alta": 2, "media": 3, "baja": 4}
+    measures = sorted(
+        measures,
+        key=lambda item: (
+            priority_order.get(item.priority, 5),
+            -max([variant.score_1_to_10 for variant in item.implementation_variants] or [0]),
+        ),
+    )[:8]
+
+    if not measures:
+        measures.append(build_measure(
+            measure_name="Recolectar datos mínimos antes de decidir medidas fuertes",
+            area="Diagnóstico / datos",
+            problem_addressed="La información disponible no alcanza para proponer medidas con confianza suficiente.",
+            evidence_used=["Datos limitados en la auditoría actual."],
+            data_considered=base_data,
+            decision_basis="Antes de recomendar cambios profundos, conviene reunir evidencia mínima de contenido, consultas, fuentes y campañas.",
+            affected_area=["diagnóstico", "reporting", "speech comercial"],
+            expected_impact="Aumentar precisión y reducir riesgo de recomendar cambios prematuros.",
+            priority="media",
+            confidence="alta",
+            validation_metrics=["cantidad de fuentes", "muestras de contenido", "consultas por fuente", "métricas de retención"],
+            implementation_variants=[
+                make_variant("Brief de datos", "Completar brief comercial y checklist de datos.", 8, "Mejora precisión rápido.", "alta", "medio", "bajo", "Cuando falta información base.", "datos completos", "Primero."),
+                make_variant("Auditoría manual de piezas", "Cargar 5-10 piezas por red con métricas.", 9, "Permite validar contenido.", "media", "alto", "bajo", "Cuando el foco es redes.", "retención/engagement", "Después del brief."),
+            ],
+            recommended_testing_sequence=["Completar brief.", "Cargar muestras.", "Reejecutar auditoría."],
+            dependencies=["datos del cliente", "links/muestras"],
+            risks=["inferir demasiado con poca data"],
+            what_not_to_give_for_free="No resolver estrategia completa hasta tener evidencia mínima.",
+        ))
+
+    limitations = []
+    if not has_campaigns:
+        limitations.append("No hay campañas reales: presupuesto, escalado, pausa y performance quedan como medidas preparadas, no decisiones ejecutivas.")
+    if not request.social_content_samples:
+        limitations.append("No hay muestras/métricas internas de contenido: retención social se trata como riesgo estructural, no hecho comprobado.")
+    if public_audit.research_confidence in ["baja", "media-baja"]:
+        limitations.append("La investigación pública tiene confianza limitada: los links declarados valen como fuentes, pero la extracción automática puede ser parcial.")
+
+    next_measurement = [
+        "definir lead calificado por audiencia",
+        "medir fuente de consulta",
+        "registrar tasa de respuesta/reunión/cierre",
+        "capturar retención a 3s y completion rate de videos",
+        "configurar eventos de contacto/formulario/WhatsApp",
+    ]
+    if has_campaigns:
+        next_measurement.extend(["comparar CPL vs calidad", "controlar CVR landing", "registrar etapa CRM por campaña"])
+
+    return StrategicMeasuresMatrix(
+        summary=(
+            "La matriz prioriza medidas integrales basadas en marca, posicionamiento, audiencia, contenido, CTA, funnel y medición. "
+            "Cuando hay campañas, incorpora cruces de performance para ajustar prioridad. "
+            f"Se generaron {len(measures)} medidas con variantes puntuadas y secuencia de testing."
+        ),
+        measures=measures,
+        decision_logic=(
+            "Ninguna medida se recomienda por una sola variable aislada. Cada decisión cruza diagnóstico de marca, posicionamiento, "
+            "audiencia, contenido, CTA/funnel, confianza, tracking y, si existen, métricas de campaña y calidad de lead."
+        ),
+        data_limitations=limitations,
+        next_measurement_layer=list(dict.fromkeys(next_measurement))[:10],
+    )
+
+
 def audit_full_commercial_system(request: FullCommercialSystemRequest):
     public_audit_request = ProspectWithResearchRequest(
         company_name=request.company_name,
@@ -6006,6 +6460,13 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         commercial_readiness_score=commercial_readiness_score,
     )
     diagnostic_integration_summary = build_diagnostic_integration_summary(analysis_trace)
+    strategic_measures_matrix = build_strategic_measures_matrix(
+        request=request,
+        public_audit=public_audit,
+        social_fit=social_content_fit,
+        campaign_performance=campaign_performance,
+        analysis_trace=analysis_trace,
+    )
 
     visual_report_url = None
     visual_report_status = "not_generated"
@@ -6024,6 +6485,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
             score_svg=score_svg,
             social_content_fit=social_content_fit,
             analysis_trace=analysis_trace,
+            strategic_measures_matrix=strategic_measures_matrix,
         )
         report_id = uuid.uuid4().hex
         save_visual_report_html(report_id, report_html)
@@ -6038,6 +6500,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         response_mode="compact",
         analysis_trace=analysis_trace,
         diagnostic_integration_summary=diagnostic_integration_summary,
+        strategic_measures_matrix=strategic_measures_matrix,
         system_summary=system_summary,
         recommended_next_step=(
             "Cargar un export real de campañas, eventos, calidad de lead, CRM y período anterior para pasar de acciones preparadas a decisiones con evidencia."
