@@ -6543,3 +6543,70 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
             "Los visuales completos no viajan en JSON; usar visual_report_url o /deliverables/visual-report."
         ),
     )
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_policy():
+    return HTMLResponse(content="""
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Política de Privacidad - Auditor Comercial de Awareness</title>
+</head>
+<body style="font-family: Arial, sans-serif; max-width: 860px; margin: 40px auto; padding: 0 20px; line-height: 1.6;">
+  <h1>Política de Privacidad</h1>
+
+  <p><strong>Última actualización:</strong> 2026</p>
+
+  <p>
+    Auditor Comercial de Awareness utiliza una API externa para procesar información enviada por el usuario
+    con el objetivo de generar auditorías comerciales, análisis de presencia pública, análisis de contenido social,
+    campañas, funnels, medidas recomendadas y reportes visuales.
+  </p>
+
+  <h2>Datos que pueden procesarse</h2>
+  <p>
+    La herramienta puede recibir datos como nombre de empresa, industria, ciudad, país, sitio web,
+    perfiles públicos de redes sociales, notas comerciales, métricas de campañas, datos de contenido,
+    información de tracking y otros datos que el usuario decida enviar voluntariamente.
+  </p>
+
+  <h2>Uso de la información</h2>
+  <p>
+    La información se utiliza únicamente para generar diagnósticos, reportes visuales,
+    recomendaciones comerciales, medidas estratégicas y análisis de performance.
+  </p>
+
+  <h2>Fuentes públicas</h2>
+  <p>
+    La herramienta puede consultar fuentes públicas o usar enlaces provistos por el usuario.
+    Los enlaces públicos declarados por el usuario se tratan como fuentes públicas de referencia.
+  </p>
+
+  <h2>Almacenamiento</h2>
+  <p>
+    Los reportes visuales pueden almacenarse temporalmente para permitir su acceso mediante un enlace generado.
+    No se garantiza almacenamiento permanente salvo que se implemente almacenamiento externo persistente.
+  </p>
+
+  <h2>Datos sensibles</h2>
+  <p>
+    Se recomienda no enviar contraseñas, claves API, datos financieros privados, información médica,
+    información legal confidencial ni datos personales innecesarios.
+  </p>
+
+  <h2>Terceros</h2>
+  <p>
+    La herramienta puede usar servicios externos para hosting, búsqueda pública, ejecución de API
+    y generación de reportes. Los datos enviados a estas acciones pueden estar sujetos a las políticas
+    de privacidad de dichos servicios.
+  </p>
+
+  <h2>Contacto</h2>
+  <p>
+    Para consultas sobre esta política, contactar al creador del GPT: Juan Pablo Ponzio Quiroga.
+  </p>
+</body>
+</html>
+    """)
