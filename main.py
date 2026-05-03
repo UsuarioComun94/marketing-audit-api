@@ -144,6 +144,9 @@ class PublicPresenceRequest(BaseModel):
     country: Optional[str] = Field("Argentina", description="País de referencia")
     website: Optional[str] = Field(None, description="Sitio web conocido")
     instagram: Optional[str] = Field(None, description="Perfil de Instagram conocido")
+    tiktok: Optional[str] = Field(None, description="Perfil de TikTok conocido")
+    facebook: Optional[str] = Field(None, description="Perfil de Facebook conocido")
+    youtube: Optional[str] = Field(None, description="Canal de YouTube conocido")
     linkedin: Optional[str] = Field(None, description="Perfil de LinkedIn conocido")
     num_results_per_query: int = Field(5, description="Cantidad de resultados por búsqueda")
 
@@ -183,6 +186,9 @@ class ProspectWithResearchRequest(BaseModel):
     country: Optional[str] = Field("Argentina", description="País de referencia")
     website: Optional[str] = Field(None, description="Sitio web conocido")
     instagram: Optional[str] = Field(None, description="Perfil de Instagram conocido")
+    tiktok: Optional[str] = Field(None, description="Perfil de TikTok conocido")
+    facebook: Optional[str] = Field(None, description="Perfil de Facebook conocido")
+    youtube: Optional[str] = Field(None, description="Canal de YouTube conocido")
     linkedin: Optional[str] = Field(None, description="Perfil de LinkedIn conocido")
     offer: Optional[str] = Field(None, description="Oferta principal del prospecto")
     notes: Optional[str] = Field(None, description="Notas adicionales del usuario")
@@ -659,6 +665,90 @@ class CampaignPerformanceCompactResponse(BaseModel):
 
 
 
+class SocialContentSample(BaseModel):
+    platform: str = Field(..., description="TikTok, Instagram, Reels, YouTube Shorts, etc.")
+    url: Optional[str] = None
+    content_type: Optional[str] = Field(None, description="reel, tiktok, carrusel, post, short, story")
+    caption: Optional[str] = None
+    opening_seconds_description: Optional[str] = Field(None, description="Qué pasa en los primeros 0-3 segundos")
+    visual_style: Optional[str] = Field(None, description="estático, talking head, institucional, UGC, educativo, testimonial, etc.")
+    duration_seconds: Optional[float] = None
+    views: Optional[int] = None
+    likes: Optional[int] = None
+    comments: Optional[int] = None
+    shares: Optional[int] = None
+    saves: Optional[int] = None
+    average_watch_time_seconds: Optional[float] = None
+    retention_3s_percent: Optional[float] = Field(None, description="Retención a 3 segundos si existe")
+    completion_rate_percent: Optional[float] = Field(None, description="Porcentaje de reproducción completa si existe")
+    profile_clicks: Optional[int] = None
+    cta_clicks: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class SocialContentAction(BaseModel):
+    platform: str
+    issue: str
+    evidence: str
+    interpretation: str
+    recommended_action: str
+    priority: str
+    effort: str
+    validation_metric: str
+    confidence: str
+    do_not_give_for_free: str
+
+
+class SocialPlatformAudit(BaseModel):
+    platform: str
+    profile_url: Optional[str] = None
+    platform_fit_score: int
+    native_format_score: int
+    hook_quality_score: int
+    retention_risk_score: int
+    message_clarity_score: int
+    cta_score: int
+    proof_score: int
+    content_to_offer_match_score: int
+    detected_issues: List[str]
+    recommended_improvements: List[str]
+    evidence: List[str]
+    confidence: str
+    limitation: str
+
+
+class SocialContentFitRequest(BaseModel):
+    company_name: str
+    industry: Optional[str] = None
+    city: Optional[str] = None
+    country: Optional[str] = "Argentina"
+    website: Optional[str] = None
+    instagram: Optional[str] = None
+    tiktok: Optional[str] = None
+    facebook: Optional[str] = None
+    youtube: Optional[str] = None
+    linkedin: Optional[str] = None
+    offer: Optional[str] = None
+    target_audience: Optional[str] = None
+    notes: Optional[str] = Field(None, description="Observaciones sobre contenido, red social y retención")
+    recent_content_samples: List[SocialContentSample] = Field(default_factory=list)
+    num_results_per_query: int = Field(5, description="Cantidad de resultados públicos por búsqueda")
+
+
+class SocialContentFitResponse(BaseModel):
+    company_name: str
+    audit_type: str
+    overall_social_content_fit_score: int
+    primary_content_gap: str
+    platforms_analyzed: List[str]
+    platform_audits: List[SocialPlatformAudit]
+    strategic_summary: str
+    public_sources_used: List[ReviewedPublicSource]
+    recommended_actions: List[SocialContentAction]
+    next_data_needed: List[str]
+    response_note: str
+
+
 class FullCommercialSystemRequest(ProspectWithResearchRequest):
     campaigns: List[CampaignMetric] = Field(default_factory=list)
     campaign_notes: Optional[str] = Field(None, description="Notas específicas de performance/campañas")
@@ -667,6 +757,8 @@ class FullCommercialSystemRequest(ProspectWithResearchRequest):
     target_ctr_percent: float = 1.0
     target_landing_conversion_rate_percent: float = 2.0
     min_lead_quality_rate_percent: float = 50.0
+    social_content_notes: Optional[str] = Field(None, description="Notas específicas sobre contenido orgánico, TikTok, Reels o piezas recientes")
+    social_content_samples: List[SocialContentSample] = Field(default_factory=list, description="Muestras recientes de contenido orgánico para auditar adaptación por plataforma")
 
 
 class FullCommercialSystemResponse(BaseModel):
@@ -687,6 +779,11 @@ class FullCommercialSystemResponse(BaseModel):
     campaign_data_quality: str
     campaigns_analyzed: int
     campaign_summary: str
+    social_content_fit_summary: str
+    social_content_fit_score: Optional[int] = None
+    social_content_primary_gap: Optional[str] = None
+    platform_content_fit: List[SocialPlatformAudit] = Field(default_factory=list)
+    social_content_actions: List[SocialContentAction] = Field(default_factory=list)
     top_campaign_findings: List[PerformanceFinding]
     top_cross_metric_findings: List[CrossMetricFinding]
     tracking_health: List[TrackingHealthFinding]
@@ -844,6 +941,13 @@ def build_public_presence_queries(request: PublicPresenceRequest) -> List[Dict[s
         queries.append({"category": "known_website", "query": f"site:{request.website} {base}".strip()})
     if request.instagram:
         queries.append({"category": "known_instagram", "query": f"{request.instagram} {base}".strip()})
+    if getattr(request, "tiktok", None):
+        queries.append({"category": "known_tiktok", "query": f"{request.tiktok} {base}".strip()})
+    if getattr(request, "facebook", None):
+        queries.append({"category": "known_facebook", "query": f"{request.facebook} {base}".strip()})
+    if getattr(request, "youtube", None):
+        queries.append({"category": "known_youtube", "query": f"{request.youtube} {base}".strip()})
+    queries.append({"category": "platform_native_content", "query": f"{base} TikTok Instagram Reels contenido videos {location}".strip()})
     if request.linkedin:
         queries.append({"category": "known_linkedin", "query": f"{request.linkedin} {base}".strip()})
 
@@ -2412,6 +2516,7 @@ def build_visual_report_html(
     density_svg: str,
     blueprint_svg: str,
     score_svg: str,
+    social_content_fit: Optional[SocialContentFitResponse] = None,
 ) -> str:
     sources = ''.join([
         f'''
@@ -2492,6 +2597,43 @@ def build_visual_report_html(
         "Luego aparece FAULT: el punto donde el avance se rompe. DG es la compuerta de diagnóstico: convierte la ruptura en criterio de rediseño. "
         "La ruta verde muestra cómo debería moverse el cliente después del rediseño. Abajo, el Support Layer alimenta esa ruta verde con mensajes, prueba, manejo de objeciones, CTA y seguimiento."
     )
+
+
+    social_section = ""
+    if social_content_fit:
+        platform_cards = ''.join([
+            f'''
+            <div class="blueprint-code-card">
+              <h3>{h(audit.platform)} · Fit {audit.platform_fit_score}/100</h3>
+              <p><strong>Hook:</strong> {audit.hook_quality_score}/100 · <strong>Riesgo retención:</strong> {audit.retention_risk_score}/100 · <strong>CTA:</strong> {audit.cta_score}/100</p>
+              <p><strong>Issues:</strong> {h("; ".join(audit.detected_issues[:3]))}</p>
+              <p><strong>Mejoras:</strong> {h("; ".join(audit.recommended_improvements[:3]))}</p>
+              <p class="muted">{h(audit.limitation)}</p>
+            </div>
+            '''
+            for audit in social_content_fit.platform_audits
+        ])
+        action_items = ''.join([
+            f'<li><strong>{h(action.platform)}:</strong> {h(action.issue)} → {h(action.recommended_action)}</li>'
+            for action in social_content_fit.recommended_actions[:6]
+        ])
+        social_section = f'''
+        <section class="card full">
+          <h2>Social Content Fit Audit</h2>
+          <p><strong>Score general:</strong> {social_content_fit.overall_social_content_fit_score}/100 · <strong>Brecha principal:</strong> {h(social_content_fit.primary_content_gap)}</p>
+          <p>{h(social_content_fit.strategic_summary)}</p>
+          <div class="blueprint-code-grid">
+            {platform_cards}
+          </div>
+          <div class="explanation-card">
+            <h3>Acciones recomendadas para contenido por plataforma</h3>
+            <ul>{action_items or '<li>No hay acciones sociales suficientes con la información actual.</li>'}</ul>
+            <div class="script-box">
+              <p><strong>Límite metodológico:</strong> este módulo puede detectar riesgo estructural de baja retención con señales públicas y muestras. Para confirmar baja retención real hacen falta métricas internas de TikTok/Instagram/Meta.</p>
+            </div>
+          </div>
+        </section>
+        '''
 
     return f'''<!doctype html>
 <html lang="es">
@@ -2698,6 +2840,8 @@ def build_visual_report_html(
       <p><strong>{h(result.company_name)}</strong> · Confianza de investigación: {h(result.research_confidence)} · Tipo: {h(result.audit_type)}</p>
       <p>{h(result.diagnosis_initial)}</p>
     </section>
+
+    {social_section}
 
     <section class="grid">
       <div class="card">{score_svg}</div>
@@ -3300,6 +3444,9 @@ def audit_prospect_with_research(request: ProspectWithResearchRequest):
         country=request.country,
         website=request.website,
         instagram=request.instagram,
+        tiktok=getattr(request, "tiktok", None),
+        facebook=getattr(request, "facebook", None),
+        youtube=getattr(request, "youtube", None),
         linkedin=request.linkedin,
         num_results_per_query=request.num_results_per_query,
     )
@@ -4977,6 +5124,355 @@ def run_campaign_performance_audit(request: CampaignPerformanceRequest) -> Campa
     )
 
 
+
+def clamp_score(value: float) -> int:
+    return max(0, min(100, int(round(value))))
+
+
+def normalize_platform(value: Optional[str]) -> str:
+    if not value:
+        return "general"
+    value_text = value.casefold()
+    if "tik" in value_text:
+        return "TikTok"
+    if "reel" in value_text or "insta" in value_text:
+        return "Instagram"
+    if "short" in value_text or "youtube" in value_text:
+        return "YouTube Shorts"
+    if "facebook" in value_text:
+        return "Facebook"
+    return value.strip().title()
+
+
+def social_contains(text: str, keywords: List[str]) -> bool:
+    return any(keyword.casefold() in text for keyword in keywords)
+
+
+def social_text_blob(request: SocialContentFitRequest, samples: List[SocialContentSample], sources: List[ReviewedPublicSource]) -> str:
+    parts = [request.company_name or "", request.industry or "", request.offer or "", request.target_audience or "", request.notes or ""]
+    for sample in samples:
+        parts.extend([sample.platform or "", sample.content_type or "", sample.caption or "", sample.opening_seconds_description or "", sample.visual_style or "", sample.notes or ""])
+    for source in sources:
+        parts.extend([source.title or "", source.url or "", source.signal or ""])
+    return " ".join(parts).casefold()
+
+
+def score_social_platform(platform: str, request: SocialContentFitRequest, samples: List[SocialContentSample], sources: List[ReviewedPublicSource]) -> SocialPlatformAudit:
+    profile_url = {
+        "TikTok": request.tiktok,
+        "Instagram": request.instagram,
+        "YouTube Shorts": request.youtube,
+        "Facebook": request.facebook,
+    }.get(platform)
+
+    platform_samples = [sample for sample in samples if normalize_platform(sample.platform) == platform or (platform == "Instagram" and normalize_platform(sample.content_type) == "Instagram")]
+    text = social_text_blob(request, platform_samples, sources)
+
+    native_format = 72
+    hook_quality = 68
+    retention_risk = 38
+    message_clarity = 66
+    cta_score = 58
+    proof_score = 50
+    offer_match = 62
+
+    issues: List[str] = []
+    improvements: List[str] = []
+    evidence: List[str] = []
+
+    if profile_url:
+        evidence.append(f"Perfil declarado: {profile_url}")
+    if platform_samples:
+        evidence.append(f"Se analizaron {len(platform_samples)} muestras cargadas para {platform}.")
+    else:
+        evidence.append("No se cargaron videos/posteos individuales; lectura basada en links, notas y señales públicas disponibles.")
+
+    if social_contains(text, ["baja calidad", "no retiene", "retención baja", "scroll", "aburrido", "lento", "sin ritmo"]):
+        hook_quality -= 22
+        retention_risk += 25
+        issues.append("Riesgo alto de baja retención por estructura, ritmo o arranque débil.")
+        improvements.append("Reestructurar las piezas con hook claro en 0-3 segundos y progresión visual más rápida.")
+
+    if social_contains(text, ["institucional", "logo", "presentación", "corporativo", "demasiado formal"]):
+        native_format -= 18
+        hook_quality -= 12
+        issues.append("El contenido parece más institucional que nativo para redes de consumo rápido.")
+        improvements.append("Adaptar el formato a lenguaje nativo de la plataforma: menos introducción institucional y más tensión/beneficio inmediato.")
+
+    if social_contains(text, ["sin hook", "no hay hook", "arranca lento", "primeros segundos", "inicio lento"]):
+        hook_quality -= 28
+        retention_risk += 22
+        issues.append("El hook inicial es débil o llega tarde.")
+        improvements.append("Abrir cada pieza con conflicto, pregunta, promesa, objeción o resultado antes de presentar marca/contexto.")
+
+    if social_contains(text, ["sin cta", "cta débil", "consultanos", "escribinos", "no guía", "sin próximo paso"]):
+        cta_score -= 22
+        issues.append("El CTA no guía suficientemente hacia una acción comercial concreta.")
+        improvements.append("Usar CTA contextual por temperatura: guardar, comentar, pedir diagnóstico, ver caso, agendar o consultar con criterio.")
+
+    if social_contains(text, ["sin prueba", "poca prueba", "testimonios", "casos", "reseñas", "confianza"]):
+        proof_score -= 15
+        issues.append("La prueba social o evidencia de confianza parece insuficiente.")
+        improvements.append("Agregar casos, testimonios, datos de resultados, procesos, garantías, behind the scenes o evidencia operativa.")
+
+    if social_contains(text, ["genérico", "parecido", "no diferencia", "diferenciación", "propuesta de valor"]):
+        message_clarity -= 18
+        offer_match -= 12
+        issues.append("El contenido puede estar comunicando temas genéricos sin una razón clara de elección.")
+        improvements.append("Convertir contenido en criterio de decisión: explicar por qué elegir, cuándo conviene, para quién y contra qué alternativa.")
+
+    for sample in platform_samples:
+        if sample.duration_seconds and platform in ["TikTok", "Instagram"] and sample.duration_seconds > 60:
+            retention_risk += 8
+            issues.append("Hay piezas largas para consumo rápido; pueden requerir mayor tensión narrativa.")
+        if sample.retention_3s_percent is not None:
+            evidence.append(f"Retención 3s declarada en una muestra: {sample.retention_3s_percent:.1f}%.")
+            if sample.retention_3s_percent < 50:
+                retention_risk += 25
+                hook_quality -= 18
+                issues.append("Retención a 3 segundos baja en muestra cargada.")
+        if sample.completion_rate_percent is not None:
+            evidence.append(f"Completion rate declarado en una muestra: {sample.completion_rate_percent:.1f}%.")
+            if sample.completion_rate_percent < 20:
+                retention_risk += 18
+                issues.append("Baja finalización del video en muestra cargada.")
+        if sample.cta_clicks is not None and sample.views and sample.views > 0:
+            rate = (sample.cta_clicks / sample.views) * 100
+            evidence.append(f"CTR a CTA aproximado en muestra: {rate:.2f}%.")
+            if rate < 0.5:
+                cta_score -= 12
+                issues.append("La pieza genera bajo avance hacia CTA en relación con visualizaciones.")
+
+    if platform == "TikTok" and not social_contains(text, ["hook", "tendencia", "ugc", "storytime", "problema", "mito", "error", "antes/después"]):
+        hook_quality -= 8
+        native_format -= 8
+        issues.append("No se observan señales suficientes de lenguaje nativo TikTok.")
+        improvements.append("Probar hooks tipo mito/error, objeción, historia breve, comparación o aprendizaje rápido.")
+
+    if platform == "Instagram" and not social_contains(text, ["reel", "carrusel", "guardar", "compartir", "educativo"]):
+        native_format -= 6
+        improvements.append("Separar Reels de retención rápida y carruseles guardables/educativos para consideración.")
+
+    if not issues:
+        issues.append("No hay evidencia suficiente de una falla crítica específica; se recomienda cargar muestras y métricas de retención para mayor precisión.")
+    if not improvements:
+        improvements.append("Cargar piezas recientes con métricas para convertir la lectura en auditoría de contenido comprobada.")
+
+    platform_fit = clamp_score((native_format + hook_quality + message_clarity + cta_score + proof_score + offer_match + (100 - retention_risk)) / 7)
+    confidence = "media-alta" if platform_samples and any(sample.retention_3s_percent is not None for sample in platform_samples) else ("media" if platform_samples else "baja-media")
+    limitation = "Lectura basada en muestras y métricas cargadas." if platform_samples else "Lectura inferida desde presencia pública/notas; para afirmar retención real hacen falta métricas de la plataforma."
+
+    return SocialPlatformAudit(
+        platform=platform,
+        profile_url=profile_url,
+        platform_fit_score=platform_fit,
+        native_format_score=clamp_score(native_format),
+        hook_quality_score=clamp_score(hook_quality),
+        retention_risk_score=clamp_score(retention_risk),
+        message_clarity_score=clamp_score(message_clarity),
+        cta_score=clamp_score(cta_score),
+        proof_score=clamp_score(proof_score),
+        content_to_offer_match_score=clamp_score(offer_match),
+        detected_issues=list(dict.fromkeys(issues))[:8],
+        recommended_improvements=list(dict.fromkeys(improvements))[:8],
+        evidence=list(dict.fromkeys(evidence))[:8],
+        confidence=confidence,
+        limitation=limitation,
+    )
+
+
+def build_social_content_actions(audits: List[SocialPlatformAudit]) -> List[SocialContentAction]:
+    actions: List[SocialContentAction] = []
+    for audit in audits:
+        if audit.hook_quality_score < 60 or audit.retention_risk_score > 55:
+            actions.append(SocialContentAction(
+                platform=audit.platform,
+                issue="Hook inicial débil o riesgo de baja retención",
+                evidence="; ".join(audit.detected_issues[:2]),
+                interpretation="La pieza puede perder atención antes de comunicar valor, especialmente en redes de consumo rápido.",
+                recommended_action="Rediseñar los primeros 0-3 segundos con tensión, beneficio, objeción o resultado antes de introducir marca/contexto.",
+                priority="alta",
+                effort="medio",
+                validation_metric="Retención a 3s, porcentaje visto, completion rate, shares y clicks al perfil/CTA.",
+                confidence=audit.confidence,
+                do_not_give_for_free="No entregar guiones finales ni calendario completo; vender auditoría/reestructura creativa.",
+            ))
+        if audit.native_format_score < 65:
+            actions.append(SocialContentAction(
+                platform=audit.platform,
+                issue="Baja adaptación nativa a la plataforma",
+                evidence="; ".join(audit.evidence[:2]),
+                interpretation="El contenido puede estar reciclado o construido con lógica institucional, no con lógica de consumo de la red.",
+                recommended_action="Separar formato por plataforma: TikTok/Reels con ritmo y hook; carruseles con valor guardable; piezas de prueba para consideración.",
+                priority="media-alta",
+                effort="medio",
+                validation_metric="Retención, engagement rate, saves/shares, clicks al perfil y tasa de avance a consulta.",
+                confidence=audit.confidence,
+                do_not_give_for_free="No entregar arquitectura completa de contenido; solo diagnóstico y dirección de mejora.",
+            ))
+        if audit.cta_score < 60:
+            actions.append(SocialContentAction(
+                platform=audit.platform,
+                issue="CTA débil o poco contextual",
+                evidence="El score de CTA es bajo para la plataforma analizada.",
+                interpretation="La audiencia puede consumir contenido sin avanzar hacia una acción comercial.",
+                recommended_action="Crear CTA por temperatura: guardar/comentar para frío, pedir caso/guía para templado y consulta/diagnóstico para caliente.",
+                priority="media",
+                effort="bajo",
+                validation_metric="Clicks al perfil, clicks a WhatsApp/link, formularios, mensajes y consultas calificadas.",
+                confidence=audit.confidence,
+                do_not_give_for_free="No entregar copys finales ni secuencias completas de CTA.",
+            ))
+        if audit.proof_score < 60:
+            actions.append(SocialContentAction(
+                platform=audit.platform,
+                issue="Falta de prueba social o confianza",
+                evidence="El contenido no demuestra suficiente evidencia, casos, testimonios o señales de autoridad.",
+                interpretation="El usuario puede interesarse, pero no acumula confianza suficiente para avanzar.",
+                recommended_action="Agregar pruebas visibles: casos, testimonios, procesos, resultados, comparativas, objeciones resueltas o evidencia operativa.",
+                priority="media-alta",
+                effort="medio",
+                validation_metric="Consultas calificadas, guardados, comentarios de intención y avance a reunión/diagnóstico.",
+                confidence=audit.confidence,
+                do_not_give_for_free="No entregar casos editados ni piezas finales listas para publicar.",
+            ))
+    return actions[:12]
+
+
+def build_social_content_fit_summary(audits: List[SocialPlatformAudit]) -> str:
+    if not audits:
+        return "No se pudo analizar contenido social porque no hay perfiles, fuentes ni muestras cargadas."
+    worst = sorted(audits, key=lambda item: item.platform_fit_score)[0]
+    best = sorted(audits, key=lambda item: item.platform_fit_score, reverse=True)[0]
+    return (
+        f"El mayor riesgo de contenido está en {worst.platform} (score {worst.platform_fit_score}/100). "
+        f"La lectura evalúa si el contenido retiene, se adapta a la red, comunica valor y guía hacia acción. "
+        f"La mejor señal relativa aparece en {best.platform} (score {best.platform_fit_score}/100)."
+    )
+
+
+def build_social_adapted_blueprint(current_blueprint: FunnelBlueprint, social_fit: SocialContentFitResponse, campaign_performance: CampaignPerformanceResponse) -> FunnelBlueprint:
+    if social_fit.overall_social_content_fit_score >= 62:
+        return current_blueprint
+    critical_tracking = any(item.severity == "crítica" for item in campaign_performance.tracking_health)
+    if critical_tracking:
+        return current_blueprint
+    return FunnelBlueprint(
+        current_flow=[
+            "Publicación / pieza social",
+            "Primeros 0-3 segundos",
+            "Atención inicial débil",
+            "Valor no percibido",
+            "Interacción sin avance",
+        ],
+        breakpoints=[
+            social_fit.primary_content_gap or "Contenido no adaptado a la plataforma",
+            "Riesgo de baja retención",
+            "Falta de CTA/prueba según red",
+        ],
+        missing_links=[
+            "Hook nativo",
+            "Ritmo / edición",
+            "Prueba social",
+            "CTA contextual",
+            "Métrica de retención",
+        ],
+        recommended_flow=[
+            "Hook por plataforma",
+            "Valor temprano",
+            "Prueba / objeción",
+            "CTA por temperatura",
+            "Medición y aprendizaje",
+        ],
+        summary=(
+            "El blueprint se adaptó a una brecha de contenido social: la ruta actual no solo necesita publicar, "
+            "sino captar atención rápido, demostrar valor y conectar la pieza con una acción comercial medible."
+        ),
+    )
+
+
+@app.post(
+    "/audit/social-content-fit",
+    response_model=SocialContentFitResponse,
+    operation_id="auditSocialContentFit",
+    summary="Audit social content fit by platform",
+    description="Audita si el contenido orgánico o público se adapta a TikTok, Instagram/Reels y otras redes. Funciona con links, notas o muestras de contenido.",
+    dependencies=[Security(verify_api_key)],
+)
+def audit_social_content_fit(request: SocialContentFitRequest):
+    public_sources: List[ReviewedPublicSource] = []
+    try:
+        presence_request = PublicPresenceRequest(
+            company_name=request.company_name,
+            industry=request.industry,
+            city=request.city,
+            country=request.country,
+            website=request.website,
+            instagram=request.instagram,
+            tiktok=request.tiktok,
+            facebook=request.facebook,
+            youtube=request.youtube,
+            linkedin=request.linkedin,
+            num_results_per_query=min(max(request.num_results_per_query, 1), 5),
+        )
+        research = research_company_public_presence(presence_request)
+        public_sources = summarize_public_sources(research.sources_found, max_sources=8)
+    except Exception:
+        public_sources = []
+
+    platforms: List[str] = []
+    if request.tiktok or any(normalize_platform(sample.platform) == "TikTok" for sample in request.recent_content_samples):
+        platforms.append("TikTok")
+    if request.instagram or any(normalize_platform(sample.platform) == "Instagram" for sample in request.recent_content_samples):
+        platforms.append("Instagram")
+    if request.youtube or any(normalize_platform(sample.platform) == "YouTube Shorts" for sample in request.recent_content_samples):
+        platforms.append("YouTube Shorts")
+    if request.facebook:
+        platforms.append("Facebook")
+    if not platforms:
+        platforms = ["TikTok", "Instagram"]
+
+    audits = [score_social_platform(platform, request, request.recent_content_samples, public_sources) for platform in list(dict.fromkeys(platforms))]
+    overall = clamp_score(sum(item.platform_fit_score for item in audits) / max(len(audits), 1))
+    worst = sorted(audits, key=lambda item: item.platform_fit_score)[0] if audits else None
+    primary_gap = "sin_datos_suficientes"
+    if worst:
+        if worst.hook_quality_score < 60 or worst.retention_risk_score > 55:
+            primary_gap = "content_retention_gap"
+        elif worst.native_format_score < 65:
+            primary_gap = "platform_native_fit_gap"
+        elif worst.cta_score < 60:
+            primary_gap = "social_cta_gap"
+        elif worst.proof_score < 60:
+            primary_gap = "trust_proof_gap"
+        else:
+            primary_gap = "social_content_fit_needs_validation"
+
+    return SocialContentFitResponse(
+        company_name=request.company_name,
+        audit_type="social_content_fit_audit_v1",
+        overall_social_content_fit_score=overall,
+        primary_content_gap=primary_gap,
+        platforms_analyzed=[audit.platform for audit in audits],
+        platform_audits=audits,
+        strategic_summary=build_social_content_fit_summary(audits),
+        public_sources_used=public_sources[:8],
+        recommended_actions=build_social_content_actions(audits),
+        next_data_needed=[
+            "Links de 5-10 TikToks/Reels recientes.",
+            "Views, likes, comentarios, shares y saves.",
+            "Retención a 3 segundos y porcentaje visto por video.",
+            "Completion rate por video.",
+            "Clicks al perfil, WhatsApp/link y formularios originados por contenido.",
+            "Notas de qué pieza trajo consultas reales o leads calificados.",
+        ],
+        response_note=(
+            "Este módulo separa riesgo estructural de baja retención de baja retención comprobada. "
+            "Para afirmar retención real hacen falta métricas internas de TikTok/Instagram/Meta."
+        ),
+    )
+
+
 def convert_corrective_to_performance_action(item: CorrectiveActionItem) -> PerformanceAction:
     return make_action(
         category="auditoria_comercial",
@@ -5041,6 +5537,9 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         country=request.country,
         website=request.website,
         instagram=request.instagram,
+        tiktok=getattr(request, "tiktok", None),
+        facebook=getattr(request, "facebook", None),
+        youtube=getattr(request, "youtube", None),
         linkedin=request.linkedin,
         offer=request.offer,
         notes=request.notes,
@@ -5062,9 +5561,29 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
 
     campaign_performance = run_campaign_performance_audit(campaign_request)
 
+    social_request = SocialContentFitRequest(
+        company_name=request.company_name,
+        industry=request.industry,
+        city=request.city,
+        country=request.country,
+        website=request.website,
+        instagram=request.instagram,
+        tiktok=getattr(request, "tiktok", None),
+        facebook=getattr(request, "facebook", None),
+        youtube=getattr(request, "youtube", None),
+        linkedin=request.linkedin,
+        offer=request.offer,
+        target_audience=None,
+        notes=request.social_content_notes or request.notes,
+        recent_content_samples=request.social_content_samples,
+        num_results_per_query=request.num_results_per_query,
+    )
+    social_content_fit = audit_social_content_fit(social_request)
+
     # Adapt blueprint to campaign evidence when performance data reveals a specific rupture.
     # This prevents the visual blueprint from repeating the same route for every client.
     adapted_blueprint = build_campaign_adapted_blueprint(public_audit, campaign_performance)
+    adapted_blueprint = build_social_adapted_blueprint(adapted_blueprint, social_content_fit, campaign_performance)
     public_audit.funnel_blueprint = adapted_blueprint
 
     strategic_from_public_audit = [
@@ -5106,6 +5625,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
             density_svg=density_svg,
             blueprint_svg=blueprint_svg,
             score_svg=score_svg,
+            social_content_fit=social_content_fit,
         )
         report_id = uuid.uuid4().hex
         VISUAL_REPORT_STORE[report_id] = report_html
@@ -5136,6 +5656,11 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         campaign_data_quality=campaign_performance.data_quality,
         campaigns_analyzed=campaign_performance.campaigns_analyzed,
         campaign_summary=campaign_performance.summary,
+        social_content_fit_summary=social_content_fit.strategic_summary,
+        social_content_fit_score=social_content_fit.overall_social_content_fit_score,
+        social_content_primary_gap=social_content_fit.primary_content_gap,
+        platform_content_fit=social_content_fit.platform_audits[:4],
+        social_content_actions=social_content_fit.recommended_actions[:8],
         top_campaign_findings=campaign_performance.findings[:10],
         top_cross_metric_findings=campaign_performance.cross_metric_findings[:10],
         tracking_health=campaign_performance.tracking_health[:8],
