@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 app = FastAPI(
     title="Marketing Audit API",
     description="API para auditar prospectos, investigar presencia pública y devolver información estructurada a un Custom GPT.",
-    version="1.6.1",
+    version="1.7.0",
     servers=[
         {
             "url": "https://marketing-audit-api.onrender.com",
@@ -34,8 +34,8 @@ VISUAL_REPORT_STORE: Dict[str, str] = {}
 REPORTS_DIR = os.getenv("REPORTS_DIR", "/tmp/marketing_audit_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
-ANALYSIS_VERSION = "v1.22.1"
-RULESET_VERSION = "2026-05-03-commercial-decision-engine-v1"
+ANALYSIS_VERSION = "v1.24"
+RULESET_VERSION = "2026-05-03-stability-lock-v1"
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
@@ -156,6 +156,8 @@ class PublicPresenceRequest(BaseModel):
     youtube: Optional[str] = Field(None, description="Canal de YouTube conocido")
     linkedin: Optional[str] = Field(None, description="Perfil de LinkedIn conocido")
     num_results_per_query: int = Field(5, description="Cantidad de resultados por búsqueda")
+    research_mode: str = Field("live_public_search", description="Modo de investigación: live_public_search o declared_only")
+    research_mode: str = Field("live_public_search", description="Modo de investigación: live_public_search o declared_only")
 
 
 class PublicSourceResult(BaseModel):
@@ -740,6 +742,7 @@ class SocialContentFitRequest(BaseModel):
     notes: Optional[str] = Field(None, description="Observaciones sobre contenido, red social y retención")
     recent_content_samples: List[SocialContentSample] = Field(default_factory=list)
     num_results_per_query: int = Field(5, description="Cantidad de resultados públicos por búsqueda")
+    research_mode: str = Field("live_public_search", description="Modo de investigación pública para social content fit")
 
 
 class SocialContentFitResponse(BaseModel):
@@ -786,6 +789,37 @@ class AnalysisTrace(BaseModel):
     evidence_level: str
     comparability_note: str
     score_breakdown: Dict[str, Any] = Field(default_factory=dict)
+
+    raw_input_hash: Optional[str] = None
+    canonical_input_hash: Optional[str] = None
+    received_input_keys: List[str] = Field(default_factory=list)
+    request_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    stability_mode: str = "canonical_locked"
+    diagnostic_gates: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StableAuditOutput(BaseModel):
+    canonical_input_hash: str
+    raw_input_hash: str
+    sources_hash: str
+    analysis_version: str
+    ruleset_version: str
+    analysis_mode: str
+    modules_used: List[str]
+    primary_diagnosis_source: str
+    awareness_dominant_stage: str
+    awareness_blocked_stage: str
+    awareness_distribution: Dict[str, int]
+    heatmap_dominant_zone: str
+    heatmap_blocked_zone: str
+    blueprint_current_flow: List[str]
+    blueprint_breakpoints: List[str]
+    blueprint_recommended_flow: List[str]
+    primary_bottleneck: str
+    commercial_score_overall: Optional[float] = None
+    social_content_fit_score: Optional[int] = None
+    visual_report_url: Optional[str] = None
+    stability_note: str
 
 
 class ImplementationVariant(BaseModel):
@@ -835,6 +869,7 @@ class FullCommercialSystemResponse(BaseModel):
     analysis_trace: AnalysisTrace
     diagnostic_integration_summary: str
     strategic_measures_matrix: StrategicMeasuresMatrix
+    stable_output: StableAuditOutput
     system_summary: str
     recommended_next_step: str
     visual_report_url: Optional[str] = None
@@ -3251,6 +3286,27 @@ def get_visual_audit_report(report_id: str):
     return HTMLResponse(content=report_html)
 
 
+
+@app.post(
+    "/debug/stability-preview",
+    operation_id="debugStabilityPreview",
+    summary="Preview canonical input and stability hashes",
+    dependencies=[Security(verify_api_key)],
+)
+def debug_stability_preview(request: FullCommercialSystemRequest):
+    raw_payload = request_to_raw_payload(request)
+    canonical_payload = canonical_full_system_payload(request)
+    return {
+        "raw_input_hash": make_stable_hash(raw_payload),
+        "canonical_input_hash": make_stable_hash(canonical_payload),
+        "received_input_keys": request_received_keys(request),
+        "request_snapshot": canonical_payload,
+        "stability_mode": "canonical_locked",
+        "note": "Usar canonical_input_hash para comparar payloads equivalentes. raw_input_hash puede cambiar si el GPT cambia campos neutros o formato.",
+    }
+
+
+
 @app.get(
     "/deliverables/report-health",
     operation_id="getReportStorageHealth",
@@ -3631,8 +3687,23 @@ def research_company_public_presence(request: PublicPresenceRequest):
     if "SEARCH_API_SEARCH" not in ALLOWED_COMPOSIO_TOOLS:
         raise HTTPException(status_code=403, detail="SEARCH_API_SEARCH no está permitido en ALLOWED_COMPOSIO_TOOLS.")
 
-    queries = build_public_presence_queries(request)
     declared_sources = build_declared_public_sources(request)
+    if getattr(request, "research_mode", "live_public_search") == "declared_only":
+        return PublicPresenceResponse(
+            company_name=request.company_name,
+            research_type="company_public_presence",
+            queries_used=[],
+            sources_found=declared_sources,
+            presence_summary=(
+                f"Modo declared_only activo: se usan {len(declared_sources)} fuentes públicas declaradas por el usuario. "
+                "No se ejecutó búsqueda externa para maximizar estabilidad."
+            ),
+            research_confidence="media-baja" if declared_sources else "baja",
+            next_step="Para enriquecer evidencia pública, cambiar research_mode a live_public_search.",
+            raw_result_count=len(declared_sources),
+        )
+
+    queries = build_public_presence_queries(request)
     discovered_sources: List[PublicSourceResult] = []
     fallback_sources: List[PublicSourceResult] = []
     errors: List[str] = []
@@ -5435,6 +5506,104 @@ def make_stable_hash(payload: Any) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
 
 
+def normalize_string_for_canonical(value: str) -> Optional[str]:
+    cleaned = " ".join(value.strip().split())
+    if not cleaned:
+        return None
+    return cleaned.casefold()
+
+
+def canonicalize_payload(value: Any) -> Any:
+    if isinstance(value, str):
+        return normalize_string_for_canonical(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        normalized_items = [canonicalize_payload(item) for item in value]
+        normalized_items = [item for item in normalized_items if item not in [None, "", [], {}]]
+        if all(isinstance(item, dict) for item in normalized_items):
+            return sorted(normalized_items, key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=False, default=str))
+        return normalized_items
+    if isinstance(value, dict):
+        ignored_keys = {"report_id", "report_url", "visual_report_url", "created_at", "timestamp"}
+        normalized: Dict[str, Any] = {}
+        for key, item in sorted(value.items(), key=lambda pair: pair[0]):
+            if key in ignored_keys:
+                continue
+            normalized_item = canonicalize_payload(item)
+            if normalized_item in [None, "", [], {}]:
+                continue
+            normalized[key] = normalized_item
+        return normalized
+    return str(value)
+
+
+def request_to_raw_payload(request: BaseModel) -> Dict[str, Any]:
+    if hasattr(request, "model_dump"):
+        return request.model_dump(mode="json")
+    return request.dict()
+
+
+def request_received_keys(request: BaseModel) -> List[str]:
+    keys = getattr(request, "model_fields_set", None)
+    if keys is None:
+        keys = getattr(request, "__fields_set__", set())
+    return sorted([str(key) for key in keys])
+
+
+def canonical_full_system_payload(request: FullCommercialSystemRequest) -> Dict[str, Any]:
+    raw_payload = request_to_raw_payload(request)
+    diagnosis_neutral_fields = {"num_results_per_query"}
+    reduced_payload = {key: value for key, value in raw_payload.items() if key not in diagnosis_neutral_fields}
+    return canonicalize_payload(reduced_payload) or {}
+
+
+def has_internal_social_evidence(request: Optional[FullCommercialSystemRequest]) -> bool:
+    if not request:
+        return False
+    samples = getattr(request, "social_content_samples", None) or []
+    if not samples:
+        return False
+    for sample in samples:
+        if (
+            getattr(sample, "retention_3s_percent", None) is not None
+            or getattr(sample, "completion_rate_percent", None) is not None
+            or getattr(sample, "average_watch_time_seconds", None) is not None
+            or getattr(sample, "views", None) is not None
+            or getattr(sample, "profile_clicks", None) is not None
+            or getattr(sample, "cta_clicks", None) is not None
+        ):
+            return True
+    return bool(samples)
+
+
+def social_overlay_can_override_base(request: Optional[FullCommercialSystemRequest], social_fit: Optional[SocialContentFitResponse]) -> bool:
+    if not social_fit:
+        return False
+    return bool(social_fit.overall_social_content_fit_score < 45 and has_internal_social_evidence(request))
+
+
+def build_diagnostic_gates(
+    request: FullCommercialSystemRequest,
+    social_fit: Optional[SocialContentFitResponse],
+    campaign_performance: Optional[CampaignPerformanceResponse],
+) -> Dict[str, Any]:
+    critical_tracking = False
+    if campaign_performance:
+        critical_tracking = any(item.severity == "crítica" for item in campaign_performance.tracking_health)
+
+    return {
+        "social_overlay_can_override_base": social_overlay_can_override_base(request, social_fit),
+        "social_score": social_fit.overall_social_content_fit_score if social_fit else None,
+        "internal_social_evidence": has_internal_social_evidence(request),
+        "social_override_rule": "Solo puede reemplazar el diagnóstico base si score < 45 y hay muestras/métricas internas. Con notas o links públicos queda como overlay.",
+        "performance_overlay_can_override_base": critical_tracking,
+        "performance_override_rule": "Performance solo domina si hay campañas reales y tracking/performance crítico.",
+        "campaigns_present": bool(getattr(request, "campaigns", None)),
+        "tracking_critical": critical_tracking,
+    }
+
+
 def public_sources_payload(public_audit: ProspectWithResearchResponse) -> List[Dict[str, Any]]:
     return [
         {
@@ -5466,7 +5635,7 @@ def detect_analysis_mode(request: FullCommercialSystemRequest, campaign_performa
     return "base_public"
 
 
-def build_diagnostic_integration(public_audit: ProspectWithResearchResponse, social_fit: SocialContentFitResponse, campaign_performance: CampaignPerformanceResponse, analysis_mode: str) -> Dict[str, str]:
+def build_diagnostic_integration(public_audit: ProspectWithResearchResponse, social_fit: SocialContentFitResponse, campaign_performance: CampaignPerformanceResponse, analysis_mode: str, request: Optional[FullCommercialSystemRequest] = None) -> Dict[str, str]:
     base_diagnosis = public_audit.diagnosis_initial
     social_overlay = None
     performance_overlay = None
@@ -5475,20 +5644,25 @@ def build_diagnostic_integration(public_audit: ProspectWithResearchResponse, soc
     reason = "El diagnóstico surge del análisis base de presencia pública, propuesta de valor, awareness, CTA, confianza y funnel."
 
     if social_fit and social_fit.overall_social_content_fit_score < 62:
+        can_override_social = social_overlay_can_override_base(request, social_fit)
         social_overlay = (
             f"Social Content Fit detecta {social_fit.primary_content_gap} "
             f"con score {social_fit.overall_social_content_fit_score}/100. "
             "Debe leerse como riesgo estructural si no hay métricas internas de retención."
         )
-        if analysis_mode in ["social_content", "full"]:
+        if analysis_mode in ["social_content", "full"] and can_override_social:
             primary_source = "social_overlay"
             final_diagnosis = (
-                f"{base_diagnosis} + riesgo de contenido social/plataforma ({social_fit.primary_content_gap})."
+                f"{base_diagnosis} + riesgo crítico de contenido social/plataforma ({social_fit.primary_content_gap})."
             )
             reason = (
-                "El diagnóstico base fue ajustado porque la corrida incluye Social Content Fit, "
-                "perfiles sociales, notas o muestras de contenido. El módulo social no reemplaza el diagnóstico base; "
-                "lo agrega como overlay cuando detecta riesgo de hook, retención, adaptación nativa, prueba o CTA."
+                "El diagnóstico base fue ajustado porque Social Content Fit tiene score crítico y existe evidencia interna/muestras suficientes. "
+                "El módulo social pasa de overlay a fuente primaria por regla de Stability Lock."
+            )
+        elif analysis_mode in ["social_content", "full"]:
+            reason = (
+                "Social Content Fit queda como overlay: hay riesgo estructural de contenido, pero no reemplaza el diagnóstico base porque "
+                "no hay evidencia interna suficiente o el score no es crítico según Stability Lock."
             )
 
     if campaign_performance and campaign_performance.data_quality != "sin_datos":
@@ -5528,7 +5702,7 @@ def build_analysis_trace(
         modules_used.extend(["campaign_performance", "tracking_health", "lead_quality", "budget_reallocation"])
 
     source_payload = public_sources_payload(public_audit)
-    integration = build_diagnostic_integration(public_audit, social_fit, campaign_performance, analysis_mode)
+    integration = build_diagnostic_integration(public_audit, social_fit, campaign_performance, analysis_mode, request=request)
 
     evidence_level = "public_links"
     if request.social_content_samples:
@@ -5551,13 +5725,18 @@ def build_analysis_trace(
         "commercial_readiness_score": commercial_readiness_score.overall if commercial_readiness_score else None,
     }
 
-    request_payload = request.model_dump(mode="json") if hasattr(request, "model_dump") else request.dict()
+    request_payload = request_to_raw_payload(request)
+    canonical_payload = canonical_full_system_payload(request)
+    raw_input_hash = make_stable_hash(request_payload)
+    canonical_input_hash = make_stable_hash(canonical_payload)
+    diagnostic_gates = build_diagnostic_gates(request, social_fit, campaign_performance)
+
     return AnalysisTrace(
         analysis_version=ANALYSIS_VERSION,
         ruleset_version=RULESET_VERSION,
         analysis_mode=analysis_mode,
-        research_mode="live_public_search",
-        input_hash=make_stable_hash(request_payload),
+        research_mode=getattr(request, "research_mode", "live_public_search"),
+        input_hash=canonical_input_hash,
         sources_hash=make_stable_hash(source_payload),
         modules_used=list(dict.fromkeys(modules_used)),
         primary_diagnosis_source=integration["primary_source"],
@@ -5573,6 +5752,12 @@ def build_analysis_trace(
             "Si se agrega Social Content Fit, campañas, muestras, notas o cambia el modo de investigación, es esperable que cambien funnel, heatmap o blueprint."
         ),
         score_breakdown=score_breakdown,
+        raw_input_hash=raw_input_hash,
+        canonical_input_hash=canonical_input_hash,
+        received_input_keys=request_received_keys(request),
+        request_snapshot=canonical_payload,
+        stability_mode="canonical_locked",
+        diagnostic_gates=diagnostic_gates,
     )
 
 
@@ -5812,11 +5997,13 @@ def build_social_content_fit_summary(audits: List[SocialPlatformAudit]) -> str:
     )
 
 
-def build_social_adapted_blueprint(current_blueprint: FunnelBlueprint, social_fit: SocialContentFitResponse, campaign_performance: CampaignPerformanceResponse) -> FunnelBlueprint:
+def build_social_adapted_blueprint(current_blueprint: FunnelBlueprint, social_fit: SocialContentFitResponse, campaign_performance: CampaignPerformanceResponse, request: Optional[FullCommercialSystemRequest] = None) -> FunnelBlueprint:
     if social_fit.overall_social_content_fit_score >= 62:
         return current_blueprint
     critical_tracking = any(item.severity == "crítica" for item in campaign_performance.tracking_health)
     if critical_tracking:
+        return current_blueprint
+    if not social_overlay_can_override_base(request, social_fit):
         return current_blueprint
     return FunnelBlueprint(
         current_flow=[
@@ -5875,6 +6062,7 @@ def audit_social_content_fit(request: SocialContentFitRequest):
             youtube=request.youtube,
             linkedin=request.linkedin,
             num_results_per_query=min(max(request.num_results_per_query, 1), 5),
+            research_mode=getattr(request, "research_mode", "live_public_search"),
         )
         research = research_company_public_presence(presence_request)
         public_sources = summarize_public_sources(research.sources_found, max_sources=8)
@@ -6363,6 +6551,48 @@ def build_strategic_measures_matrix(
     )
 
 
+def build_stable_audit_output(
+    public_audit: ProspectWithResearchResponse,
+    social_fit: SocialContentFitResponse,
+    analysis_trace: AnalysisTrace,
+    visual_report_url: Optional[str],
+) -> StableAuditOutput:
+    awareness_distribution = {
+        item.stage: item.weight
+        for item in public_audit.awareness_funnel_locator.stage_distribution
+    }
+    heatmap_dominant = f"{public_audit.customer_intent_density_map.dominant_zone.x} / {public_audit.customer_intent_density_map.dominant_zone.y}"
+    heatmap_blocked = f"{public_audit.customer_intent_density_map.blocked_zone.x} / {public_audit.customer_intent_density_map.blocked_zone.y}"
+    primary_bottleneck = public_audit.audit.primary_bottleneck if public_audit.audit else ""
+
+    return StableAuditOutput(
+        canonical_input_hash=analysis_trace.canonical_input_hash or analysis_trace.input_hash,
+        raw_input_hash=analysis_trace.raw_input_hash or analysis_trace.input_hash,
+        sources_hash=analysis_trace.sources_hash,
+        analysis_version=analysis_trace.analysis_version,
+        ruleset_version=analysis_trace.ruleset_version,
+        analysis_mode=analysis_trace.analysis_mode,
+        modules_used=analysis_trace.modules_used,
+        primary_diagnosis_source=analysis_trace.primary_diagnosis_source,
+        awareness_dominant_stage=public_audit.awareness_funnel_locator.dominant_stage,
+        awareness_blocked_stage=public_audit.awareness_funnel_locator.blocked_stage,
+        awareness_distribution=awareness_distribution,
+        heatmap_dominant_zone=heatmap_dominant,
+        heatmap_blocked_zone=heatmap_blocked,
+        blueprint_current_flow=public_audit.funnel_blueprint.current_flow,
+        blueprint_breakpoints=public_audit.funnel_blueprint.breakpoints,
+        blueprint_recommended_flow=public_audit.funnel_blueprint.recommended_flow,
+        primary_bottleneck=primary_bottleneck,
+        commercial_score_overall=getattr(public_audit.commercial_score, "overall", None),
+        social_content_fit_score=social_fit.overall_social_content_fit_score if social_fit else None,
+        visual_report_url=visual_report_url,
+        stability_note=(
+            "Este bloque es la salida estable recomendada para comparación. "
+            "Usar canonical_input_hash + sources_hash + versions + modules_used para verificar equivalencia entre auditorías."
+        ),
+    )
+
+
 @app.post(
     "/audit/full-commercial-system",
     response_model=FullCommercialSystemResponse,
@@ -6371,6 +6601,7 @@ def build_strategic_measures_matrix(
     description="Une investigación pública, auditoría comercial, blueprint, heatmap y auditoría de campañas en un sistema único.",
     dependencies=[Security(verify_api_key)],
 )
+
 
 def audit_full_commercial_system(request: FullCommercialSystemRequest):
     public_audit_request = ProspectWithResearchRequest(
@@ -6387,6 +6618,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         offer=request.offer,
         notes=request.notes,
         num_results_per_query=request.num_results_per_query,
+        research_mode=getattr(request, "research_mode", "live_public_search"),
     )
 
     public_audit = audit_prospect_with_research(public_audit_request)
@@ -6420,13 +6652,14 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         notes=request.social_content_notes or request.notes,
         recent_content_samples=request.social_content_samples,
         num_results_per_query=request.num_results_per_query,
+        research_mode=getattr(request, "research_mode", "live_public_search"),
     )
     social_content_fit = audit_social_content_fit(social_request)
 
     # Adapt blueprint to campaign evidence when performance data reveals a specific rupture.
     # This prevents the visual blueprint from repeating the same route for every client.
     adapted_blueprint = build_campaign_adapted_blueprint(public_audit, campaign_performance)
-    adapted_blueprint = build_social_adapted_blueprint(adapted_blueprint, social_content_fit, campaign_performance)
+    adapted_blueprint = build_social_adapted_blueprint(adapted_blueprint, social_content_fit, campaign_performance, request=request)
     public_audit.funnel_blueprint = adapted_blueprint
 
     strategic_from_public_audit = [
@@ -6494,6 +6727,13 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
     except Exception as exc:
         visual_report_status = f"visual_report_generation_failed: {str(exc)}"
 
+    stable_output = build_stable_audit_output(
+        public_audit=public_audit,
+        social_fit=social_content_fit,
+        analysis_trace=analysis_trace,
+        visual_report_url=visual_report_url,
+    )
+
     return FullCommercialSystemResponse(
         company_name=request.company_name,
         audit_type="full_commercial_system_audit_v3_compact",
@@ -6501,6 +6741,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         analysis_trace=analysis_trace,
         diagnostic_integration_summary=diagnostic_integration_summary,
         strategic_measures_matrix=strategic_measures_matrix,
+        stable_output=stable_output,
         system_summary=system_summary,
         recommended_next_step=(
             "Cargar un export real de campañas, eventos, calidad de lead, CRM y período anterior para pasar de acciones preparadas a decisiones con evidencia."
