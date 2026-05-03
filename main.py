@@ -2,6 +2,8 @@ import os
 import html
 import math
 import uuid
+import json
+import hashlib
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -29,6 +31,9 @@ COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
 COMPOSIO_BASE_URL = "https://backend.composio.dev/api/v3.1"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com")
 VISUAL_REPORT_STORE: Dict[str, str] = {}
+
+ANALYSIS_VERSION = "v1.20"
+RULESET_VERSION = "2026-05-03-analysis-trace-v1"
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
@@ -761,10 +766,32 @@ class FullCommercialSystemRequest(ProspectWithResearchRequest):
     social_content_samples: List[SocialContentSample] = Field(default_factory=list, description="Muestras recientes de contenido orgánico para auditar adaptación por plataforma")
 
 
+class AnalysisTrace(BaseModel):
+    analysis_version: str
+    ruleset_version: str
+    analysis_mode: str
+    research_mode: str
+    input_hash: str
+    sources_hash: str
+    modules_used: List[str]
+    primary_diagnosis_source: str
+    base_diagnosis: str
+    social_overlay: Optional[str] = None
+    performance_overlay: Optional[str] = None
+    final_diagnosis: str
+    diagnosis_change_reason: str
+    confidence_level: str
+    evidence_level: str
+    comparability_note: str
+    score_breakdown: Dict[str, Any] = Field(default_factory=dict)
+
+
 class FullCommercialSystemResponse(BaseModel):
     company_name: str
     audit_type: str
     response_mode: str = "compact"
+    analysis_trace: AnalysisTrace
+    diagnostic_integration_summary: str
     system_summary: str
     recommended_next_step: str
     visual_report_url: Optional[str] = None
@@ -2517,6 +2544,7 @@ def build_visual_report_html(
     blueprint_svg: str,
     score_svg: str,
     social_content_fit: Optional[SocialContentFitResponse] = None,
+    analysis_trace: Optional[AnalysisTrace] = None,
 ) -> str:
     sources = ''.join([
         f'''
@@ -2634,6 +2662,32 @@ def build_visual_report_html(
           </div>
         </section>
         '''
+
+
+    analysis_trace_section = ""
+    if analysis_trace:
+        modules = ", ".join(analysis_trace.modules_used)
+        score_items = "".join([
+            f"<li><strong>{h(str(key))}:</strong> {h(str(value))}</li>"
+            for key, value in analysis_trace.score_breakdown.items()
+        ])
+        analysis_trace_section = f"""
+        <section class="card full">
+          <h2>Analysis Trace / trazabilidad del diagnóstico</h2>
+          <p><strong>Modo:</strong> {h(analysis_trace.analysis_mode)} · <strong>Versión:</strong> {h(analysis_trace.analysis_version)} · <strong>Ruleset:</strong> {h(analysis_trace.ruleset_version)}</p>
+          <p><strong>Módulos usados:</strong> {h(modules)}</p>
+          <p><strong>Input hash:</strong> {h(analysis_trace.input_hash)} · <strong>Sources hash:</strong> {h(analysis_trace.sources_hash)}</p>
+          <p><strong>Diagnóstico base:</strong> {h(analysis_trace.base_diagnosis)}</p>
+          <p><strong>Overlay social:</strong> {h(analysis_trace.social_overlay or "No activo")}</p>
+          <p><strong>Overlay performance:</strong> {h(analysis_trace.performance_overlay or "No activo")}</p>
+          <p><strong>Diagnóstico final:</strong> {h(analysis_trace.final_diagnosis)}</p>
+          <p><strong>Por qué llegó a esta conclusión:</strong> {h(analysis_trace.diagnosis_change_reason)}</p>
+          <ul>{score_items}</ul>
+          <div class="script-box">
+            <p><strong>Nota de comparabilidad:</strong> {h(analysis_trace.comparability_note)}</p>
+          </div>
+        </section>
+        """
 
     return f'''<!doctype html>
 <html lang="es">
@@ -2842,6 +2896,8 @@ def build_visual_report_html(
     </section>
 
     {social_section}
+
+    {analysis_trace_section}
 
     <section class="grid">
       <div class="card">{score_svg}</div>
@@ -5125,6 +5181,166 @@ def run_campaign_performance_audit(request: CampaignPerformanceRequest) -> Campa
 
 
 
+
+def make_stable_hash(payload: Any) -> str:
+    try:
+        serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    except TypeError:
+        serialized = str(payload)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+
+
+def public_sources_payload(public_audit: ProspectWithResearchResponse) -> List[Dict[str, Any]]:
+    return [
+        {
+            "category": source.category,
+            "title": source.title,
+            "url": source.url,
+            "signal": source.signal,
+        }
+        for source in public_audit.public_sources_summary
+    ]
+
+
+def detect_analysis_mode(request: FullCommercialSystemRequest, campaign_performance: CampaignPerformanceResponse) -> str:
+    has_campaigns = bool(request.campaigns)
+    has_social = bool(
+        getattr(request, "social_content_notes", None)
+        or getattr(request, "social_content_samples", None)
+        or getattr(request, "tiktok", None)
+        or getattr(request, "instagram", None)
+        or getattr(request, "youtube", None)
+        or getattr(request, "facebook", None)
+    )
+    if has_campaigns and has_social:
+        return "full"
+    if has_campaigns:
+        return "performance"
+    if has_social:
+        return "social_content"
+    return "base_public"
+
+
+def build_diagnostic_integration(public_audit: ProspectWithResearchResponse, social_fit: SocialContentFitResponse, campaign_performance: CampaignPerformanceResponse, analysis_mode: str) -> Dict[str, str]:
+    base_diagnosis = public_audit.diagnosis_initial
+    social_overlay = None
+    performance_overlay = None
+    primary_source = "base_audit"
+    final_diagnosis = base_diagnosis
+    reason = "El diagnóstico surge del análisis base de presencia pública, propuesta de valor, awareness, CTA, confianza y funnel."
+
+    if social_fit and social_fit.overall_social_content_fit_score < 62:
+        social_overlay = (
+            f"Social Content Fit detecta {social_fit.primary_content_gap} "
+            f"con score {social_fit.overall_social_content_fit_score}/100. "
+            "Debe leerse como riesgo estructural si no hay métricas internas de retención."
+        )
+        if analysis_mode in ["social_content", "full"]:
+            primary_source = "social_overlay"
+            final_diagnosis = (
+                f"{base_diagnosis} + riesgo de contenido social/plataforma ({social_fit.primary_content_gap})."
+            )
+            reason = (
+                "El diagnóstico base fue ajustado porque la corrida incluye Social Content Fit, "
+                "perfiles sociales, notas o muestras de contenido. El módulo social no reemplaza el diagnóstico base; "
+                "lo agrega como overlay cuando detecta riesgo de hook, retención, adaptación nativa, prueba o CTA."
+            )
+
+    if campaign_performance and campaign_performance.data_quality != "sin_datos":
+        critical_tracking = any(item.severity == "crítica" for item in campaign_performance.tracking_health)
+        if critical_tracking:
+            performance_overlay = "Performance detecta tracking crítico; las métricas de conversión/CPA/CPL no deben tomarse como confiables hasta corregir medición."
+            primary_source = "performance_overlay"
+            final_diagnosis = f"{base_diagnosis} + problema crítico de tracking/performance."
+            reason = (
+                "El diagnóstico final prioriza performance/tracking porque existen campañas cargadas y se detectó un problema crítico de medición."
+            )
+        else:
+            performance_overlay = campaign_performance.summary
+
+    return {
+        "base_diagnosis": base_diagnosis,
+        "social_overlay": social_overlay or "No activo o sin peso suficiente para cambiar el diagnóstico base.",
+        "performance_overlay": performance_overlay or "No activo: no hay campañas suficientes o no se detectó bloqueo crítico de performance.",
+        "primary_source": primary_source,
+        "final_diagnosis": final_diagnosis,
+        "reason": reason,
+    }
+
+
+def build_analysis_trace(
+    request: FullCommercialSystemRequest,
+    public_audit: ProspectWithResearchResponse,
+    social_fit: SocialContentFitResponse,
+    campaign_performance: CampaignPerformanceResponse,
+    commercial_readiness_score: CommercialReadinessScore,
+) -> AnalysisTrace:
+    analysis_mode = detect_analysis_mode(request, campaign_performance)
+    modules_used = ["public_presence", "commercial_score", "awareness_funnel", "heatmap", "blueprint"]
+    if analysis_mode in ["social_content", "full"]:
+        modules_used.append("social_content_fit")
+    if campaign_performance.data_quality != "sin_datos" or request.campaigns:
+        modules_used.extend(["campaign_performance", "tracking_health", "lead_quality", "budget_reallocation"])
+
+    source_payload = public_sources_payload(public_audit)
+    integration = build_diagnostic_integration(public_audit, social_fit, campaign_performance, analysis_mode)
+
+    evidence_level = "public_links"
+    if request.social_content_samples:
+        evidence_level += " + social_samples"
+    elif request.social_content_notes:
+        evidence_level += " + user_social_notes"
+    if request.campaigns:
+        evidence_level += " + campaign_data"
+
+    confidence_level = "media"
+    if campaign_performance.data_quality == "sin_datos" and social_fit.overall_social_content_fit_score < 62 and not request.social_content_samples:
+        confidence_level = "baja-media"
+    elif request.campaigns and campaign_performance.data_quality != "sin_datos":
+        confidence_level = "media-alta"
+
+    score_breakdown = {
+        "commercial_score_overall": getattr(public_audit.commercial_score, "overall", None),
+        "social_content_fit_score": social_fit.overall_social_content_fit_score if social_fit else None,
+        "campaign_data_quality": campaign_performance.data_quality if campaign_performance else None,
+        "commercial_readiness_score": commercial_readiness_score.overall if commercial_readiness_score else None,
+    }
+
+    request_payload = request.model_dump(mode="json") if hasattr(request, "model_dump") else request.dict()
+    return AnalysisTrace(
+        analysis_version=ANALYSIS_VERSION,
+        ruleset_version=RULESET_VERSION,
+        analysis_mode=analysis_mode,
+        research_mode="live_public_search",
+        input_hash=make_stable_hash(request_payload),
+        sources_hash=make_stable_hash(source_payload),
+        modules_used=list(dict.fromkeys(modules_used)),
+        primary_diagnosis_source=integration["primary_source"],
+        base_diagnosis=integration["base_diagnosis"],
+        social_overlay=integration["social_overlay"],
+        performance_overlay=integration["performance_overlay"],
+        final_diagnosis=integration["final_diagnosis"],
+        diagnosis_change_reason=integration["reason"],
+        confidence_level=confidence_level,
+        evidence_level=evidence_level,
+        comparability_note=(
+            "Dos reportes son comparables solo si coinciden input_hash, sources_hash, analysis_version, ruleset_version, analysis_mode y modules_used. "
+            "Si se agrega Social Content Fit, campañas, muestras, notas o cambia el modo de investigación, es esperable que cambien funnel, heatmap o blueprint."
+        ),
+        score_breakdown=score_breakdown,
+    )
+
+
+def build_diagnostic_integration_summary(trace: AnalysisTrace) -> str:
+    return (
+        f"Modo: {trace.analysis_mode}. Fuente principal del diagnóstico: {trace.primary_diagnosis_source}. "
+        f"Diagnóstico base: {trace.base_diagnosis} "
+        f"Diagnóstico final: {trace.final_diagnosis} "
+        f"Motivo: {trace.diagnosis_change_reason} "
+        f"Nivel de evidencia: {trace.evidence_level}; confianza: {trace.confidence_level}."
+    )
+
+
 def clamp_score(value: float) -> int:
     return max(0, min(100, int(round(value))))
 
@@ -5609,6 +5825,14 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
 
     commercial_readiness_score = build_commercial_readiness_score(public_audit, campaign_performance)
     map_coherence_check = build_map_coherence_check(public_audit, campaign_performance)
+    analysis_trace = build_analysis_trace(
+        request=request,
+        public_audit=public_audit,
+        social_fit=social_content_fit,
+        campaign_performance=campaign_performance,
+        commercial_readiness_score=commercial_readiness_score,
+    )
+    diagnostic_integration_summary = build_diagnostic_integration_summary(analysis_trace)
 
     visual_report_url = None
     visual_report_status = "not_generated"
@@ -5626,6 +5850,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
             blueprint_svg=blueprint_svg,
             score_svg=score_svg,
             social_content_fit=social_content_fit,
+            analysis_trace=analysis_trace,
         )
         report_id = uuid.uuid4().hex
         VISUAL_REPORT_STORE[report_id] = report_html
@@ -5638,6 +5863,8 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         company_name=request.company_name,
         audit_type="full_commercial_system_audit_v3_compact",
         response_mode="compact",
+        analysis_trace=analysis_trace,
+        diagnostic_integration_summary=diagnostic_integration_summary,
         system_summary=system_summary,
         recommended_next_step=(
             "Cargar un export real de campañas, eventos, calidad de lead, CRM y período anterior para pasar de acciones preparadas a decisiones con evidencia."
