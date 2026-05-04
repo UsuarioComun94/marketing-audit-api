@@ -6,6 +6,7 @@ import json
 import hashlib
 import struct
 import zlib
+import re
 import base64
 from typing import Any, Dict, List, Optional
 
@@ -19,7 +20,7 @@ from pydantic import BaseModel, Field
 app = FastAPI(
     title="Marketing Audit API",
     description="API para auditar prospectos, investigar presencia pública y devolver información estructurada a un Custom GPT.",
-    version="1.8.1",
+    version="1.8.2",
     servers=[
         {
             "url": "https://marketing-audit-api.onrender.com",
@@ -44,7 +45,7 @@ ASSETS_DIR = os.getenv("ASSETS_DIR", "/tmp/marketing_audit_assets")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
-ANALYSIS_VERSION = "v1.27"
+ANALYSIS_VERSION = "v1.27.1"
 RULESET_VERSION = "2026-05-04-apps-script-drive-storage-v1"
 
 ALLOWED_COMPOSIO_TOOLS = {
