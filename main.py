@@ -7829,6 +7829,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         visual_report_url=visual_report_url,
         visual_report_status=visual_report_status,
         visual_asset_urls=clean_visual_assets,
+        drive_bundle=drive_bundle,
         research_confidence=public_audit.research_confidence,
         diagnosis_initial=public_audit.diagnosis_initial,
         public_sources_summary=public_audit.public_sources_summary[:8],
