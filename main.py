@@ -6,6 +6,7 @@ import json
 import hashlib
 import struct
 import zlib
+import base64
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -18,7 +19,7 @@ from pydantic import BaseModel, Field
 app = FastAPI(
     title="Marketing Audit API",
     description="API para auditar prospectos, investigar presencia pública y devolver información estructurada a un Custom GPT.",
-    version="1.8.0",
+    version="1.8.1",
     servers=[
         {
             "url": "https://marketing-audit-api.onrender.com",
@@ -32,6 +33,10 @@ API_KEY = os.getenv("API_KEY", "dev-key")
 COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
 COMPOSIO_BASE_URL = "https://backend.composio.dev/api/v3.1"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com")
+GOOGLE_APPS_SCRIPT_ENABLED = os.getenv("GOOGLE_APPS_SCRIPT_ENABLED", "false").lower() == "true"
+GOOGLE_APPS_SCRIPT_UPLOAD_URL = os.getenv("GOOGLE_APPS_SCRIPT_UPLOAD_URL")
+GOOGLE_APPS_SCRIPT_SECRET = os.getenv("GOOGLE_APPS_SCRIPT_SECRET")
+GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 VISUAL_REPORT_STORE: Dict[str, str] = {}
 PNG_ASSET_STORE: Dict[str, bytes] = {}
 REPORTS_DIR = os.getenv("REPORTS_DIR", "/tmp/marketing_audit_reports")
@@ -39,8 +44,8 @@ ASSETS_DIR = os.getenv("ASSETS_DIR", "/tmp/marketing_audit_assets")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
-ANALYSIS_VERSION = "v1.26"
-RULESET_VERSION = "2026-05-04-clean-visual-assets-v1"
+ANALYSIS_VERSION = "v1.27"
+RULESET_VERSION = "2026-05-04-apps-script-drive-storage-v1"
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
@@ -346,6 +351,11 @@ class VisualAssetLink(BaseModel):
     transparent_background: bool = True
     no_text: bool = True
     use_case: str
+    storage_provider: str = "render_temp"
+    local_url: Optional[str] = None
+    drive_file_id: Optional[str] = None
+    drive_url: Optional[str] = None
+    upload_status: str = "local_only"
 
 
 class VisualReportResponse(BaseModel):
@@ -3541,6 +3551,74 @@ def load_png_asset(asset_id: str) -> Optional[bytes]:
     return None
 
 
+def google_apps_script_configured() -> bool:
+    return bool(
+        GOOGLE_APPS_SCRIPT_ENABLED
+        and GOOGLE_APPS_SCRIPT_UPLOAD_URL
+        and GOOGLE_APPS_SCRIPT_SECRET
+        and GOOGLE_DRIVE_FOLDER_ID
+    )
+
+
+def upload_file_to_apps_script_drive(filename: str, mime_type: str, file_bytes: bytes) -> Dict[str, Any]:
+    if not google_apps_script_configured():
+        return {
+            "ok": False,
+            "storage_provider": "render_temp",
+            "error": "Google Apps Script storage is not configured or disabled.",
+        }
+
+    payload = {
+        "secret": GOOGLE_APPS_SCRIPT_SECRET,
+        "folder_id": GOOGLE_DRIVE_FOLDER_ID,
+        "filename": filename,
+        "mime_type": mime_type,
+        "base64": base64.b64encode(file_bytes).decode("ascii"),
+    }
+
+    try:
+        response = requests.post(
+            GOOGLE_APPS_SCRIPT_UPLOAD_URL,
+            json=payload,
+            timeout=30,
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "storage_provider": "render_temp",
+            "error": f"Apps Script upload failed: {str(exc)}",
+        }
+
+    if not data.get("ok"):
+        return {
+            "ok": False,
+            "storage_provider": "render_temp",
+            "error": data.get("error", "Apps Script returned ok=false."),
+            "raw_response": data,
+        }
+
+    return {
+        "ok": True,
+        "storage_provider": "google_drive",
+        "file_id": data.get("file_id"),
+        "url": data.get("url"),
+        "name": data.get("name"),
+        "raw_response": data,
+    }
+
+
+def safe_drive_filename(company_name: str, asset_type: str, extension: str = "png", hash_id: Optional[str] = None) -> str:
+    base = " ".join((company_name or "auditoria").strip().split())
+    safe_company = re.sub(r"[^A-Za-z0-9_-]+", "_", base)[:60].strip("_") or "auditoria"
+    safe_asset = re.sub(r"[^A-Za-z0-9_-]+", "_", asset_type)[:80].strip("_") or "asset"
+    suffix = f"_{hash_id[:12]}" if hash_id else ""
+    return f"{safe_company}_{safe_asset}{suffix}.{extension}"
+
+
+
 def build_clean_visual_asset_links(result: ProspectWithResearchResponse, report_id: Optional[str] = None) -> List[VisualAssetLink]:
     base_id = report_id or uuid.uuid4().hex
     assets = [
@@ -3560,17 +3638,46 @@ def build_clean_visual_asset_links(result: ProspectWithResearchResponse, report_
             render_blueprint_clean_png(result.funnel_blueprint),
         ),
     ]
+
     links: List[VisualAssetLink] = []
+
     for asset_type, use_case, png_bytes in assets:
         asset_id = f"{base_id}_{asset_type}"
         save_png_asset(asset_id, png_bytes)
+        local_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/asset/{asset_id}.png"
+
+        selected_url = local_url
+        storage_provider = "render_temp"
+        upload_status = "local_only"
+        drive_file_id = None
+        drive_url = None
+
+        if google_apps_script_configured():
+            filename = safe_drive_filename(result.company_name, asset_type, "png", hash_id=base_id)
+            upload_result = upload_file_to_apps_script_drive(filename, "image/png", png_bytes)
+
+            if upload_result.get("ok") and upload_result.get("url"):
+                drive_url = upload_result.get("url")
+                drive_file_id = upload_result.get("file_id")
+                selected_url = drive_url
+                storage_provider = "google_drive"
+                upload_status = "uploaded_to_google_drive"
+            else:
+                upload_status = f"drive_upload_failed_fallback_to_render: {upload_result.get('error', 'unknown error')}"
+
         links.append(
             VisualAssetLink(
                 asset_type=asset_type,
-                url=f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/asset/{asset_id}.png",
+                url=selected_url,
                 use_case=use_case,
+                storage_provider=storage_provider,
+                local_url=local_url,
+                drive_file_id=drive_file_id,
+                drive_url=drive_url,
+                upload_status=upload_status,
             )
         )
+
     return links
 
 
@@ -3649,8 +3756,8 @@ def create_visual_audit_report(request: ProspectWithResearchRequest):
             f"Reporte visual generado para {result.company_name}. "
             "La respuesta de API es compacta para evitar errores de tamaño; los SVG/HTML completos están disponibles en report_url."
         ),
-        how_to_use="Abrí report_url para ver heatmap, blueprint, embudo, score chart y explicación completa.",
-        note="No se devuelven SVG/HTML en el JSON porque eso dispara response_too_large en Custom GPT Actions.",
+        how_to_use="Abrí report_url para ver heatmap, blueprint, embudo, score chart y explicación completa. Usá visual_asset_urls para descargar PNG limpios; si Google Drive está activo, esos links son persistentes.",
+        note="No se devuelven SVG/HTML en el JSON porque eso dispara response_too_large en Custom GPT Actions. Los PNG limpios pueden guardarse en Google Drive vía Apps Script si está configurado.",
     )
 
 
@@ -3715,6 +3822,25 @@ def debug_stability_preview(request: FullCommercialSystemRequest):
 
 
 
+
+@app.get(
+    "/debug/google-drive-storage",
+    operation_id="debugGoogleDriveStorage",
+    summary="Check Google Apps Script Drive storage configuration",
+    dependencies=[Security(verify_api_key)],
+)
+def debug_google_drive_storage():
+    return {
+        "google_apps_script_enabled": GOOGLE_APPS_SCRIPT_ENABLED,
+        "google_apps_script_upload_url_present": bool(GOOGLE_APPS_SCRIPT_UPLOAD_URL),
+        "google_apps_script_secret_present": bool(GOOGLE_APPS_SCRIPT_SECRET),
+        "google_drive_folder_id_present": bool(GOOGLE_DRIVE_FOLDER_ID),
+        "configured": google_apps_script_configured(),
+        "note": "No expone secretos. Si configured=false, los PNG quedan en Render temporal como fallback.",
+    }
+
+
+
 @app.get(
     "/deliverables/report-health",
     operation_id="getReportStorageHealth",
@@ -3728,6 +3854,8 @@ def get_report_storage_health():
     return {
         "status": "ok",
         "reports_dir": REPORTS_DIR,
+        "google_apps_script_enabled": GOOGLE_APPS_SCRIPT_ENABLED,
+        "google_apps_script_configured": google_apps_script_configured(),
         "memory_reports": len(VISUAL_REPORT_STORE),
         "disk_reports": len(disk_reports),
         "memory_png_assets": len(PNG_ASSET_STORE),
