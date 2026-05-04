@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 app = FastAPI(
     title="Marketing Audit API",
     description="API para auditar prospectos, investigar presencia pública y devolver información estructurada a un Custom GPT.",
-    version="1.8.2",
+    version="1.9.0",
     servers=[
         {
             "url": "https://marketing-audit-api.onrender.com",
@@ -34,10 +34,21 @@ API_KEY = os.getenv("API_KEY", "dev-key")
 COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
 COMPOSIO_BASE_URL = "https://backend.composio.dev/api/v3.1"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com")
-GOOGLE_APPS_SCRIPT_ENABLED = os.getenv("GOOGLE_APPS_SCRIPT_ENABLED", "false").lower() == "true"
-GOOGLE_APPS_SCRIPT_UPLOAD_URL = os.getenv("GOOGLE_APPS_SCRIPT_UPLOAD_URL")
-GOOGLE_APPS_SCRIPT_SECRET = os.getenv("GOOGLE_APPS_SCRIPT_SECRET")
-GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+def clean_env_value(name: str, default: Optional[str] = None) -> Optional[str]:
+    value = os.getenv(name, default)
+    if value is None:
+        return None
+    value = value.strip()
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        value = value[1:-1].strip()
+    return value or None
+
+
+GOOGLE_APPS_SCRIPT_ENABLED = (clean_env_value("GOOGLE_APPS_SCRIPT_ENABLED", "false") or "false").lower() == "true"
+GOOGLE_APPS_SCRIPT_UPLOAD_URL = clean_env_value("GOOGLE_APPS_SCRIPT_UPLOAD_URL")
+GOOGLE_APPS_SCRIPT_SECRET = clean_env_value("GOOGLE_APPS_SCRIPT_SECRET")
+GOOGLE_DRIVE_FOLDER_ID = clean_env_value("GOOGLE_DRIVE_FOLDER_ID")
+GOOGLE_DRIVE_INDIVIDUAL_ASSET_UPLOAD_ENABLED = (clean_env_value("GOOGLE_DRIVE_INDIVIDUAL_ASSET_UPLOAD_ENABLED", "false") or "false").lower() == "true"
 VISUAL_REPORT_STORE: Dict[str, str] = {}
 PNG_ASSET_STORE: Dict[str, bytes] = {}
 REPORTS_DIR = os.getenv("REPORTS_DIR", "/tmp/marketing_audit_reports")
@@ -45,8 +56,8 @@ ASSETS_DIR = os.getenv("ASSETS_DIR", "/tmp/marketing_audit_assets")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
-ANALYSIS_VERSION = "v1.27.1"
-RULESET_VERSION = "2026-05-04-apps-script-drive-storage-v1"
+ANALYSIS_VERSION = "v1.28"
+RULESET_VERSION = "2026-05-04-drive-bundle-export-v1"
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
@@ -359,6 +370,25 @@ class VisualAssetLink(BaseModel):
     upload_status: str = "local_only"
 
 
+class DriveBundleFile(BaseModel):
+    file_type: str
+    name: str
+    url: Optional[str] = None
+    file_id: Optional[str] = None
+    mime_type: Optional[str] = None
+    asset_type: Optional[str] = None
+
+
+class DriveBundleExport(BaseModel):
+    status: str = "not_requested"
+    storage_provider: str = "none"
+    folder_id: Optional[str] = None
+    folder_url: Optional[str] = None
+    files: List[DriveBundleFile] = Field(default_factory=list)
+    error: Optional[str] = None
+    note: Optional[str] = None
+
+
 class VisualReportResponse(BaseModel):
     company_name: str
     report_id: str
@@ -366,6 +396,7 @@ class VisualReportResponse(BaseModel):
     response_mode: str = "compact"
     visual_assets: List[str]
     visual_asset_urls: List[VisualAssetLink] = Field(default_factory=list)
+    drive_bundle: DriveBundleExport = Field(default_factory=DriveBundleExport)
     report_summary: str
     how_to_use: str
     note: str
@@ -913,6 +944,7 @@ class FullCommercialSystemResponse(BaseModel):
     visual_report_url: Optional[str] = None
     visual_report_status: str
     visual_asset_urls: List[VisualAssetLink] = Field(default_factory=list)
+    drive_bundle: DriveBundleExport = Field(default_factory=DriveBundleExport)
     research_confidence: str
     diagnosis_initial: str
     public_sources_summary: List[ReviewedPublicSource]
@@ -945,6 +977,27 @@ class FullCommercialSystemResponse(BaseModel):
     response_note: str
 
 
+
+
+
+class SaveGptWrittenReportRequest(BaseModel):
+    company_name: str
+    report_markdown: str = Field(..., description="Informe escrito generado por el GPT en markdown o texto plano")
+    drive_folder_id: Optional[str] = Field(None, description="ID de carpeta Drive ya creada por drive_bundle. Si falta, crea carpeta nueva en carpeta destino.")
+    filename: str = Field("informe_gpt.docx", description="Nombre del DOCX a crear")
+    report_id: Optional[str] = None
+
+
+class SaveGptWrittenReportResponse(BaseModel):
+    status: str
+    storage_provider: str = "google_drive"
+    folder_id: Optional[str] = None
+    folder_url: Optional[str] = None
+    file_id: Optional[str] = None
+    file_url: Optional[str] = None
+    file_name: Optional[str] = None
+    error: Optional[str] = None
+    note: Optional[str] = None
 
 
 def get_composio_headers() -> Dict[str, str]:
@@ -3620,6 +3673,232 @@ def safe_drive_filename(company_name: str, asset_type: str, extension: str = "pn
 
 
 
+def post_to_apps_script(payload: Dict[str, Any], timeout: int = 55) -> Dict[str, Any]:
+    if not google_apps_script_configured():
+        return {"ok": False, "error": "Google Apps Script storage is not configured or disabled."}
+    try:
+        response = requests.post(
+            GOOGLE_APPS_SCRIPT_UPLOAD_URL,
+            json=payload,
+            timeout=timeout,
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:
+        return {"ok": False, "error": f"Apps Script request failed: {str(exc)}"}
+
+
+def load_png_asset_from_visual_link(asset: VisualAssetLink) -> Optional[bytes]:
+    if not asset.local_url:
+        return None
+    filename = asset.local_url.rsplit("/", 1)[-1]
+    if not filename.endswith(".png"):
+        return None
+    asset_id = filename[:-4]
+    return load_png_asset(asset_id)
+
+
+def build_written_audit_report_markdown(
+    request: FullCommercialSystemRequest,
+    public_audit: ProspectWithResearchResponse,
+    social_fit: SocialContentFitResponse,
+    campaign_performance: CampaignPerformanceResponse,
+    analysis_trace: AnalysisTrace,
+    stable_output: StableAuditOutput,
+    strategic_measures_matrix: StrategicMeasuresMatrix,
+    visual_report_url: Optional[str],
+) -> str:
+    sources = "\\n".join([
+        f"- {source.category}: {source.title} | {source.url} | Señal: {source.signal}"
+        for source in public_audit.public_sources_summary[:8]
+    ]) or "- Sin fuentes suficientes."
+
+    measures = "\\n".join([
+        f"- {measure.measure_name} ({measure.priority}): {measure.expected_impact}"
+        for measure in strategic_measures_matrix.measures[:8]
+    ]) or "- Sin medidas suficientes."
+
+    risks = "\\n".join([f"- {risk}" for risk in (stable_output.instability_risks or [])]) or "- Sin riesgos de estabilidad relevantes."
+
+    return f"""# Informe preliminar de auditoría comercial
+
+## Empresa
+{request.company_name}
+
+## Resumen ejecutivo
+{public_audit.diagnosis_initial}
+
+## Diagnóstico principal
+- Cuello de botella primario: {public_audit.audit.primary_bottleneck if public_audit.audit else "no detectado"}
+- Commercial Score: {getattr(public_audit.commercial_score, "overall", "n/d")}
+- Commercial Readiness Score: {stable_output.commercial_score_overall if stable_output.commercial_score_overall is not None else "n/d"}
+- Fuente primaria de diagnóstico: {analysis_trace.primary_diagnosis_source}
+
+## Awareness Funnel
+- Etapa dominante: {public_audit.awareness_funnel_locator.dominant_stage}
+- Etapa bloqueada: {public_audit.awareness_funnel_locator.blocked_stage}
+- Explicación: {public_audit.awareness_funnel_locator.explanation}
+
+## Customer Intent Density Map
+- Zona dominante: {public_audit.customer_intent_density_map.dominant_zone.x} / {public_audit.customer_intent_density_map.dominant_zone.y}
+- Zona bloqueada: {public_audit.customer_intent_density_map.blocked_zone.x} / {public_audit.customer_intent_density_map.blocked_zone.y}
+- Interpretación: {public_audit.customer_intent_density_map.interpretation}
+
+## Commercial System Blueprint
+- Ruta actual: {" → ".join(public_audit.funnel_blueprint.current_flow)}
+- Rupturas: {"; ".join(public_audit.funnel_blueprint.breakpoints)}
+- Ruta recomendada: {" → ".join(public_audit.funnel_blueprint.recommended_flow)}
+- Resumen: {public_audit.funnel_blueprint.summary}
+
+## Social Content Fit
+- Score: {social_fit.overall_social_content_fit_score}/100
+- Brecha principal: {social_fit.primary_content_gap}
+- Lectura: {social_fit.strategic_summary}
+
+## Performance
+- Calidad de datos: {campaign_performance.data_quality}
+- Campañas analizadas: {campaign_performance.campaigns_analyzed}
+- Resumen: {campaign_performance.summary}
+
+## Medidas estratégicas recomendadas
+{measures}
+
+## Fuentes públicas revisadas
+{sources}
+
+## Control de estabilidad
+- stability_status: {stable_output.stability_status}
+- needs_second_run: {stable_output.needs_second_run}
+- report_use: {stable_output.report_use}
+- safe_to_present: {stable_output.safe_to_present}
+- safe_to_execute_actions: {stable_output.safe_to_execute_actions}
+- canonical_input_hash: {stable_output.canonical_input_hash}
+- sources_hash: {stable_output.sources_hash}
+- analysis_version: {stable_output.analysis_version}
+- ruleset_version: {stable_output.ruleset_version}
+
+## Riesgos / límites
+{risks}
+
+## Reporte visual
+{visual_report_url or "No generado"}
+
+## Nota metodológica
+Este informe es preliminar y está basado en las fuentes, datos y métricas disponibles al momento de la auditoría. Las inferencias sobre contenido social no equivalen a retención real comprobada si no existen métricas internas de plataforma.
+"""
+
+
+def export_audit_bundle_to_drive(
+    company_name: str,
+    report_id: str,
+    report_html: str,
+    clean_visual_assets: List[VisualAssetLink],
+    written_report_markdown: str,
+    stable_output: Optional[StableAuditOutput] = None,
+) -> DriveBundleExport:
+    if not google_apps_script_configured():
+        return DriveBundleExport(
+            status="not_configured",
+            storage_provider="render_temp",
+            error="Google Apps Script storage is disabled or incomplete.",
+            note="Los archivos quedan temporalmente en Render.",
+        )
+
+    assets_payload = []
+    for asset in clean_visual_assets:
+        png_bytes = load_png_asset_from_visual_link(asset)
+        if not png_bytes:
+            continue
+        filename = safe_drive_filename(company_name, asset.asset_type, "png", hash_id=report_id)
+        assets_payload.append({
+            "asset_type": asset.asset_type,
+            "filename": filename,
+            "mime_type": "image/png",
+            "base64": base64.b64encode(png_bytes).decode("ascii"),
+            "use_case": asset.use_case,
+        })
+
+    payload = {
+        "secret": GOOGLE_APPS_SCRIPT_SECRET,
+        "action": "create_audit_bundle",
+        "folder_id": GOOGLE_DRIVE_FOLDER_ID,
+        "company_name": company_name,
+        "report_id": report_id,
+        "html_filename": safe_drive_filename(company_name, "visual_report", "html", hash_id=report_id),
+        "pdf_filename": safe_drive_filename(company_name, "visual_report", "pdf", hash_id=report_id),
+        "docx_filename": safe_drive_filename(company_name, "informe_escrito_backend", "docx", hash_id=report_id),
+        "json_filename": safe_drive_filename(company_name, "audit_metadata", "json", hash_id=report_id),
+        "report_html_base64": base64.b64encode(report_html.encode("utf-8")).decode("ascii"),
+        "written_report_markdown": written_report_markdown,
+        "assets": assets_payload,
+        "metadata": {
+            "company_name": company_name,
+            "report_id": report_id,
+            "analysis_version": getattr(stable_output, "analysis_version", None),
+            "ruleset_version": getattr(stable_output, "ruleset_version", None),
+            "canonical_input_hash": getattr(stable_output, "canonical_input_hash", None),
+            "sources_hash": getattr(stable_output, "sources_hash", None),
+            "stability_status": getattr(stable_output, "stability_status", None),
+        },
+    }
+
+    data = post_to_apps_script(payload, timeout=90)
+    if not data.get("ok"):
+        return DriveBundleExport(
+            status="failed",
+            storage_provider="render_temp",
+            error=data.get("error", "Apps Script returned ok=false."),
+            note="Fallback: reporte/PNG temporales siguen disponibles en Render si se generaron.",
+        )
+
+    files = [
+        DriveBundleFile(
+            file_type=item.get("file_type", "file"),
+            name=item.get("name", ""),
+            url=item.get("url"),
+            file_id=item.get("file_id"),
+            mime_type=item.get("mime_type"),
+            asset_type=item.get("asset_type"),
+        )
+        for item in data.get("files", [])
+    ]
+
+    return DriveBundleExport(
+        status="uploaded_to_google_drive",
+        storage_provider="google_drive",
+        folder_id=data.get("folder_id"),
+        folder_url=data.get("folder_url"),
+        files=files,
+        note="Carpeta Drive creada con PDF, HTML, PNG transparentes y DOCX generado por backend.",
+    )
+
+
+def update_visual_asset_links_from_drive_bundle(assets: List[VisualAssetLink], bundle: DriveBundleExport) -> List[VisualAssetLink]:
+    if bundle.status != "uploaded_to_google_drive":
+        return assets
+
+    file_by_asset = {
+        file.asset_type: file
+        for file in bundle.files
+        if file.asset_type and file.file_type == "png_asset"
+    }
+
+    updated: List[VisualAssetLink] = []
+    for asset in assets:
+        drive_file = file_by_asset.get(asset.asset_type)
+        if drive_file and drive_file.url:
+            asset.url = drive_file.url
+            asset.storage_provider = "google_drive"
+            asset.drive_file_id = drive_file.file_id
+            asset.drive_url = drive_file.url
+            asset.upload_status = "uploaded_to_google_drive_bundle"
+        updated.append(asset)
+
+    return updated
+
+
+
 def build_clean_visual_asset_links(result: ProspectWithResearchResponse, report_id: Optional[str] = None) -> List[VisualAssetLink]:
     base_id = report_id or uuid.uuid4().hex
     assets = [
@@ -3653,7 +3932,7 @@ def build_clean_visual_asset_links(result: ProspectWithResearchResponse, report_
         drive_file_id = None
         drive_url = None
 
-        if google_apps_script_configured():
+        if GOOGLE_DRIVE_INDIVIDUAL_ASSET_UPLOAD_ENABLED and google_apps_script_configured():
             filename = safe_drive_filename(result.company_name, asset_type, "png", hash_id=base_id)
             upload_result = upload_file_to_apps_script_drive(filename, "image/png", png_bytes)
 
@@ -3735,6 +4014,16 @@ def create_visual_audit_report(request: ProspectWithResearchRequest):
         clean_visual_assets=clean_visual_assets,
     )
 
+    drive_bundle = export_audit_bundle_to_drive(
+        company_name=result.company_name,
+        report_id=report_id,
+        report_html=report_html,
+        clean_visual_assets=clean_visual_assets,
+        written_report_markdown=result.report_ready_markdown or result.diagnosis_initial,
+        stable_output=None,
+    )
+    clean_visual_assets = update_visual_asset_links_from_drive_bundle(clean_visual_assets, drive_bundle)
+
     save_visual_report_html(report_id, report_html)
     report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
 
@@ -3753,6 +4042,7 @@ def create_visual_audit_report(request: ProspectWithResearchRequest):
             "commercial_system_blueprint_clean_transparent_png",
         ],
         visual_asset_urls=clean_visual_assets,
+        drive_bundle=drive_bundle,
         report_summary=(
             f"Reporte visual generado para {result.company_name}. "
             "La respuesta de API es compacta para evitar errores de tamaño; los SVG/HTML completos están disponibles en report_url."
@@ -3824,6 +4114,85 @@ def debug_stability_preview(request: FullCommercialSystemRequest):
 
 
 
+
+
+@app.post(
+    "/deliverables/save-gpt-report-to-drive",
+    response_model=SaveGptWrittenReportResponse,
+    operation_id="saveGptWrittenReportToDrive",
+    summary="Save the GPT-written report as DOCX in Google Drive",
+    dependencies=[Security(verify_api_key)],
+)
+def save_gpt_written_report_to_drive(request: SaveGptWrittenReportRequest):
+    if not google_apps_script_configured():
+        return SaveGptWrittenReportResponse(
+            status="not_configured",
+            storage_provider="render_temp",
+            error="Google Apps Script storage is disabled or incomplete.",
+            note="No se pudo guardar el informe GPT en Drive.",
+        )
+
+    payload = {
+        "secret": GOOGLE_APPS_SCRIPT_SECRET,
+        "action": "save_gpt_report_docx",
+        "folder_id": request.drive_folder_id or GOOGLE_DRIVE_FOLDER_ID,
+        "parent_folder_id": GOOGLE_DRIVE_FOLDER_ID,
+        "company_name": request.company_name,
+        "filename": request.filename,
+        "report_markdown": request.report_markdown,
+        "report_id": request.report_id,
+    }
+
+    data = post_to_apps_script(payload, timeout=90)
+    if not data.get("ok"):
+        return SaveGptWrittenReportResponse(
+            status="failed",
+            error=data.get("error", "Apps Script returned ok=false."),
+            note="No se pudo guardar el informe GPT como DOCX.",
+        )
+
+    return SaveGptWrittenReportResponse(
+        status="uploaded_to_google_drive",
+        folder_id=data.get("folder_id"),
+        folder_url=data.get("folder_url"),
+        file_id=data.get("file_id"),
+        file_url=data.get("url"),
+        file_name=data.get("name"),
+        note="Informe GPT guardado como DOCX en Google Drive.",
+    )
+
+
+
+@app.post(
+    "/debug/google-drive-upload-test",
+    operation_id="debugGoogleDriveUploadTest",
+    summary="Test upload a small text file to Google Drive through Apps Script",
+    dependencies=[Security(verify_api_key)],
+)
+def debug_google_drive_upload_test():
+    test_content = (
+        "Marketing Audit API Google Drive upload test\\n"
+        f"analysis_version={ANALYSIS_VERSION}\\n"
+        f"ruleset_version={RULESET_VERSION}\\n"
+    ).encode("utf-8")
+    filename = f"marketing_audit_upload_test_{uuid.uuid4().hex[:8]}.txt"
+    result = upload_file_to_apps_script_drive(filename, "text/plain", test_content)
+    return {
+        "configured": google_apps_script_configured(),
+        "upload_ok": bool(result.get("ok")),
+        "storage_provider": result.get("storage_provider"),
+        "file_id": result.get("file_id"),
+        "url": result.get("url"),
+        "name": result.get("name"),
+        "error": result.get("error"),
+        "note": (
+            "Si upload_ok=true, Render puede subir a Drive. Si una auditoría cae a render_temp después de esto, "
+            "el problema está en la generación de assets. Si upload_ok=false, revisar env vars/deploy/Apps Script."
+        ),
+    }
+
+
+
 @app.get(
     "/debug/google-drive-storage",
     operation_id="debugGoogleDriveStorage",
@@ -3837,7 +4206,11 @@ def debug_google_drive_storage():
         "google_apps_script_secret_present": bool(GOOGLE_APPS_SCRIPT_SECRET),
         "google_drive_folder_id_present": bool(GOOGLE_DRIVE_FOLDER_ID),
         "configured": google_apps_script_configured(),
-        "note": "No expone secretos. Si configured=false, los PNG quedan en Render temporal como fallback.",
+        "google_drive_individual_asset_upload_enabled": GOOGLE_DRIVE_INDIVIDUAL_ASSET_UPLOAD_ENABLED,
+        "upload_url_endswith_exec": bool(GOOGLE_APPS_SCRIPT_UPLOAD_URL and GOOGLE_APPS_SCRIPT_UPLOAD_URL.endswith("/exec")),
+        "secret_length": len(GOOGLE_APPS_SCRIPT_SECRET or ""),
+        "folder_id_length": len(GOOGLE_DRIVE_FOLDER_ID or ""),
+        "note": "No expone secretos. Si configured=false, los PNG quedan en Render temporal como fallback. Usar /debug/google-drive-upload-test para probar subida real desde Render.",
     }
 
 
@@ -3857,6 +4230,7 @@ def get_report_storage_health():
         "reports_dir": REPORTS_DIR,
         "google_apps_script_enabled": GOOGLE_APPS_SCRIPT_ENABLED,
         "google_apps_script_configured": google_apps_script_configured(),
+        "google_drive_individual_asset_upload_enabled": GOOGLE_DRIVE_INDIVIDUAL_ASSET_UPLOAD_ENABLED,
         "memory_reports": len(VISUAL_REPORT_STORE),
         "disk_reports": len(disk_reports),
         "memory_png_assets": len(PNG_ASSET_STORE),
@@ -7371,6 +7745,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
     visual_report_url = None
     visual_report_status = "not_generated"
     clean_visual_assets: List[VisualAssetLink] = []
+    drive_bundle = DriveBundleExport()
     try:
         awareness_svg = render_awareness_funnel_svg(public_audit.awareness_funnel_locator)
         temperature_svg = render_temperature_heatmap_svg(public_audit.temperature_heatmap)
@@ -7405,6 +7780,37 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         request=request,
         campaign_performance=campaign_performance,
     )
+
+    if visual_report_status == "generated" and visual_report_url:
+        try:
+            written_report_markdown = build_written_audit_report_markdown(
+                request=request,
+                public_audit=public_audit,
+                social_fit=social_content_fit,
+                campaign_performance=campaign_performance,
+                analysis_trace=analysis_trace,
+                stable_output=stable_output,
+                strategic_measures_matrix=strategic_measures_matrix,
+                visual_report_url=visual_report_url,
+            )
+            report_id_for_bundle = visual_report_url.rstrip("/").rsplit("/", 1)[-1]
+            report_html_for_bundle = load_visual_report_html(report_id_for_bundle) or ""
+            drive_bundle = export_audit_bundle_to_drive(
+                company_name=request.company_name,
+                report_id=report_id_for_bundle,
+                report_html=report_html_for_bundle,
+                clean_visual_assets=clean_visual_assets,
+                written_report_markdown=written_report_markdown,
+                stable_output=stable_output,
+            )
+            clean_visual_assets = update_visual_asset_links_from_drive_bundle(clean_visual_assets, drive_bundle)
+        except Exception as exc:
+            drive_bundle = DriveBundleExport(
+                status="failed",
+                storage_provider="render_temp",
+                error=f"drive_bundle_generation_failed: {str(exc)}",
+                note="El reporte visual se generó, pero el bundle de Drive falló.",
+            )
 
     return FullCommercialSystemResponse(
         company_name=request.company_name,
