@@ -4,11 +4,13 @@ import math
 import uuid
 import json
 import hashlib
+import struct
+import zlib
 from typing import Any, Dict, List, Optional
 
 import requests
 from fastapi import FastAPI, HTTPException, Security
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
@@ -16,7 +18,7 @@ from pydantic import BaseModel, Field
 app = FastAPI(
     title="Marketing Audit API",
     description="API para auditar prospectos, investigar presencia pública y devolver información estructurada a un Custom GPT.",
-    version="1.7.1",
+    version="1.8.0",
     servers=[
         {
             "url": "https://marketing-audit-api.onrender.com",
@@ -31,11 +33,14 @@ COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
 COMPOSIO_BASE_URL = "https://backend.composio.dev/api/v3.1"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com")
 VISUAL_REPORT_STORE: Dict[str, str] = {}
+PNG_ASSET_STORE: Dict[str, bytes] = {}
 REPORTS_DIR = os.getenv("REPORTS_DIR", "/tmp/marketing_audit_reports")
+ASSETS_DIR = os.getenv("ASSETS_DIR", "/tmp/marketing_audit_assets")
 os.makedirs(REPORTS_DIR, exist_ok=True)
+os.makedirs(ASSETS_DIR, exist_ok=True)
 
-ANALYSIS_VERSION = "v1.25"
-RULESET_VERSION = "2026-05-03-stability-verdict-v1"
+ANALYSIS_VERSION = "v1.26"
+RULESET_VERSION = "2026-05-04-clean-visual-assets-v1"
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
@@ -334,12 +339,22 @@ class ProspectWithResearchResponse(BaseModel):
     raw_sources_count: int
 
 
+class VisualAssetLink(BaseModel):
+    asset_type: str
+    format: str = "png"
+    url: str
+    transparent_background: bool = True
+    no_text: bool = True
+    use_case: str
+
+
 class VisualReportResponse(BaseModel):
     company_name: str
     report_id: str
     report_url: str
     response_mode: str = "compact"
     visual_assets: List[str]
+    visual_asset_urls: List[VisualAssetLink] = Field(default_factory=list)
     report_summary: str
     how_to_use: str
     note: str
@@ -886,6 +901,7 @@ class FullCommercialSystemResponse(BaseModel):
     recommended_next_step: str
     visual_report_url: Optional[str] = None
     visual_report_status: str
+    visual_asset_urls: List[VisualAssetLink] = Field(default_factory=list)
     research_confidence: str
     diagnosis_initial: str
     public_sources_summary: List[ReviewedPublicSource]
@@ -2727,6 +2743,7 @@ def build_visual_report_html(
     social_content_fit: Optional[SocialContentFitResponse] = None,
     analysis_trace: Optional[AnalysisTrace] = None,
     strategic_measures_matrix: Optional[StrategicMeasuresMatrix] = None,
+    clean_visual_assets: Optional[List[VisualAssetLink]] = None,
 ) -> str:
     sources = ''.join([
         f'''
@@ -2774,6 +2791,21 @@ def build_visual_report_html(
         for item in result.funnel_blueprint.missing_links
     ])
 
+    awareness_connection_items = ''.join([
+        f'<li><strong>Qué mide:</strong> el awareness funnel no mide cantidad real de usuarios; ubica el nivel probable de conciencia comercial según la evidencia disponible.</li>',
+        f'<li><strong>Etapas:</strong> Unaware no reconoce el problema; Problem Aware reconoce dolor; Solution Aware compara soluciones; Product Aware ya entiende la oferta; Most Aware está cerca de decidir.</li>',
+        f'<li><strong>Distribución:</strong> los porcentajes son una concentración diagnóstica, no tráfico real. Sirven para explicar dónde conviene hablarle al público.</li>',
+        f'<li><strong>Etapa dominante:</strong> {h(result.awareness_funnel_locator.dominant_stage)} indica dónde parece estar el mayor peso de conciencia actual.</li>',
+        f'<li><strong>Etapa bloqueada:</strong> {h(result.awareness_funnel_locator.blocked_stage)} indica la transición donde el público probablemente deja de avanzar.</li>',
+        f'<li><strong>Relación con medidas:</strong> si el bloqueo está temprano, se corrige mensaje y educación; si está tarde, se corrige prueba, CTA, confianza y seguimiento.</li>',
+    ])
+
+    awareness_script = (
+        f"Este funnel muestra en qué nivel de conciencia parece estar el público. "
+        f"Hoy la concentración dominante está en {h(result.awareness_funnel_locator.dominant_stage)} y el avance se bloquea en {h(result.awareness_funnel_locator.blocked_stage)}. "
+        "No significa volumen real de tráfico; significa dónde debemos ajustar comunicación para mover al usuario hacia una oportunidad más calificada."
+    )
+
     density_connection_items = ''.join([
         f'<li><strong>Eje horizontal:</strong> ordena el avance comercial de {h(" → ".join(result.customer_intent_density_map.x_axis))}. Sirve para explicar en qué parte del recorrido se acumula o se pierde intención.</li>',
         f'<li><strong>Eje vertical:</strong> ordena la temperatura de {h(" → ".join(result.customer_intent_density_map.y_axis))}. Frío implica atención débil; templado implica interés con posibilidad de avance; caliente implica predisposición más cercana a acción.</li>',
@@ -2793,10 +2825,10 @@ def build_visual_report_html(
 
     blueprint_connection_items = ''.join([
         '<li><strong>Nodos hexagonales:</strong> cada hexágono representa un punto funcional del sistema comercial. A1–A5 son la ruta actual; S1–S5 son la ruta recomendada; SL-01–SL-05 son nodos de soporte.</li>',
-        '<li><strong>Ruta azul A1–A5:</strong> muestra lo que hoy existe: presencia pública, contenido, interés, comparación y consulta débil. Es el recorrido actual antes del rediseño.</li>',
-        '<li><strong>FAULT:</strong> marca la ruptura principal. Ahí el usuario deja de avanzar porque la propuesta de valor, la confianza, el CTA o la diferenciación no son suficientemente claros.</li>',
+        '<li><strong>Ruta azul A1–A5:</strong> muestra el recorrido actual, no necesariamente ideal. Explica cómo una persona pasa de ver la marca a mostrar interés, comparar y terminar en una consulta que puede ser débil o poco calificada.</li>',
+        '<li><strong>FAULT:</strong> marca la ruptura principal del sistema. No es un error visual: es el punto donde se pierde avance comercial por propuesta de valor, confianza, CTA, diferenciación, tracking o seguimiento insuficiente.</li>',
         '<li><strong>DG / Diagnosis Gate:</strong> explica la transición entre problema y solución. La ruta verde no nace mágicamente del fallo; nace del diagnóstico que convierte la ruptura en rediseño.</li>',
-        '<li><strong>Ruta verde S1–S5:</strong> muestra el recorrido reconstruido: mensaje diferencial, contenido de valor, prueba social, CTA claro y seguimiento comercial.</li>',
+        '<li><strong>Ruta verde S1–S5:</strong> muestra el recorrido recomendado. Cada nodo verde es una corrección estratégica que intenta mover al usuario desde interés disperso hacia decisión o consulta más calificada.</li>',
         '<li><strong>Support Layer SL:</strong> representa la infraestructura que alimenta la ruta recomendada. No es una etapa extra del funnel; son activos que hacen posible que S1–S5 funcionen: mensajes, prueba, objeciones, CTA y follow-up.</li>',
         '<li><strong>Conexiones moradas:</strong> muestran cómo los nodos SL alimentan la ruta verde. Sirven para explicar que la conversión no depende solo de publicar más, sino de sostener el recorrido con evidencia, claridad y seguimiento.</li>',
         '<li><strong>OUT:</strong> representa la salida buscada: oportunidad comercial más calificada, más defendible y con menor fricción.</li>',
@@ -2845,6 +2877,20 @@ def build_visual_report_html(
         </section>
         '''
 
+
+    clean_assets_section = ""
+    if clean_visual_assets:
+        clean_links = "".join([
+            f'<li><strong>{h(asset.asset_type)}:</strong> <a href="{h(asset.url)}" target="_blank" rel="noopener">Descargar PNG transparente sin texto</a></li>'
+            for asset in clean_visual_assets
+        ])
+        clean_assets_section = f"""
+        <section class="card full">
+          <h2>Gráficos limpios para integrar en reportes</h2>
+          <p>Versiones PNG con fondo transparente y sin textos, números ni leyendas. Sirven para insertar en documentos diseñados aparte.</p>
+          <ul>{clean_links}</ul>
+        </section>
+        """
 
     analysis_trace_section = ""
     if analysis_trace:
@@ -3111,9 +3157,20 @@ def build_visual_report_html(
 
     {strategic_measures_section}
 
+    {clean_assets_section}
+
     <section class="grid">
       <div class="card">{score_svg}</div>
-      <div class="card">{awareness_svg}</div>
+      <div class="card">
+        {awareness_svg}
+        <div class="explanation-card">
+          <h3>Cómo explicar el Awareness Funnel</h3>
+          <ul>{awareness_connection_items}</ul>
+          <div class="script-box">
+            <p><strong>Guion de lectura:</strong> {awareness_script}</p>
+          </div>
+        </div>
+      </div>
       <div class="card full">
         {density_svg}
         <div class="visual-note-grid">
@@ -3207,6 +3264,317 @@ def build_visual_report_html(
 </html>'''
 
 
+# ---------------------------------------------------------------------
+# Clean transparent PNG visual assets.
+# These are intentionally text-free for use inside designed reports.
+# They use a small pure-Python PNG renderer to avoid adding heavy dependencies.
+# ---------------------------------------------------------------------
+
+def rgba_canvas(width: int, height: int) -> bytearray:
+    return bytearray([0, 0, 0, 0] * width * height)
+
+
+def rgba_tuple(color: str, alpha: int = 255) -> tuple:
+    color = (color or "").strip()
+    if color.startswith("#") and len(color) == 7:
+        return (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16), alpha)
+    if color.startswith("rgb("):
+        nums = color.replace("rgb(", "").replace(")", "").split(",")
+        return (int(nums[0]), int(nums[1]), int(nums[2]), alpha)
+    return (0, 0, 0, alpha)
+
+
+def blend_pixel(canvas: bytearray, width: int, height: int, x: int, y: int, color: tuple):
+    if x < 0 or y < 0 or x >= width or y >= height:
+        return
+    r, g, b, a = color
+    if a <= 0:
+        return
+    idx = (y * width + x) * 4
+    dst_r, dst_g, dst_b, dst_a = canvas[idx], canvas[idx+1], canvas[idx+2], canvas[idx+3]
+    src_a = a / 255
+    dst_af = dst_a / 255
+    out_a = src_a + dst_af * (1 - src_a)
+    if out_a <= 0:
+        return
+    canvas[idx] = int((r * src_a + dst_r * dst_af * (1 - src_a)) / out_a)
+    canvas[idx+1] = int((g * src_a + dst_g * dst_af * (1 - src_a)) / out_a)
+    canvas[idx+2] = int((b * src_a + dst_b * dst_af * (1 - src_a)) / out_a)
+    canvas[idx+3] = int(out_a * 255)
+
+
+def draw_rect(canvas: bytearray, width: int, height: int, x: int, y: int, w: int, hgt: int, color: tuple):
+    x0, x1 = max(0, int(x)), min(width, int(x + w))
+    y0, y1 = max(0, int(y)), min(height, int(y + hgt))
+    for yy in range(y0, y1):
+        for xx in range(x0, x1):
+            blend_pixel(canvas, width, height, xx, yy, color)
+
+
+def draw_circle(canvas: bytearray, width: int, height: int, cx: float, cy: float, radius: float, color: tuple):
+    r = int(max(1, radius))
+    x0, x1 = int(cx - r), int(cx + r)
+    y0, y1 = int(cy - r), int(cy + r)
+    rr = radius * radius
+    for yy in range(y0, y1 + 1):
+        for xx in range(x0, x1 + 1):
+            if (xx - cx) ** 2 + (yy - cy) ** 2 <= rr:
+                blend_pixel(canvas, width, height, xx, yy, color)
+
+
+def draw_line(canvas: bytearray, width: int, height: int, x1: float, y1: float, x2: float, y2: float, color: tuple, thickness: float = 3):
+    steps = int(max(abs(x2 - x1), abs(y2 - y1), 1))
+    for step in range(steps + 1):
+        t = step / steps
+        x = x1 + (x2 - x1) * t
+        y = y1 + (y2 - y1) * t
+        draw_circle(canvas, width, height, x, y, thickness / 2, color)
+
+
+def draw_polyline(canvas: bytearray, width: int, height: int, points: List[tuple], color: tuple, thickness: float = 4):
+    for i in range(1, len(points)):
+        draw_line(canvas, width, height, points[i-1][0], points[i-1][1], points[i][0], points[i][1], color, thickness)
+
+
+def draw_polygon(canvas: bytearray, width: int, height: int, points: List[tuple], color: tuple):
+    if len(points) < 3:
+        return
+    min_y = max(0, int(min(y for _, y in points)))
+    max_y = min(height - 1, int(max(y for _, y in points)))
+    for y in range(min_y, max_y + 1):
+        intersections = []
+        for i in range(len(points)):
+            x1, y1 = points[i]
+            x2, y2 = points[(i + 1) % len(points)]
+            if y1 == y2:
+                continue
+            if (y >= min(y1, y2)) and (y < max(y1, y2)):
+                x = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+                intersections.append(x)
+        intersections.sort()
+        for i in range(0, len(intersections), 2):
+            if i + 1 >= len(intersections):
+                break
+            x_start = max(0, int(intersections[i]))
+            x_end = min(width - 1, int(intersections[i + 1]))
+            for x in range(x_start, x_end + 1):
+                blend_pixel(canvas, width, height, x, y, color)
+
+
+def encode_png_rgba(width: int, height: int, canvas: bytearray) -> bytes:
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
+
+    raw = bytearray()
+    stride = width * 4
+    for y in range(height):
+        raw.append(0)
+        start = y * stride
+        raw.extend(canvas[start:start + stride])
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(bytes(raw), 6))
+        + chunk(b"IEND", b"")
+    )
+
+
+def render_awareness_funnel_clean_png(locator: AwarenessFunnelLocator) -> bytes:
+    width, height = 1000, 650
+    canvas = rgba_canvas(width, height)
+    cx = width / 2
+    top_y = 80
+    segment_h = 82
+    gap = 18
+    top_w = 800
+    shrink = 108
+
+    for index, stage in enumerate(locator.stage_distribution):
+        y1 = top_y + index * (segment_h + gap)
+        y2 = y1 + segment_h
+        w1 = top_w - index * shrink
+        w2 = top_w - (index + 1) * shrink
+        x1 = cx - w1 / 2
+        x2 = cx + w1 / 2
+        x3 = cx + w2 / 2
+        x4 = cx - w2 / 2
+        if stage.state == "dominant":
+            fill = rgba_tuple("#22c55e", 235)
+            stroke = rgba_tuple("#15803d", 255)
+        elif stage.state == "blocked":
+            fill = rgba_tuple("#f59e0b", 215)
+            stroke = rgba_tuple("#d97706", 255)
+        elif stage.state == "secondary":
+            fill = rgba_tuple("#93c5fd", 170)
+            stroke = rgba_tuple("#2563eb", 210)
+        else:
+            fill = rgba_tuple("#cbd5e1", 130)
+            stroke = rgba_tuple("#64748b", 160)
+        polygon = [(x1, y1), (x2, y1), (x3, y2), (x4, y2)]
+        draw_polygon(canvas, width, height, polygon, fill)
+        for a, b in zip(polygon, polygon[1:] + [polygon[0]]):
+            draw_line(canvas, width, height, a[0], a[1], b[0], b[1], stroke, 4)
+    return encode_png_rgba(width, height, canvas)
+
+
+def render_customer_intent_density_clean_png(density_map: CustomerIntentDensityMap) -> bytes:
+    width, height = 1200, 650
+    canvas = rgba_canvas(width, height)
+    x_axis = density_map.x_axis
+    y_axis = density_map.y_axis
+    chart_x, chart_y, chart_w, chart_h = 120, 90, 960, 470
+    stage_step = chart_w / (len(x_axis) - 1)
+    temp_step = chart_h / (len(y_axis) - 1)
+
+    def x_pos(label: str) -> float:
+        return chart_x + x_axis.index(label) * stage_step
+
+    def y_pos(label: str) -> float:
+        return chart_y + (len(y_axis) - 1 - y_axis.index(label)) * temp_step
+
+    points = [
+        (x_pos(point.x), y_pos(point.y), max(0, min(int(point.value), 100)))
+        for point in density_map.density_points
+    ]
+
+    def deterministic_noise(row: int, col: int, salt: int = 0) -> float:
+        raw = (row * 92821 + col * 68917 + row * col * 193 + salt * 8347) % 1000
+        return raw / 1000
+
+    def field_value(px: float, py: float, row: int, col: int) -> float:
+        total = 0.0
+        for gx, gy, value in points:
+            dx = (px - gx) / 190
+            dy = (py - gy) / 48
+            total += value * math.exp(-0.5 * ((dx * dx) + (dy * dy)))
+        y_ratio = (py - chart_y) / chart_h
+        temp_bias = 7 + (1 - y_ratio) * 8
+        noise = 0.72 + deterministic_noise(row, col, 11) * 0.58
+        return max(0, min(100, (total * 0.64 + temp_bias) * noise))
+
+    rows, cols = 80, 98
+    cell_w, cell_h = chart_w / cols, chart_h / rows
+    for row in range(rows):
+        py = chart_y + row * cell_h + cell_h / 2
+        for col in range(cols):
+            px = chart_x + col * cell_w + cell_w / 2
+            value = field_value(px, py, row, col)
+            noise = deterministic_noise(row, col, 23)
+            if value < 12 and noise < 0.72:
+                continue
+            color = rgba_tuple(density_color(round(value)), int(min(210, 28 + value * 2.05)))
+            frag_w = max(2, int(cell_w * (0.50 + noise * 1.35)))
+            frag_h = max(2, int(cell_h * (0.45 + deterministic_noise(row, col, 31) * 0.8)))
+            draw_rect(canvas, width, height, int(px - frag_w / 2), int(py - frag_h / 2), frag_w, frag_h, color)
+
+    for gx, gy, value in points:
+        if value >= 35:
+            glow = rgba_tuple(density_color(value), min(190, 55 + value))
+            for r in [80, 52, 28]:
+                draw_circle(canvas, width, height, gx, gy, r, (glow[0], glow[1], glow[2], max(12, int(glow[3] / (r / 20)))))
+        if value >= 55:
+            draw_circle(canvas, width, height, gx, gy, 16, rgba_tuple("#ef4444", 230))
+    return encode_png_rgba(width, height, canvas)
+
+
+def render_blueprint_clean_png(blueprint: FunnelBlueprint) -> bytes:
+    width, height = 1320, 720
+    canvas = rgba_canvas(width, height)
+
+    # Transparent blueprint grid only as subtle strokes, no background.
+    for x in range(0, width + 1, 48):
+        draw_line(canvas, width, height, x, 0, x, height, rgba_tuple("#38bdf8", 24), 1)
+    for y in range(0, height + 1, 48):
+        draw_line(canvas, width, height, 0, y, width, y, rgba_tuple("#38bdf8", 24), 1)
+
+    current = [(120, 190), (330, 160), (540, 190), (705, 240), (880, 240)]
+    fault = (650, 325)
+    gate = (790, 330)
+    rebuild = [(930, 330), (1080, 270), (1180, 350), (1050, 455), (850, 455)]
+    support = [(275, 560), (450, 575), (625, 560), (800, 575), (975, 560)]
+
+    draw_polyline(canvas, width, height, current, rgba_tuple("#38bdf8", 230), 8)
+    draw_line(canvas, width, height, current[-1][0], current[-1][1], fault[0], fault[1], rgba_tuple("#fb7185", 230), 7)
+    draw_line(canvas, width, height, fault[0], fault[1], gate[0], gate[1], rgba_tuple("#f472b6", 215), 7)
+    draw_polyline(canvas, width, height, [gate] + rebuild, rgba_tuple("#22c55e", 230), 8)
+    draw_polyline(canvas, width, height, support, rgba_tuple("#a78bfa", 190), 5)
+
+    # Support-to-rebuild connections.
+    for s, r in zip(support, rebuild):
+        draw_line(canvas, width, height, s[0], s[1] - 20, r[0], r[1] + 28, rgba_tuple("#c084fc", 130), 4)
+
+    def hexagon(cx, cy, r):
+        return [(cx + r * math.cos(math.radians(60 * i)), cy + r * math.sin(math.radians(60 * i))) for i in range(6)]
+
+    for cx, cy in current:
+        draw_polygon(canvas, width, height, hexagon(cx, cy, 36), rgba_tuple("#0ea5e9", 225))
+        draw_polygon(canvas, width, height, hexagon(cx, cy, 48), rgba_tuple("#38bdf8", 45))
+    draw_polygon(canvas, width, height, hexagon(fault[0], fault[1], 42), rgba_tuple("#fb7185", 235))
+    draw_polygon(canvas, width, height, hexagon(gate[0], gate[1], 42), rgba_tuple("#f472b6", 225))
+    for cx, cy in rebuild:
+        draw_polygon(canvas, width, height, hexagon(cx, cy, 36), rgba_tuple("#22c55e", 225))
+        draw_polygon(canvas, width, height, hexagon(cx, cy, 48), rgba_tuple("#86efac", 45))
+    for cx, cy in support:
+        draw_polygon(canvas, width, height, hexagon(cx, cy, 30), rgba_tuple("#8b5cf6", 205))
+    return encode_png_rgba(width, height, canvas)
+
+
+def save_png_asset(asset_id: str, png_bytes: bytes) -> str:
+    PNG_ASSET_STORE[asset_id] = png_bytes
+    file_path = os.path.join(ASSETS_DIR, f"{asset_id}.png")
+    with open(file_path, "wb") as asset_file:
+        asset_file.write(png_bytes)
+    return file_path
+
+
+def load_png_asset(asset_id: str) -> Optional[bytes]:
+    asset = PNG_ASSET_STORE.get(asset_id)
+    if asset:
+        return asset
+    file_path = os.path.join(ASSETS_DIR, f"{asset_id}.png")
+    if os.path.exists(file_path):
+        with open(file_path, "rb") as asset_file:
+            asset = asset_file.read()
+        PNG_ASSET_STORE[asset_id] = asset
+        return asset
+    return None
+
+
+def build_clean_visual_asset_links(result: ProspectWithResearchResponse, report_id: Optional[str] = None) -> List[VisualAssetLink]:
+    base_id = report_id or uuid.uuid4().hex
+    assets = [
+        (
+            "awareness_funnel_clean_transparent",
+            "Embudo de awareness sin texto ni fondo para integrar en reportes.",
+            render_awareness_funnel_clean_png(result.awareness_funnel_locator),
+        ),
+        (
+            "customer_intent_density_map_clean_transparent",
+            "Mapa de calor sin texto ni fondo para integrar en reportes.",
+            render_customer_intent_density_clean_png(result.customer_intent_density_map),
+        ),
+        (
+            "commercial_system_blueprint_clean_transparent",
+            "Blueprint comercial sin texto ni fondo para integrar en reportes.",
+            render_blueprint_clean_png(result.funnel_blueprint),
+        ),
+    ]
+    links: List[VisualAssetLink] = []
+    for asset_type, use_case, png_bytes in assets:
+        asset_id = f"{base_id}_{asset_type}"
+        save_png_asset(asset_id, png_bytes)
+        links.append(
+            VisualAssetLink(
+                asset_type=asset_type,
+                url=f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/asset/{asset_id}.png",
+                use_case=use_case,
+            )
+        )
+    return links
+
+
+
 def save_visual_report_html(report_id: str, report_html: str) -> str:
     VISUAL_REPORT_STORE[report_id] = report_html
     file_path = os.path.join(REPORTS_DIR, f"{report_id}.html")
@@ -3246,6 +3614,9 @@ def create_visual_audit_report(request: ProspectWithResearchRequest):
     blueprint_svg = render_funnel_blueprint_svg(result.funnel_blueprint)
     score_svg = render_score_chart_svg(result.commercial_score)
 
+    report_id = uuid.uuid4().hex
+    clean_visual_assets = build_clean_visual_asset_links(result, report_id=report_id)
+
     report_html = build_visual_report_html(
         result=result,
         awareness_svg=awareness_svg,
@@ -3253,9 +3624,9 @@ def create_visual_audit_report(request: ProspectWithResearchRequest):
         density_svg=density_svg,
         blueprint_svg=blueprint_svg,
         score_svg=score_svg,
+        clean_visual_assets=clean_visual_assets,
     )
 
-    report_id = uuid.uuid4().hex
     save_visual_report_html(report_id, report_html)
     report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
 
@@ -3269,7 +3640,11 @@ def create_visual_audit_report(request: ProspectWithResearchRequest):
             "customer_intent_density_map",
             "commercial_system_blueprint",
             "commercial_score_chart",
+            "awareness_funnel_clean_transparent_png",
+            "customer_intent_density_map_clean_transparent_png",
+            "commercial_system_blueprint_clean_transparent_png",
         ],
+        visual_asset_urls=clean_visual_assets,
         report_summary=(
             f"Reporte visual generado para {result.company_name}. "
             "La respuesta de API es compacta para evitar errores de tamaño; los SVG/HTML completos están disponibles en report_url."
@@ -3277,6 +3652,27 @@ def create_visual_audit_report(request: ProspectWithResearchRequest):
         how_to_use="Abrí report_url para ver heatmap, blueprint, embudo, score chart y explicación completa.",
         note="No se devuelven SVG/HTML en el JSON porque eso dispara response_too_large en Custom GPT Actions.",
     )
+
+
+@app.get(
+    "/deliverables/asset/{asset_id}.png",
+    response_class=Response,
+    operation_id="getCleanVisualAssetPng",
+    summary="Download a clean transparent PNG visual asset",
+)
+def get_clean_visual_asset_png(asset_id: str):
+    png_bytes = load_png_asset(asset_id)
+    if not png_bytes:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Asset PNG no encontrado o expirado. Regenerá el reporte visual o la auditoría completa. "
+                "En Render, el almacenamiento temporal puede perderse tras reinicios."
+            ),
+        )
+    return Response(content=png_bytes, media_type="image/png")
+
+
 
 
 @app.get(
@@ -3334,6 +3730,8 @@ def get_report_storage_health():
         "reports_dir": REPORTS_DIR,
         "memory_reports": len(VISUAL_REPORT_STORE),
         "disk_reports": len(disk_reports),
+        "memory_png_assets": len(PNG_ASSET_STORE),
+        "assets_dir": ASSETS_DIR,
         "note": "En Render, /tmp puede perderse tras reinicios. Para producción conviene usar storage externo persistente.",
     }
 
@@ -6843,12 +7241,15 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
 
     visual_report_url = None
     visual_report_status = "not_generated"
+    clean_visual_assets: List[VisualAssetLink] = []
     try:
         awareness_svg = render_awareness_funnel_svg(public_audit.awareness_funnel_locator)
         temperature_svg = render_temperature_heatmap_svg(public_audit.temperature_heatmap)
         density_svg = render_customer_intent_density_svg(public_audit.customer_intent_density_map)
         blueprint_svg = render_funnel_blueprint_svg(public_audit.funnel_blueprint)
         score_svg = render_score_chart_svg(public_audit.commercial_score)
+        report_id = uuid.uuid4().hex
+        clean_visual_assets = build_clean_visual_asset_links(public_audit, report_id=report_id)
         report_html = build_visual_report_html(
             result=public_audit,
             awareness_svg=awareness_svg,
@@ -6859,8 +7260,8 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
             social_content_fit=social_content_fit,
             analysis_trace=analysis_trace,
             strategic_measures_matrix=strategic_measures_matrix,
+            clean_visual_assets=clean_visual_assets,
         )
-        report_id = uuid.uuid4().hex
         save_visual_report_html(report_id, report_html)
         visual_report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
         visual_report_status = "generated"
@@ -6892,6 +7293,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         ),
         visual_report_url=visual_report_url,
         visual_report_status=visual_report_status,
+        visual_asset_urls=clean_visual_assets,
         research_confidence=public_audit.research_confidence,
         diagnosis_initial=public_audit.diagnosis_initial,
         public_sources_summary=public_audit.public_sources_summary[:8],
