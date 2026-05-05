@@ -49,6 +49,7 @@ GOOGLE_APPS_SCRIPT_UPLOAD_URL = clean_env_value("GOOGLE_APPS_SCRIPT_UPLOAD_URL")
 GOOGLE_APPS_SCRIPT_SECRET = clean_env_value("GOOGLE_APPS_SCRIPT_SECRET")
 GOOGLE_DRIVE_FOLDER_ID = clean_env_value("GOOGLE_DRIVE_FOLDER_ID")
 GOOGLE_DRIVE_INDIVIDUAL_ASSET_UPLOAD_ENABLED = (clean_env_value("GOOGLE_DRIVE_INDIVIDUAL_ASSET_UPLOAD_ENABLED", "false") or "false").lower() == "true"
+GOOGLE_APPS_SCRIPT_TIMEOUT_SECONDS = int(clean_env_value("GOOGLE_APPS_SCRIPT_TIMEOUT_SECONDS", "30") or "30")
 VISUAL_REPORT_STORE: Dict[str, str] = {}
 PNG_ASSET_STORE: Dict[str, bytes] = {}
 REPORTS_DIR = os.getenv("REPORTS_DIR", "/tmp/marketing_audit_reports")
@@ -56,14 +57,286 @@ ASSETS_DIR = os.getenv("ASSETS_DIR", "/tmp/marketing_audit_assets")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
-ANALYSIS_VERSION = "v1.30"
-RULESET_VERSION = "2026-05-05-evidence-first-analytical-core-v1"
+ANALYSIS_VERSION = "v1.31"
+RULESET_VERSION = "2026-05-05-website-observed-evidence-core-v1"
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
     "SEARCH_API_LOCATIONS",
     "COMPOSIO_SEARCH_DUCK_DUCK_GO_SEARCH",
 }
+
+
+WEBSITE_FETCH_TIMEOUT_SECONDS = float(os.getenv("WEBSITE_FETCH_TIMEOUT_SECONDS", "8"))
+WEBSITE_FETCH_MAX_BYTES = int(os.getenv("WEBSITE_FETCH_MAX_BYTES", "220000"))
+WEBSITE_EVIDENCE_CACHE: Dict[str, Dict[str, Any]] = {}
+ANALYTICAL_STRONG_VISUALS_ENABLED = (os.getenv("ANALYTICAL_STRONG_VISUALS_ENABLED", "false").lower() == "true")
+
+
+def normalize_website_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    value = str(url).strip()
+    if not value:
+        return None
+    if not re.match(r"^https?://", value, flags=re.I):
+        value = "https://" + value
+    return value
+
+
+def _html_to_visible_text(raw_html: str) -> str:
+    if not raw_html:
+        return ""
+    text = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", raw_html)
+    text = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", text)
+    text = re.sub(r"(?is)<noscript[^>]*>.*?</noscript>", " ", text)
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</(p|div|li|h1|h2|h3|section|article|header|footer|nav|tr)>", "\n", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = re.sub(r"[\t\r\f\v]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n", text)
+    text = re.sub(r"[ ]{2,}", " ", text)
+    return text.strip()
+
+
+def _extract_tag_texts(raw_html: str, tag_pattern: str, limit: int = 16) -> List[str]:
+    out: List[str] = []
+    for match in re.finditer(tag_pattern, raw_html or "", flags=re.I | re.S):
+        value = _html_to_visible_text(match.group(1))
+        value = re.sub(r"\s+", " ", value).strip()
+        if value and len(value) >= 2 and value.lower() not in [item.lower() for item in out]:
+            out.append(value[:180])
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _extract_anchors(raw_html: str, limit: int = 80) -> List[Dict[str, str]]:
+    anchors: List[Dict[str, str]] = []
+    for match in re.finditer(r"(?is)<a\b([^>]*)>(.*?)</a>", raw_html or ""):
+        attrs = match.group(1) or ""
+        body = match.group(2) or ""
+        href_match = re.search(r"href\s*=\s*['\"]([^'\"]+)['\"]", attrs, flags=re.I)
+        href = html.unescape(href_match.group(1).strip()) if href_match else ""
+        label = _html_to_visible_text(body)
+        label = re.sub(r"\s+", " ", label).strip()
+        if href or label:
+            anchors.append({"href": href[:400], "label": label[:220]})
+        if len(anchors) >= limit:
+            break
+    return anchors
+
+
+def _find_context_snippets(text: str, keywords: List[str], limit: int = 3) -> List[str]:
+    if not text:
+        return []
+    clean = re.sub(r"\s+", " ", text)
+    lower = clean.lower()
+    snippets: List[str] = []
+    for kw in keywords:
+        k = kw.lower()
+        start = lower.find(k)
+        if start == -1:
+            continue
+        left = max(0, start - 110)
+        right = min(len(clean), start + len(k) + 170)
+        snippet = clean[left:right].strip(" .;:-|\n\t")
+        if snippet and all(snippet.lower() not in existing.lower() for existing in snippets):
+            snippets.append(snippet[:360])
+        if len(snippets) >= limit:
+            break
+    return snippets
+
+
+def _summarize_list(values: List[str], max_items: int = 8, max_chars: int = 520) -> str:
+    selected = [v for v in values if v][:max_items]
+    text = "; ".join(selected)
+    return text[:max_chars]
+
+
+def fetch_website_evidence_snapshot(url: Optional[str]) -> Dict[str, Any]:
+    normalized = normalize_website_url(url)
+    if not normalized:
+        return {"status": "not_provided", "url": None, "facts": [], "error": "No website URL provided."}
+    cache_key = normalized.rstrip("/").lower()
+    if cache_key in WEBSITE_EVIDENCE_CACHE:
+        return WEBSITE_EVIDENCE_CACHE[cache_key]
+
+    snapshot: Dict[str, Any] = {
+        "status": "failed",
+        "url": normalized,
+        "final_url": None,
+        "status_code": None,
+        "title": None,
+        "headings": [],
+        "anchors": [],
+        "facts": [],
+        "word_count": 0,
+        "error": None,
+    }
+    try:
+        response = requests.get(
+            normalized,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; MarketingAuditor/1.0; +https://marketing-audit-api.onrender.com)",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+            timeout=WEBSITE_FETCH_TIMEOUT_SECONDS,
+            allow_redirects=True,
+        )
+        snapshot["status_code"] = response.status_code
+        snapshot["final_url"] = response.url
+        content_type = (response.headers.get("content-type") or "").lower()
+        raw_bytes = response.content[:WEBSITE_FETCH_MAX_BYTES]
+        raw_html = raw_bytes.decode(response.encoding or "utf-8", errors="ignore")
+        if response.status_code >= 400:
+            snapshot["error"] = f"HTTP {response.status_code} al leer el sitio."
+            WEBSITE_EVIDENCE_CACHE[cache_key] = snapshot
+            return snapshot
+        if "text/html" not in content_type and "html" not in raw_html[:500].lower():
+            snapshot["error"] = f"Contenido no HTML o no legible como landing pública: {content_type or 'content-type desconocido'}."
+            WEBSITE_EVIDENCE_CACHE[cache_key] = snapshot
+            return snapshot
+
+        title_match = re.search(r"(?is)<title[^>]*>(.*?)</title>", raw_html)
+        title = _html_to_visible_text(title_match.group(1)) if title_match else ""
+        headings = _extract_tag_texts(raw_html, r"<h[1-3][^>]*>(.*?)</h[1-3]>", limit=14)
+        anchors = _extract_anchors(raw_html, limit=120)
+        visible_text = _html_to_visible_text(raw_html)
+        lower_text = visible_text.lower()
+        word_count = len(re.findall(r"\w+", visible_text))
+        snapshot.update({
+            "status": "observed",
+            "title": title[:220] if title else None,
+            "headings": headings,
+            "anchors": anchors[:80],
+            "word_count": word_count,
+            "text_sample": visible_text[:1200],
+        })
+
+        facts: List[Dict[str, Any]] = []
+        def fact(label: str, observed: str, supports: List[str], reliability: str = "medium"):
+            observed = re.sub(r"\s+", " ", str(observed or "")).strip()
+            if observed:
+                facts.append({
+                    "label": label,
+                    "observed_fact": observed[:900],
+                    "supports": _unique_keep_order(supports),
+                    "reliability": reliability,
+                })
+
+        if title or headings:
+            fact(
+                "Encabezados y propuesta visible del sitio",
+                f"Title: {title or 'n/d'}; encabezados visibles: {_summarize_list(headings, 10)}",
+                ["offer_clarity", "content_depth", "audience_specificity"],
+                "medium-high" if headings else "medium",
+            )
+
+        anchor_labels = [a.get("label", "") for a in anchors if a.get("label")]
+        nav_candidates = [x for x in anchor_labels if len(x) <= 55]
+        if nav_candidates:
+            fact(
+                "Navegación visible",
+                f"Navegación/enlaces detectados: {_summarize_list(nav_candidates, 14)}",
+                ["content_depth", "objection_handling", "conversion_path"],
+                "medium",
+            )
+
+        joined_anchors = " ".join([f"{a.get('label','')} {a.get('href','')}" for a in anchors]).lower()
+        cta_keywords = ["whatsapp", "wa.me", "contacto", "consultar", "consulta", "llamar", "tel:", "mailto:", "formulario", "cotizar", "quiero saber", "empez", "más información", "cargar cv", "enviar"]
+        cta_snippets = _find_context_snippets(visible_text + " " + joined_anchors, cta_keywords, limit=4)
+        if cta_snippets or re.search(r"(?is)<form\b", raw_html):
+            form_count = len(re.findall(r"(?is)<form\b", raw_html))
+            fact(
+                "CTA/contacto observable",
+                f"Señales de contacto/CTA: {' | '.join(cta_snippets) or 'formulario detectado'}; formularios HTML detectados={form_count}",
+                ["cta_strength", "conversion_path"],
+                "medium-high",
+            )
+
+        emails = sorted(set(re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", visible_text)))[:4]
+        phones = sorted(set(re.findall(r"(?:\+?\d[\d\s().-]{7,}\d)", visible_text)))[:5]
+        if emails or phones:
+            fact(
+                "Datos de contacto visibles",
+                f"Emails detectados: {', '.join(emails) or 'n/d'}; teléfonos detectados: {', '.join(phones) or 'n/d'}",
+                ["cta_strength", "conversion_path", "trust_density"],
+                "medium-high",
+            )
+
+        offer_keywords = ["servicios", "soluciones", "automatización", "inteligencia artificial", "roi", "lote", "loteos", "propiedad", "propiedades", "construcciones", "búsqueda y selección", "talentos", "capacitación", "coaching", "procesos", "pyme", "rr.hh", "recursos humanos"]
+        offer_snippets = _find_context_snippets(visible_text, offer_keywords, limit=4)
+        if offer_snippets:
+            fact(
+                "Servicios/oferta observada en el contenido",
+                " | ".join(offer_snippets),
+                ["offer_clarity", "audience_specificity", "content_depth"],
+                "medium-high",
+            )
+
+        authority_keywords = ["años de experiencia", "experiencia", "miembro", "association", "certificación", "ingenieros", "profesional", "metodología", "trayectoria", "especialistas", "equipo", "reconocimiento"]
+        authority_snippets = _find_context_snippets(visible_text, authority_keywords, limit=4)
+        if authority_snippets:
+            fact(
+                "Autoridad/metodología/credenciales visibles",
+                " | ".join(authority_snippets),
+                ["authority", "trust_density", "content_depth", "objection_handling"],
+                "medium-high",
+            )
+
+        social_keywords = ["testimonio", "testimonios", "reseñas", "reviews", "clientes", "nuestros clientes", "casos", "trustindex", "google", "excelente", "a base de", "logos"]
+        social_snippets = _find_context_snippets(visible_text, social_keywords, limit=5)
+        if social_snippets:
+            fact(
+                "Prueba social visible",
+                " | ".join(social_snippets),
+                ["social_proof", "trust_density", "authority"],
+                "medium-high",
+            )
+
+        depth_keywords = ["blog", "noticias", "podcast", "newsletter", "faq", "preguntas frecuentes", "metodología", "guía", "artículo", "leer más", "incluye", "proceso", "3 pasos", "servicios para elegir"]
+        depth_snippets = _find_context_snippets(visible_text, depth_keywords, limit=5)
+        if depth_snippets:
+            fact(
+                "Profundidad de contenido / educación / objeciones",
+                " | ".join(depth_snippets),
+                ["content_depth", "objection_handling", "authority"],
+                "medium-high",
+            )
+
+        social_links = []
+        for a in anchors:
+            href = (a.get("href") or "").lower()
+            if any(domain in href for domain in ["instagram.com", "facebook.com", "linkedin.com", "youtube.com", "tiktok.com", "twitter.com", "x.com"]):
+                social_links.append(a.get("href") or href)
+        if social_links:
+            fact(
+                "Redes sociales enlazadas desde el sitio",
+                f"Links sociales detectados: {_summarize_list(social_links, 8)}",
+                ["channel_consistency", "public_presence"],
+                "medium",
+            )
+
+        if not facts:
+            fact(
+                "Sitio leído sin señales comerciales suficientes",
+                f"El HTML público fue leído, pero no se detectaron señales comerciales fuertes en los primeros {WEBSITE_FETCH_MAX_BYTES} bytes. Palabras visibles aprox={word_count}.",
+                ["public_presence"],
+                "low",
+            )
+        snapshot["facts"] = facts
+    except requests.exceptions.Timeout:
+        snapshot["error"] = f"Timeout al leer sitio después de {WEBSITE_FETCH_TIMEOUT_SECONDS} segundos."
+    except requests.exceptions.RequestException as exc:
+        snapshot["error"] = f"Error de red al leer sitio: {str(exc)[:220]}"
+    except Exception as exc:
+        snapshot["error"] = f"Error inesperado al extraer evidencia web: {str(exc)[:220]}"
+
+    WEBSITE_EVIDENCE_CACHE[cache_key] = snapshot
+    return snapshot
+
 
 api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
 
@@ -4259,7 +4532,7 @@ def export_audit_bundle_to_drive(
         },
     }
 
-    data = post_to_apps_script(payload, timeout=90)
+    data = post_to_apps_script(payload, timeout=GOOGLE_APPS_SCRIPT_TIMEOUT_SECONDS)
     if not data.get("ok"):
         return DriveBundleExport(
             status="failed",
@@ -4559,7 +4832,7 @@ def save_gpt_written_report_to_drive(request: SaveGptWrittenReportRequest):
         "report_id": request.report_id,
     }
 
-    data = post_to_apps_script(payload, timeout=90)
+    data = post_to_apps_script(payload, timeout=GOOGLE_APPS_SCRIPT_TIMEOUT_SECONDS)
     if not data.get("ok"):
         return SaveGptWrittenReportResponse(
             status="failed",
@@ -8104,6 +8377,26 @@ def build_evidence_cross_check_report(
             "media" if len(declared_profile_parts) >= 3 else "baja-media",
         )
 
+    missing: List[str] = []
+    website_snapshot = fetch_website_evidence_snapshot(request.website)
+    if website_snapshot.get("status") == "observed":
+        facts = website_snapshot.get("facts") or []
+        website_summary = "; ".join([str(item.get("label", "")) for item in facts[:8] if item.get("label")])
+        add(
+            "website_observed",
+            "website_html_read",
+            "Sitio web leído por el backend",
+            (
+                f"url={website_snapshot.get('final_url') or website_snapshot.get('url')}; "
+                f"palabras_aprox={website_snapshot.get('word_count')}; "
+                f"señales_detectadas={website_summary or 'lectura básica sin señales fuertes'}"
+            ),
+            ["oferta", "CTA", "confianza", "contenido", "conversión", "evidence ledger"],
+            "media-alta" if len(facts) >= 3 else "media",
+        )
+    elif request.website:
+        missing.append(f"No se pudo leer el contenido del sitio declarado ({request.website}): {website_snapshot.get('error') or website_snapshot.get('status')}.")
+
     for source in public_audit.public_sources_summary[:10]:
         add(
             "public_sources",
@@ -8185,7 +8478,6 @@ def build_evidence_cross_check_report(
     )
 
     groups = sorted(set(item.evidence_group for item in items if item.evidence_group != "generated_maps"))
-    missing: List[str] = []
     if not public_audit.public_sources_summary:
         missing.append("No hay fuentes públicas suficientes para validar externamente el diagnóstico.")
     if not request.offer:
@@ -8386,6 +8678,33 @@ def build_analytical_evidence_ledger(
         add("declared_input", "Ubicación declarada", f"Mercado declarado: {request.city or 'n/d'}, {request.country or 'n/d'}", ["market_context"], reliability="medium")
     if request.website:
         add("declared_input", "Sitio web declarado", f"Website declarado: {request.website}", ["declared_asset", "conversion_path"], reliability="low", source_url=request.website, can_support_claims=False, extraction_note="Una URL declarada no alcanza por sí sola para afirmar que se revisó el contenido del sitio.")
+        website_snapshot = fetch_website_evidence_snapshot(request.website)
+        if website_snapshot.get("status") == "observed":
+            for fact in website_snapshot.get("facts") or []:
+                add(
+                    "website_observed",
+                    fact.get("label") or "Evidencia observada en sitio",
+                    fact.get("observed_fact") or "",
+                    fact.get("supports") or ["public_presence"],
+                    reliability=fact.get("reliability") or "medium",
+                    source_url=website_snapshot.get("final_url") or website_snapshot.get("url") or request.website,
+                    can_support_claims=True,
+                    extraction_note=(
+                        f"Lectura directa del HTML público del sitio. status={website_snapshot.get('status_code')}; "
+                        f"word_count≈{website_snapshot.get('word_count')}. No equivale a Analytics/CRM."
+                    ),
+                )
+        else:
+            add(
+                "website_fetch_failed",
+                "Lectura del sitio no completada",
+                f"No se pudo leer el contenido público del sitio declarado: {request.website}. Motivo: {website_snapshot.get('error') or website_snapshot.get('status')}",
+                ["missing_website_content", "public_presence"],
+                reliability="high",
+                source_url=request.website,
+                can_support_claims=True,
+                extraction_note="Fallo de lectura: permite explicar límites del análisis, no afirmar contenido del sitio.",
+            )
     for attr, signal in [("instagram", "channel_consistency"), ("facebook", "channel_consistency"), ("tiktok", "channel_consistency"), ("youtube", "content_depth"), ("linkedin", "authority")]:
         value = getattr(request, attr, None)
         if value:
@@ -8507,13 +8826,14 @@ def build_analytical_signal_vector(
         "lead_quality_evidence": "Evidencia de calidad de lead o resultado posterior",
     }
     result: Dict[str, AnalyticalSignalScore] = {}
-    source_count = len([item for item in ledger if item.source_type == "public_source" and item.can_support_claims])
+    source_count = len([item for item in ledger if item.source_type in ["public_source", "website_observed"] and item.can_support_claims])
     declared_count = len([item for item in ledger if item.source_type == "declared_input"])
     campaign_items = _evidence_for_signal(ledger, "campaign_evidence")
     has_campaigns = bool(request.campaigns)
 
     for signal, label in signal_specs.items():
         ev = _evidence_for_signal(ledger, signal)
+        website_ev_count = len([item for item in ev if item.source_type == "website_observed"])
         evidence_ids = [item.evidence_id for item in ev]
         missing: List[str] = []
         base = 0
@@ -8538,19 +8858,25 @@ def build_analytical_signal_vector(
             missing = [] if base >= 5 else ["Segmento objetivo, problema principal y criterio de compra."]
         elif signal == "authority":
             base = min(8, len(ev) * 2)
-            if _contains_any(" ".join(item.observed_fact for item in ev), ["años", "experiencia", "certificación", "miembro", "reseña", "cliente", "metodología"]):
-                base += 1
+            if website_ev_count:
+                base += 3
+            if _contains_any(" ".join(item.observed_fact for item in ev), ["años", "experiencia", "certificación", "miembro", "reseña", "cliente", "metodología", "association", "ingenieros"]):
+                base += 2
             missing = [] if base >= 5 else ["Credenciales, trayectoria, casos, metodología o fuentes externas verificables."]
         elif signal == "social_proof":
             base = min(9, len(ev) * 3)
-            if _contains_any(" ".join(item.observed_fact for item in ev), ["121", "reseñas", "testimonios", "clientes", "trustindex", "google"]):
-                base += 1
+            if website_ev_count:
+                base += 2
+            if _contains_any(" ".join(item.observed_fact for item in ev), ["121", "reseñas", "testimonios", "clientes", "trustindex", "google", "casos"]):
+                base += 2
             missing = [] if base >= 5 else ["Reseñas, casos, testimonios, logos de clientes o resultados verificables."]
         elif signal == "cta_strength":
             text = " ".join(item.observed_fact for item in ev) + " " + " ".join([str(getattr(request, a, '') or '') for a in ["website", "instagram", "facebook", "linkedin"]])
-            base = min(8, len(ev) * 2)
-            if _contains_any(text, ["whatsapp", "wa.me", "contacto", "consultar", "llamar", "teléfono", "formulario"]):
+            base = min(8, len(ev) * 3)
+            if website_ev_count:
                 base += 2
+            if _contains_any(text, ["whatsapp", "wa.me", "contacto", "consultar", "llamar", "teléfono", "formulario", "enviar", "cargar cv"]):
+                base += 3
             missing = [] if base >= 5 else ["CTA principal observable, canal de contacto y formulario/WhatsApp verificado."]
         elif signal == "conversion_path":
             base = 1 if request.website else 0
@@ -8562,6 +8888,8 @@ def build_analytical_signal_vector(
             missing = [] if base >= 6 else ["Landing usada en campañas, pasos de contacto, seguimiento comercial y CRM."]
         elif signal == "content_depth":
             base = min(8, len(ev) * 2)
+            if website_ev_count:
+                base += 3
             if request.notes and len(request.notes) > 120:
                 base += 1
             if request.social_content_samples:
@@ -8569,19 +8897,37 @@ def build_analytical_signal_vector(
             missing = [] if base >= 5 else ["Páginas de servicio, blog/noticias/FAQ, muestras sociales o piezas educativas."]
         elif signal == "objection_handling":
             base = min(8, len(ev) * 2)
-            if _contains_any(" ".join(item.observed_fact for item in ev), ["faq", "preguntas", "precio", "precios", "garantía", "metodología", "incluye"]):
-                base += 1
+            if website_ev_count:
+                base += 2
+            if _contains_any(" ".join(item.observed_fact for item in ev), ["faq", "preguntas", "precio", "precios", "garantía", "metodología", "incluye", "proceso"]):
+                base += 2
             missing = [] if base >= 5 else ["FAQ, precios/planes, condiciones, garantías, metodología y objeciones frecuentes."]
         elif signal == "trust_density":
-            base = min(8, len(_evidence_for_signal(ledger, "authority")) + len(_evidence_for_signal(ledger, "social_proof")) * 2)
+            auth_ev = _evidence_for_signal(ledger, "authority")
+            proof_ev = _evidence_for_signal(ledger, "social_proof")
+            base = min(8, len(auth_ev) * 2 + len(proof_ev) * 3)
+            if any(item.source_type == "website_observed" for item in auth_ev + proof_ev):
+                base += 2
             missing = [] if base >= 5 else ["Más señales verificables de confianza: reseñas, casos, clientes, prueba externa."]
         elif signal == "channel_consistency":
             declared_socials = len([getattr(request, a, None) for a in ["instagram", "facebook", "tiktok", "youtube", "linkedin"] if getattr(request, a, None)])
             base = min(5, declared_socials) + min(4, len(ev))
             missing = [] if base >= 5 else ["Links de redes, muestras recientes por plataforma y objetivo de cada canal."]
         elif signal == "campaign_evidence":
-            base = min(10, len(campaign_items) * 2) if has_campaigns else 0
-            missing = [] if has_campaigns else ["Export de campañas con inversión, impresiones, clics, leads, conversiones y período."]
+            if has_campaigns:
+                metric_fields = 0
+                rich_fields = ["spend", "impressions", "reach", "frequency", "clicks", "ctr_percent", "cpc", "cpm", "leads", "cpl", "cpa", "conversions", "conversion_rate_percent", "qualified_leads", "sales", "revenue", "lead_quality_rate_percent", "objective", "funnel_stage", "temperature"]
+                for c in request.campaigns:
+                    metric_fields += sum(1 for attr in rich_fields if getattr(c, attr, None) is not None)
+                avg_fields = metric_fields / max(1, len(request.campaigns))
+                base = min(10, 2 + int(avg_fields))
+                if campaign_performance and campaign_performance.data_quality not in ["sin_datos", "mínima"]:
+                    base = max(base, 6)
+                if campaign_performance and getattr(campaign_performance, "data_completeness", None):
+                    base = max(base, int(campaign_performance.data_completeness.score / 12))
+            else:
+                base = 0
+            missing = [] if base >= 6 else ["Export de campañas con inversión, impresiones, clics, leads, conversiones y período."]
         elif signal == "tracking_quality":
             if has_campaigns:
                 metrics_present = 0
@@ -8694,6 +9040,15 @@ def build_claim_registry(
     elif score("content_depth") <= 3:
         add_claim("risk", "La profundidad de contenido no está suficientemente demostrada por los datos disponibles.", "inferred", ["content_depth"], "low", "Marcar como brecha de evidencia antes que como falla definitiva.")
 
+    if score("audience_specificity") >= 6:
+        add_claim("diagnostic_inference", "La comunicación visible permite inferir con mejor base a qué tipo de público o necesidad apunta la oferta.", "partially_supported", ["audience_specificity", "offer_clarity"], "medium", "Usar como lectura preliminar del posicionamiento, no como validación de mercado.")
+    if score("objection_handling") >= 6:
+        add_claim("diagnostic_inference", "Hay señales visibles de manejo de objeciones o explicación del proceso comercial.", "partially_supported", ["objection_handling", "content_depth"], "medium", "Hablar de señales visibles: FAQ, metodología, precios, proceso o condiciones; no afirmar cierre de ventas.")
+    if score("trust_density") >= 6:
+        add_claim("diagnostic_inference", "La densidad de señales de confianza es utilizable para sostener un análisis preliminar de credibilidad comercial.", "partially_supported", ["trust_density", "authority", "social_proof"], "medium", "No confundir confianza visible con performance real.")
+    if score("conversion_path") >= 6:
+        add_claim("diagnostic_inference", "El recorrido visible hacia consulta tiene elementos suficientes para análisis preliminar.", "partially_supported", ["conversion_path", "cta_strength"], "medium", "No afirmar tasa de conversión; solo evaluar existencia/claridad del camino observado.")
+
     if request.campaigns and campaign_performance and campaign_performance.data_quality != "sin_datos":
         add_claim("performance_claim", "Hay datos mínimos para iniciar lectura de performance de campañas.", "supported", ["campaign_evidence", "tracking_quality"], "medium", "Afirmar solo sobre métricas recibidas y período analizado.")
     else:
@@ -8804,6 +9159,42 @@ def build_traceable_recommendations(
             "low",
             ["Páginas de servicio", "FAQ", "metodología", "material educativo existente"],
         )
+    if score("authority") >= 7 and score("social_proof") >= 6 and score("content_depth") >= 6:
+        add_rec(
+            "Usar la autoridad, metodología y prueba social observadas como núcleo del mensaje de consideración: convertir reseñas/casos/metodología en piezas de landing, anuncios de retargeting y argumentos comerciales antes de pedir más presupuesto.",
+            "alta",
+            supporting_claims("authority", "social_proof", "content_depth", "confianza"),
+            "La evidencia del sitio muestra densidad alta en confianza/autoridad; el siguiente paso preliminar es empaquetarla para el tramo medio del funnel, no inventar performance.",
+            "medium-high",
+            ["Piezas actuales de retargeting", "landing usada", "métricas de interacción/consulta"],
+        )
+    if score("content_depth") >= 6 and score("cta_strength") <= 5:
+        add_rec(
+            "Agregar CTA contextual dentro de las secciones de mayor profundidad: metodología, servicios, noticias, FAQ o explicación del proceso. El objetivo preliminar no es cambiar toda la web, sino conectar contenido de consideración con consulta concreta.",
+            "media-alta",
+            supporting_claims("content_depth", "objection", "cta", "conversion_path"),
+            "Hay contenido suficiente para educar, pero el recorrido de contacto no queda igual de fuerte en la evidencia disponible.",
+            "medium",
+            ["Mapa de secciones con más tráfico", "eventos de click", "formularios/WhatsApp por sección"],
+        )
+    if score("offer_clarity") >= 7 and score("cta_strength") >= 7 and score("social_proof") <= 4:
+        add_rec(
+            "Mantener la claridad de oferta y el CTA directo, pero insertar prueba social verificable antes del punto de contacto: reseñas, logos, casos breves o resultados auditables. El riesgo visible no es falta de contacto, sino falta de soporte de confianza previo.",
+            "alta",
+            supporting_claims("offer_clarity", "cta", "social_proof", "trust"),
+            "El sitio permite entender y contactar, pero la evidencia de prueba social no acompaña con la misma fuerza.",
+            "medium",
+            ["Reseñas verificables", "casos/clientes", "métrica de consulta antes/después"],
+        )
+    if score("objection_handling") >= 6 and score("conversion_path") <= 5:
+        add_rec(
+            "Convertir las respuestas a objeciones visibles —FAQ, precios, proceso o metodología— en micro-conversiones: botones de consulta, formularios segmentados o WhatsApp con contexto según la objeción leída.",
+            "media",
+            supporting_claims("objection", "conversion_path", "cta"),
+            "El sitio contiene material útil para decisión, pero falta validar que ese material empuje a una acción concreta.",
+            "medium",
+            ["Clicks por sección", "eventos de scroll", "consultas iniciadas desde FAQ/metodología/precios"],
+        )
     if score("campaign_evidence") == 0:
         add_rec(
             "Pedir export de campañas antes de cualquier diagnóstico de performance: inversión, impresiones, clics, CTR, CPC, leads, CPL, conversiones, período, landing y objetivo por campaña.",
@@ -8909,7 +9300,7 @@ def build_analytical_core_result(
     missing = build_missing_data_for_complete_analysis(signal_vector, request)
     factuality = build_pre_report_factuality_check(claims, blocked_claims, recommendations, blocked_recommendations, evidence_cross_check)
     has_campaigns = bool(request.campaigns)
-    public_evidence_count = len([item for item in ledger if item.source_type == "public_source" and item.can_support_claims])
+    public_evidence_count = len([item for item in ledger if item.source_type in ["public_source", "website_observed"] and item.can_support_claims])
     high_scores = len([s for s in signal_vector.values() if s.score_0_to_10 >= 7])
     if not factuality.safe_to_write_report:
         confidence = "not_safe"
@@ -9024,6 +9415,90 @@ def adapt_blueprint_to_public_evidence(
         recommended_flow=list(dict.fromkeys(recommended))[:5],
         summary=summary,
     )
+
+
+def build_preliminary_analytical_report_html(
+    request: FullCommercialSystemRequest,
+    analytical_core: AnalyticalCoreResult,
+    evidence_cross_check: EvidenceCrossCheckReport,
+    stable_output: StableAuditOutput,
+    public_audit: ProspectWithResearchResponse,
+    social_fit: Optional[SocialContentFitResponse],
+    campaign_performance: CampaignPerformanceResponse,
+) -> str:
+    """Reporte HTML preliminar sin visuales cuando el motor sí analizó evidencia, pero no habilita gráficos fuertes."""
+    top_signals = sorted(analytical_core.signal_vector.values(), key=lambda item: item.score_0_to_10, reverse=True)
+    signals_rows = "".join(
+        f"<tr><td>{h(sig.signal)}</td><td>{sig.score_0_to_10}/10</td><td>{h(sig.confidence)}</td><td>{h(sig.rationale)}</td></tr>"
+        for sig in top_signals
+    )
+    evidence_rows = "".join(
+        f"<tr><td>{h(item.evidence_id)}</td><td>{h(item.source_type)}</td><td>{h(item.source_label)}</td><td>{h(item.observed_fact)}</td><td>{h(', '.join(item.supports_signals))}</td></tr>"
+        for item in analytical_core.evidence_ledger[:30]
+    )
+    claim_rows = "".join(
+        f"<tr><td>{h(claim.claim_id)}</td><td>{h(claim.claim_type)}</td><td>{h(claim.support_status)}</td><td>{h(claim.statement)}</td><td>{h(', '.join(claim.evidence_ids))}</td></tr>"
+        for claim in analytical_core.claims[:20]
+    )
+    blocked_claim_rows = "".join(
+        f"<tr><td>{h(claim.claim_id)}</td><td>{h(claim.claim_type)}</td><td>{h(claim.statement)}</td><td>{h(claim.blocked_reason or 'Sin soporte suficiente')}</td></tr>"
+        for claim in analytical_core.blocked_claims[:12]
+    )
+    rec_cards = "".join(
+        f"<div class='card'><h3>{h(rec.priority)} · {h(rec.recommendation_id)}</h3><p>{h(rec.recommendation)}</p><p><strong>Base:</strong> {h(rec.rationale)}</p><p><strong>Evidencia:</strong> {h(', '.join(rec.evidence_ids) or 'n/d')}</p><p><strong>Validar con:</strong> {h('; '.join(rec.required_data_to_validate))}</p></div>"
+        for rec in analytical_core.recommendations[:10]
+    )
+    missing_items = "".join(f"<li>{h(item)}</li>" for item in analytical_core.missing_data_for_complete_analysis[:18])
+    constraints = "".join(f"<li>{h(item)}</li>" for item in analytical_core.pre_report_factuality_check.report_language_constraints)
+    return f"""
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Auditor preliminar - {h(request.company_name)}</title>
+<style>
+body {{ font-family: Inter, Arial, sans-serif; color:#111827; background:#f8fafc; margin:0; padding:32px; }}
+main {{ max-width:1180px; margin:auto; background:white; padding:34px; border-radius:22px; box-shadow:0 20px 60px rgba(15,23,42,.08); }}
+h1 {{ margin:0 0 8px; font-size:32px; }}
+h2 {{ margin-top:34px; border-top:1px solid #e5e7eb; padding-top:24px; }}
+.badge {{ display:inline-block; padding:7px 12px; border-radius:999px; background:#eef2ff; color:#3730a3; font-weight:700; margin:4px 8px 4px 0; }}
+.warn {{ background:#fff7ed; color:#9a3412; }}
+.ok {{ background:#ecfdf5; color:#065f46; }}
+table {{ width:100%; border-collapse:collapse; margin-top:12px; font-size:13px; }}
+th, td {{ border-bottom:1px solid #e5e7eb; padding:10px; text-align:left; vertical-align:top; }}
+th {{ background:#f9fafb; }}
+.card {{ border:1px solid #e5e7eb; border-radius:16px; padding:16px; margin:12px 0; background:#fbfdff; }}
+.small {{ color:#6b7280; font-size:13px; }}
+</style>
+</head>
+<body><main>
+<h1>Auditor preliminar evidence-first</h1>
+<p class="small">Empresa: <strong>{h(request.company_name)}</strong> · Website: {h(request.website or 'n/d')}</p>
+<span class="badge">confidence_status: {h(analytical_core.confidence_status)}</span>
+<span class="badge">stability: {h(stable_output.stability_status)}</span>
+<span class="badge warn">visuales: bloqueados o no priorizados</span>
+<span class="badge ok">no_invention_rule: {h(str(analytical_core.no_invention_rule_applied))}</span>
+<h2>1. Interpretación ejecutiva</h2>
+<p>{h(analytical_core.executive_interpretation)}</p>
+<p><strong>Estado del cruce de evidencia:</strong> {h(evidence_cross_check.status)} · {h(evidence_cross_check.explanation)}</p>
+<h2>2. Evidencia leída/considerada</h2>
+<table><thead><tr><th>ID</th><th>Tipo</th><th>Fuente</th><th>Hecho observado</th><th>Señales soportadas</th></tr></thead><tbody>{evidence_rows}</tbody></table>
+<h2>3. Vector de señales comerciales</h2>
+<table><thead><tr><th>Señal</th><th>Score</th><th>Confianza</th><th>Racional</th></tr></thead><tbody>{signals_rows}</tbody></table>
+<h2>4. Claims permitidos</h2>
+<table><thead><tr><th>ID</th><th>Tipo</th><th>Soporte</th><th>Claim</th><th>Evidencia</th></tr></thead><tbody>{claim_rows}</tbody></table>
+<h2>5. Claims bloqueados</h2>
+<table><thead><tr><th>ID</th><th>Tipo</th><th>Claim no permitido</th><th>Motivo</th></tr></thead><tbody>{blocked_claim_rows}</tbody></table>
+<h2>6. Recomendaciones trazables preliminares</h2>
+{rec_cards or '<p>No se generaron recomendaciones porque no había cadena evidencia → claim → recomendación suficiente.</p>'}
+<h2>7. Datos faltantes para análisis completo</h2>
+<ul>{missing_items}</ul>
+<h2>8. Restricciones de lenguaje / anti-invención</h2>
+<ul>{constraints}</ul>
+<p class="small">Este reporte es preliminar. No afirma ROAS, CPA, CPL efectivo, conversión real ni calidad de leads sin datos de campaña/CRM.</p>
+</main></body></html>
+"""
 
 @app.post(
     "/audit/full-commercial-system",
@@ -9168,9 +9643,10 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         evidence_cross_check=evidence_cross_check,
     )
     analytical_visual_allowed = (
-        evidence_cross_check.visual_generation_allowed
+        ANALYTICAL_STRONG_VISUALS_ENABLED
+        and evidence_cross_check.visual_generation_allowed
         and analytical_core.pre_report_factuality_check.safe_to_write_report
-        and analytical_core.confidence_status in ["comparable", "campaign_ready", "complete"]
+        and analytical_core.confidence_status in ["campaign_ready", "complete"]
     )
     generation_gate_status = "allowed" if analytical_visual_allowed else "blocked"
     generation_gate_reason = (
@@ -9231,7 +9707,39 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
             visual_report_url = None
             visual_report_status = f"visual_report_generation_failed: {str(exc)}"
     else:
-        visual_report_status = "blocked_by_evidence_gate"
+        # No se bloquea el análisis preliminar: se bloquean solo los visuales fuertes.
+        # Aun así se genera un HTML analítico evidence-first con evidencia, señales, claims y recomendaciones trazables.
+        try:
+            report_id = uuid.uuid4().hex
+            visual_report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
+            stable_output = build_stable_audit_output(
+                public_audit=public_audit,
+                social_fit=social_content_fit,
+                analysis_trace=analysis_trace,
+                visual_report_url=visual_report_url,
+                request=request,
+                campaign_performance=campaign_performance,
+            )
+            report_html = build_preliminary_analytical_report_html(
+                request=request,
+                analytical_core=analytical_core,
+                evidence_cross_check=evidence_cross_check,
+                stable_output=stable_output,
+                public_audit=public_audit,
+                social_fit=social_content_fit,
+                campaign_performance=campaign_performance,
+            )
+            save_visual_report_html(report_id, report_html)
+            visual_report_status = "analytical_report_generated_no_visual_assets"
+            generation_gate_status = "analysis_only"
+            generation_gate_reason = (
+                "Se generó análisis preliminar evidence-first con lectura del sitio y claims trazables. "
+                f"Los visuales fuertes no se generaron porque confidence_status={analytical_core.confidence_status}; "
+                "se evita convertir evidencia preliminar en gráficos concluyentes."
+            )
+        except Exception as exc:
+            visual_report_status = f"preliminary_analytical_report_generation_failed: {str(exc)}"
+            visual_report_url = None
 
     if stable_output is None:
         stable_output = build_stable_audit_output(
@@ -9250,7 +9758,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
             drive_bundle=drive_bundle,
         )
 
-    if visual_report_status == "generated" and visual_report_url:
+    if visual_report_url:
         try:
             written_report_markdown = build_written_audit_report_markdown(
                 request=request,
