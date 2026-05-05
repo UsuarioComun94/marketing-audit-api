@@ -49,6 +49,12 @@ GOOGLE_APPS_SCRIPT_UPLOAD_URL = clean_env_value("GOOGLE_APPS_SCRIPT_UPLOAD_URL")
 GOOGLE_APPS_SCRIPT_SECRET = clean_env_value("GOOGLE_APPS_SCRIPT_SECRET")
 GOOGLE_DRIVE_FOLDER_ID = clean_env_value("GOOGLE_DRIVE_FOLDER_ID")
 GOOGLE_DRIVE_INDIVIDUAL_ASSET_UPLOAD_ENABLED = (clean_env_value("GOOGLE_DRIVE_INDIVIDUAL_ASSET_UPLOAD_ENABLED", "false") or "false").lower() == "true"
+FULL_SYSTEM_ENABLE_DRIVE_BUNDLE = (clean_env_value("FULL_SYSTEM_ENABLE_DRIVE_BUNDLE", "false") or "false").lower() == "true"
+COMPOSIO_POST_TIMEOUT_SECONDS = int(clean_env_value("COMPOSIO_POST_TIMEOUT_SECONDS", "25") or "25")
+COMPOSIO_GET_TIMEOUT_SECONDS = int(clean_env_value("COMPOSIO_GET_TIMEOUT_SECONDS", "12") or "12")
+MAX_PUBLIC_SEARCH_QUERIES = int(clean_env_value("MAX_PUBLIC_SEARCH_QUERIES", "5") or "5")
+MAX_PUBLIC_SEARCH_FALLBACK_QUERIES = int(clean_env_value("MAX_PUBLIC_SEARCH_FALLBACK_QUERIES", "2") or "2")
+APPS_SCRIPT_ACTION_TIMEOUT_SECONDS = int(clean_env_value("APPS_SCRIPT_ACTION_TIMEOUT_SECONDS", "45") or "45")
 VISUAL_REPORT_STORE: Dict[str, str] = {}
 PNG_ASSET_STORE: Dict[str, bytes] = {}
 REPORTS_DIR = os.getenv("REPORTS_DIR", "/tmp/marketing_audit_reports")
@@ -56,8 +62,8 @@ ASSETS_DIR = os.getenv("ASSETS_DIR", "/tmp/marketing_audit_assets")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
-ANALYSIS_VERSION = "v1.29"
-RULESET_VERSION = "2026-05-05-cross-evidence-nongeneric-v1"
+ANALYSIS_VERSION = "v1.30"
+RULESET_VERSION = "2026-05-05-strict-reliability-gate-v1"
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
@@ -178,8 +184,6 @@ class PublicPresenceRequest(BaseModel):
     youtube: Optional[str] = Field(None, description="Canal de YouTube conocido")
     linkedin: Optional[str] = Field(None, description="Perfil de LinkedIn conocido")
     num_results_per_query: int = Field(5, description="Cantidad de resultados por búsqueda")
-    research_mode: str = Field("live_public_search", description="Modo de investigación: live_public_search o declared_only")
-    research_mode: str = Field("live_public_search", description="Modo de investigación: live_public_search o declared_only")
     research_mode: str = Field("live_public_search", description="Modo de investigación: live_public_search o declared_only")
 
 
@@ -983,6 +987,7 @@ class FullCommercialSystemResponse(BaseModel):
     drive_bundle: DriveBundleExport = Field(default_factory=DriveBundleExport)
     evidence_cross_check: EvidenceCrossCheckReport
     deliverable_reliability: DeliverableReliabilityReport
+    commercial_signal_vector: Dict[str, int] = Field(default_factory=dict, description="Vector determinístico de señales usado para diferenciar heatmap, funnel y blueprint antes de generar visuales.")
     generation_gate_status: str
     generation_gate_reason: str
     research_confidence: str
@@ -1052,7 +1057,7 @@ def composio_get(path: str, params: Optional[dict] = None):
             f"{COMPOSIO_BASE_URL}{path}",
             headers=get_composio_headers(),
             params=params or {},
-            timeout=20,
+            timeout=COMPOSIO_GET_TIMEOUT_SECONDS,
         )
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail=f"No se pudo conectar con Composio: {str(exc)}")
@@ -1070,7 +1075,7 @@ def composio_post(path: str, payload: Optional[dict] = None):
             f"{COMPOSIO_BASE_URL}{path}",
             headers={**get_composio_headers(), "Content-Type": "application/json"},
             json=payload or {},
-            timeout=60,
+            timeout=COMPOSIO_POST_TIMEOUT_SECONDS,
         )
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail=f"No se pudo conectar con Composio: {str(exc)}")
@@ -4152,7 +4157,7 @@ def export_audit_bundle_to_drive(
         },
     }
 
-    data = post_to_apps_script(payload, timeout=90)
+    data = post_to_apps_script(payload, timeout=APPS_SCRIPT_ACTION_TIMEOUT_SECONDS)
     if not data.get("ok"):
         return DriveBundleExport(
             status="failed",
@@ -4295,6 +4300,7 @@ def load_visual_report_html(report_id: str) -> Optional[str]:
 @app.post(
     "/deliverables/visual-report",
     response_model=VisualReportResponse,
+    include_in_schema=False,
     operation_id="createVisualAuditReport",
     summary="Create a visual audit report",
     description="Ejecuta la auditoría integrada y genera un reporte visual con embudo, heatmap, blueprint y score chart en SVG/HTML.",
@@ -4323,15 +4329,11 @@ def create_visual_audit_report(request: ProspectWithResearchRequest):
         clean_visual_assets=clean_visual_assets,
     )
 
-    drive_bundle = export_audit_bundle_to_drive(
-        company_name=result.company_name,
-        report_id=report_id,
-        report_html=report_html,
-        clean_visual_assets=clean_visual_assets,
-        written_report_markdown=result.report_ready_markdown or result.diagnosis_initial,
-        stable_output=None,
+    drive_bundle = DriveBundleExport(
+        status="not_requested",
+        storage_provider="render_temp",
+        note="Endpoint visual parcial: bundle de Drive omitido para evitar timeouts. Usar /audit/full-commercial-system y luego /deliverables/save-gpt-report-to-drive."
     )
-    clean_visual_assets = update_visual_asset_links_from_drive_bundle(clean_visual_assets, drive_bundle)
 
     save_visual_report_html(report_id, report_html)
     report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
@@ -4452,7 +4454,7 @@ def save_gpt_written_report_to_drive(request: SaveGptWrittenReportRequest):
         "report_id": request.report_id,
     }
 
-    data = post_to_apps_script(payload, timeout=90)
+    data = post_to_apps_script(payload, timeout=APPS_SCRIPT_ACTION_TIMEOUT_SECONDS)
     if not data.get("ok"):
         return SaveGptWrittenReportResponse(
             status="failed",
@@ -4665,6 +4667,7 @@ def infer_confidence(request: ProspectAuditRequest) -> str:
 @app.post(
     "/audit/prospect",
     response_model=ProspectAuditResponse,
+    include_in_schema=False,
     operation_id="auditProspect",
     summary="Audit a marketing prospect",
     description="Recibe datos básicos de un prospecto y devuelve focos de auditoría comercial.",
@@ -4700,6 +4703,7 @@ def audit_prospect(request: ProspectAuditRequest):
 @app.post(
     "/report/brief",
     response_model=ReportBriefResponse,
+    include_in_schema=False,
     operation_id="createReportBrief",
     summary="Create a commercial audit report brief",
     description="Genera una estructura breve de reporte comercial a partir de hallazgos de auditoría.",
@@ -4735,6 +4739,7 @@ def create_report_brief(request: ReportBriefRequest):
 @app.get(
     "/tools/status",
     response_model=ToolsStatusResponse,
+    include_in_schema=False,
     operation_id="getToolsStatus",
     summary="Check available Composio toolkits",
     description="Verifica si Composio está configurado y revisa herramientas disponibles para toolkits relevantes.",
@@ -4808,6 +4813,7 @@ def get_tools_status():
 @app.post(
     "/tools/search",
     response_model=ToolsSearchResponse,
+    include_in_schema=False,
     operation_id="searchComposioTools",
     summary="Search Composio tools",
     description="Busca herramientas disponibles en Composio usando texto libre y, opcionalmente, un toolkit específico.",
@@ -4838,6 +4844,7 @@ def search_composio_tools(request: ToolsSearchRequest):
 @app.get(
     "/tools/details/{tool_slug}",
     response_model=ToolDetailsResponse,
+    include_in_schema=False,
     operation_id="getComposioToolDetails",
     summary="Get Composio tool details",
     description="Obtiene detalles y schema de una herramienta específica de Composio.",
@@ -4858,6 +4865,7 @@ def get_composio_tool_details(tool_slug: str):
 @app.post(
     "/tools/execute",
     response_model=ToolExecuteResponse,
+    include_in_schema=False,
     operation_id="executeComposioTool",
     summary="Execute an allowed Composio tool",
     description="Ejecuta una herramienta permitida de Composio usando argumentos estructurados o texto en lenguaje natural.",
@@ -4900,6 +4908,7 @@ def execute_composio_tool(request: ToolExecuteRequest):
 @app.post(
     "/research/company-public-presence",
     response_model=PublicPresenceResponse,
+    include_in_schema=False,
     operation_id="researchCompanyPublicPresence",
     summary="Research public presence of a company",
     description="Busca presencia pública de una empresa usando Search API vía Composio y devuelve fuentes normalizadas para auditoría comercial.",
@@ -4925,7 +4934,7 @@ def research_company_public_presence(request: PublicPresenceRequest):
             raw_result_count=len(declared_sources),
         )
 
-    queries = build_public_presence_queries(request)
+    queries = build_public_presence_queries(request)[:max(1, MAX_PUBLIC_SEARCH_QUERIES)]
     discovered_sources: List[PublicSourceResult] = []
     fallback_sources: List[PublicSourceResult] = []
     errors: List[str] = []
@@ -4960,7 +4969,7 @@ def research_company_public_presence(request: PublicPresenceRequest):
         if request.linkedin:
             fallback_queries.append(f"{request.company_name} {request.linkedin}".strip())
 
-        for fallback_query in list(dict.fromkeys(fallback_queries))[:6]:
+        for fallback_query in list(dict.fromkeys(fallback_queries))[:max(0, MAX_PUBLIC_SEARCH_FALLBACK_QUERIES)]:
             try:
                 raw_fallback = execute_duckduckgo_query(query=fallback_query, num_results=max(3, min(safe_num, 5)), user_id="default")
                 for item in find_duckduckgo_results(raw_fallback)[:max(3, min(safe_num, 5))]:
@@ -5025,6 +5034,7 @@ def research_company_public_presence(request: PublicPresenceRequest):
 @app.post(
     "/audit/prospect-with-research",
     response_model=ProspectWithResearchResponse,
+    include_in_schema=False,
     operation_id="auditProspectWithResearch",
     summary="Audit a prospect with public research",
     description="Investiga presencia pública, resume fuentes, audita el prospecto y devuelve scoring, blueprint, plan correctivo y reporte listo para plantilla.",
@@ -5043,6 +5053,7 @@ def audit_prospect_with_research(request: ProspectWithResearchRequest):
         youtube=getattr(request, "youtube", None),
         linkedin=request.linkedin,
         num_results_per_query=request.num_results_per_query,
+        research_mode=getattr(request, "research_mode", "live_public_search"),
     )
 
     research = research_company_public_presence(public_presence_request)
@@ -7265,6 +7276,7 @@ def build_social_adapted_blueprint(current_blueprint: FunnelBlueprint, social_fi
 @app.post(
     "/audit/social-content-fit",
     response_model=SocialContentFitResponse,
+    include_in_schema=False,
     operation_id="auditSocialContentFit",
     summary="Audit social content fit by platform",
     description="Audita si el contenido orgánico o público se adapta a TikTok, Instagram/Reels y otras redes. Funciona con links, notas o muestras de contenido.",
@@ -7363,6 +7375,7 @@ def convert_corrective_to_performance_action(item: CorrectiveActionItem) -> Perf
 @app.post(
     "/audit/campaign-performance",
     response_model=CampaignPerformanceCompactResponse,
+    include_in_schema=False,
     operation_id="auditCampaignPerformance",
     summary="Audit campaign performance",
     description="Audita campañas con reglas de performance. Puede funcionar sin campañas cargadas devolviendo acciones preparadas y datos requeridos.",
@@ -7955,6 +7968,259 @@ def get_request_declared_links(request: Any) -> List[str]:
     return links
 
 
+
+def source_is_declared_only(source: ReviewedPublicSource) -> bool:
+    category = (source.category or "").casefold()
+    signal = (source.signal or "").casefold()
+    title = (source.title or "").casefold()
+    return (
+        category.startswith("declared_")
+        or "provisto por el usuario" in title
+        or "declarada por el usuario" in signal
+        or "fuente pública declarada" in signal
+    )
+
+
+def verified_public_sources(public_audit: ProspectWithResearchResponse) -> List[ReviewedPublicSource]:
+    return [source for source in (public_audit.public_sources_summary or []) if not source_is_declared_only(source)]
+
+
+def build_commercial_evidence_text(
+    request: FullCommercialSystemRequest,
+    public_audit: ProspectWithResearchResponse,
+    social_fit: Optional[SocialContentFitResponse],
+    campaign_performance: Optional[CampaignPerformanceResponse],
+) -> str:
+    parts: List[str] = [
+        request.company_name or "",
+        request.industry or "",
+        request.offer or "",
+        request.notes or "",
+        getattr(request, "campaign_notes", None) or "",
+        getattr(request, "social_content_notes", None) or "",
+        public_audit.diagnosis_initial or "",
+        getattr(public_audit.audit, "primary_bottleneck", "") or "",
+        " ".join(getattr(public_audit.audit, "detected_focus_areas", []) or []),
+        getattr(public_audit.funnel_blueprint, "summary", "") or "",
+    ]
+    for source in public_audit.public_sources_summary or []:
+        parts.extend([source.category or "", source.title or "", source.url or "", source.signal or ""])
+    if social_fit:
+        parts.extend([
+            social_fit.primary_content_gap or "",
+            social_fit.strategic_summary or "",
+            " ".join(social_fit.platforms_analyzed or []),
+        ])
+    if campaign_performance:
+        parts.extend([
+            campaign_performance.data_quality or "",
+            campaign_performance.summary or "",
+        ])
+    return " ".join(str(part) for part in parts if part).casefold()
+
+
+def keyword_boost(text: str, keywords: List[str], points_each: int = 4, cap: int = 24) -> int:
+    hits = 0
+    for kw in keywords:
+        if kw.casefold() in text:
+            hits += 1
+    return min(cap, hits * points_each)
+
+
+def metric_to_percent(value: Optional[float], default: int = 50) -> int:
+    if value is None:
+        return default
+    try:
+        numeric = float(value)
+    except Exception:
+        return default
+    if numeric <= 10:
+        numeric = numeric * 10
+    return max(0, min(100, int(round(numeric))))
+
+
+def clamp_int(value: float, low: int = 8, high: int = 98) -> int:
+    return max(low, min(high, int(round(value))))
+
+
+def build_commercial_signal_vector(
+    request: FullCommercialSystemRequest,
+    public_audit: ProspectWithResearchResponse,
+    social_fit: Optional[SocialContentFitResponse],
+    campaign_performance: Optional[CampaignPerformanceResponse],
+) -> Dict[str, int]:
+    """Vector determinístico: si cambia la evidencia, cambian los mapas. No usa azar ni templates por rubro."""
+    score = public_audit.commercial_score
+    text = build_commercial_evidence_text(request, public_audit, social_fit, campaign_performance)
+    verified_sources = verified_public_sources(public_audit)
+    declared_links = get_request_declared_links(request)
+    note_len = len(" ".join([request.notes or "", getattr(request, "social_content_notes", None) or "", getattr(request, "campaign_notes", None) or ""]))
+
+    offer_keywords = [
+        "oferta", "servicio", "servicios", "solución", "soluciones", "lote", "loteos", "propiedad", "propiedades",
+        "automatización", "ia", "inteligencia artificial", "roi", "rr.hh", "recursos humanos", "selección", "capacitación",
+        "coaching", "procesos", "pyme", "pymes", "consultoría", "desarrollo", "construcción"
+    ]
+    authority_keywords = [
+        "metodología", "método", "entregables", "años", "experiencia", "miembros", "association", "certificación",
+        "profesional", "ingenieros", "blog", "podcast", "newsletter", "kpi", "tablero", "mapa de procesos", "premium",
+        "garantizamos", "garantía", "clientes", "oficinas"
+    ]
+    proof_keywords = [
+        "testimonio", "testimonios", "reseña", "reseñas", "reviews", "google", "trustindex", "excelente", "clientes",
+        "casos", "logos", "marcas", "recomendable", "opiniones"
+    ]
+    cta_keywords = [
+        "whatsapp", "consultar", "consulta", "contacto", "contactanos", "comunicate", "teléfono", "telefono", "llamanos",
+        "formulario", "enviar", "quiero saber más", "agendar", "reunión", "correo", "email", "cargar cv", "ver más"
+    ]
+    depth_keywords = [
+        "blog", "noticias", "faq", "preguntas frecuentes", "metodología", "incluye", "proceso", "pasos", "recursos", "podcast",
+        "newsletter", "descripción", "evaluación", "análisis", "seguimiento", "servicios para elegir", "herramientas", "capacitaciones"
+    ]
+
+    verified_source_bonus = min(22, len(verified_sources) * 5)
+    declared_bonus = min(8, len(declared_links) * 2)
+    manual_context_bonus = 10 if note_len >= 220 else 5 if note_len >= 90 else 0
+    social_sample_bonus = 10 if getattr(request, "social_content_samples", None) else 0
+    campaign_bonus = 12 if getattr(request, "campaigns", None) else 0
+
+    offer_clarity = (
+        metric_to_percent(score.value_proposition) * 0.52
+        + (18 if request.offer else 0)
+        + keyword_boost(text, offer_keywords, points_each=3, cap=22)
+        + declared_bonus
+    )
+    authority = (
+        metric_to_percent(score.trust_signals) * 0.34
+        + metric_to_percent(score.public_presence) * 0.22
+        + metric_to_percent(score.differentiation) * 0.12
+        + verified_source_bonus
+        + keyword_boost(text, authority_keywords, points_each=4, cap=30)
+        + manual_context_bonus
+    )
+    social_proof = (
+        metric_to_percent(score.trust_signals) * 0.38
+        + verified_source_bonus * 0.45
+        + keyword_boost(text, proof_keywords, points_each=5, cap=36)
+        + social_sample_bonus
+    )
+    cta_strength = (
+        metric_to_percent(score.cta_strength) * 0.58
+        + keyword_boost(text, cta_keywords, points_each=4, cap=32)
+        + (8 if request.website else 0)
+        + campaign_bonus * 0.25
+    )
+    content_depth = (
+        metric_to_percent(score.public_presence) * 0.18
+        + metric_to_percent(score.differentiation) * 0.24
+        + metric_to_percent(score.trust_signals) * 0.14
+        + keyword_boost(text, depth_keywords, points_each=5, cap=38)
+        + manual_context_bonus
+        + social_sample_bonus * 0.5
+    )
+    evidence_coverage = (
+        len(verified_sources) * 14
+        + len(declared_links) * 4
+        + (18 if request.offer else 0)
+        + (14 if request.industry else 0)
+        + manual_context_bonus
+        + campaign_bonus
+        + social_sample_bonus
+    )
+
+    vector = {
+        "offer_clarity": clamp_int(offer_clarity),
+        "authority": clamp_int(authority),
+        "social_proof": clamp_int(social_proof),
+        "cta_strength": clamp_int(cta_strength),
+        "content_depth": clamp_int(content_depth),
+        "evidence_coverage": clamp_int(evidence_coverage, low=0, high=100),
+        "verified_public_sources": len(verified_sources),
+        "declared_assets": len(declared_links),
+        "campaigns_analyzed": len(getattr(request, "campaigns", []) or []),
+        "social_samples": len(getattr(request, "social_content_samples", []) or []),
+    }
+    return vector
+
+
+def build_signal_based_customer_intent_density_map(signal_vector: Dict[str, int]) -> CustomerIntentDensityMap:
+    x_axis = ["Descubrimiento", "Interés", "Consideración", "Confianza", "Conversión"]
+    y_axis = ["Claridad de oferta", "Autoridad", "Prueba social", "CTA / contacto", "Profundidad de contenido"]
+
+    row_base = {
+        "Claridad de oferta": signal_vector.get("offer_clarity", 50),
+        "Autoridad": signal_vector.get("authority", 50),
+        "Prueba social": signal_vector.get("social_proof", 50),
+        "CTA / contacto": signal_vector.get("cta_strength", 50),
+        "Profundidad de contenido": signal_vector.get("content_depth", 50),
+    }
+    multipliers = {
+        "Claridad de oferta": [0.52, 0.88, 1.00, 0.88, 0.78 + signal_vector.get("cta_strength", 50) / 250],
+        "Autoridad": [0.46, 0.72, 0.98, 1.10, 0.86],
+        "Prueba social": [0.38, 0.58, 0.90, 1.12, 0.98],
+        "CTA / contacto": [0.30, 0.55, 0.78, 0.88, 1.18],
+        "Profundidad de contenido": [0.48, 0.90, 1.08, 1.02, 0.76],
+    }
+    values: Dict[tuple, int] = {}
+    for row in y_axis:
+        for idx, col in enumerate(x_axis):
+            # evidence_coverage moderates confidence but does not manufacture heat.
+            coverage = signal_vector.get("evidence_coverage", 50)
+            coverage_factor = 0.88 + (coverage / 1000)
+            values[(col, row)] = clamp_int(row_base[row] * multipliers[row][idx] * coverage_factor, low=6, high=96)
+
+    # Structural rules: CTA can heat conversion; proof heats trust; authority heats consideration/trust.
+    if signal_vector.get("cta_strength", 0) >= 70:
+        values[("Conversión", "CTA / contacto")] = max(values[("Conversión", "CTA / contacto")], min(96, signal_vector["cta_strength"] + 8))
+    if signal_vector.get("social_proof", 0) >= 70:
+        values[("Confianza", "Prueba social")] = max(values[("Confianza", "Prueba social")], min(96, signal_vector["social_proof"] + 10))
+    if signal_vector.get("authority", 0) >= 70:
+        values[("Confianza", "Autoridad")] = max(values[("Confianza", "Autoridad")], min(96, signal_vector["authority"] + 8))
+        values[("Consideración", "Autoridad")] = max(values[("Consideración", "Autoridad")], min(92, signal_vector["authority"] + 2))
+    if signal_vector.get("content_depth", 0) >= 70:
+        values[("Consideración", "Profundidad de contenido")] = max(values[("Consideración", "Profundidad de contenido")], min(94, signal_vector["content_depth"] + 5))
+
+    density_points = [DensityPoint(x=col, y=row, value=values[(col, row)]) for row in y_axis for col in x_axis]
+    dominant_point = max(density_points, key=lambda point: point.value)
+    weakest_metric, weakest_value = min(
+        {
+            "Claridad de oferta": signal_vector.get("offer_clarity", 50),
+            "Autoridad": signal_vector.get("authority", 50),
+            "Prueba social": signal_vector.get("social_proof", 50),
+            "CTA / contacto": signal_vector.get("cta_strength", 50),
+            "Profundidad de contenido": signal_vector.get("content_depth", 50),
+        }.items(),
+        key=lambda pair: pair[1],
+    )
+    blocked_col_by_row = {
+        "Claridad de oferta": "Interés",
+        "Autoridad": "Confianza",
+        "Prueba social": "Confianza",
+        "CTA / contacto": "Conversión",
+        "Profundidad de contenido": "Consideración",
+    }
+    blocked_col = blocked_col_by_row.get(weakest_metric, "Consideración")
+    blocked_zone_value = values.get((blocked_col, weakest_metric), weakest_value)
+
+    interpretation = (
+        f"Mapa recalculado desde signal_vector: claridad={signal_vector.get('offer_clarity')}, autoridad={signal_vector.get('authority')}, "
+        f"prueba_social={signal_vector.get('social_proof')}, CTA={signal_vector.get('cta_strength')}, profundidad={signal_vector.get('content_depth')}, "
+        f"cobertura={signal_vector.get('evidence_coverage')}. Zona dominante: {dominant_point.x} / {dominant_point.y}. "
+        f"Zona crítica por señal más débil: {blocked_col} / {weakest_metric} ({weakest_value}/100). "
+        "No representa clicks ni conversiones reales; es densidad comercial visible basada en evidencia cruzada."
+    )
+
+    return CustomerIntentDensityMap(
+        x_axis=x_axis,
+        y_axis=y_axis,
+        density_points=density_points,
+        dominant_zone=DensityZone(x=dominant_point.x, y=dominant_point.y, label=f"Mayor densidad visible ({dominant_point.value}/100)"),
+        blocked_zone=DensityZone(x=blocked_col, y=weakest_metric, label=f"Señal más débil ({blocked_zone_value}/100)"),
+        interpretation=interpretation,
+    )
+
+
 def build_evidence_cross_check_report(
     request: FullCommercialSystemRequest,
     public_audit: ProspectWithResearchResponse,
@@ -7985,7 +8251,7 @@ def build_evidence_cross_check_report(
         f"país={request.country}" if request.country else "",
         f"oferta={request.offer}" if request.offer else "",
         f"notas={request.notes}" if request.notes else "",
-    ] + declared_links
+    ]
     declared_profile = "; ".join([part for part in declared_profile_parts if part])
     if declared_profile:
         add(
@@ -7993,18 +8259,42 @@ def build_evidence_cross_check_report(
             "user_declared_input",
             "Datos declarados por el usuario",
             declared_profile,
-            ["diagnóstico base", "score comercial", "awareness", "heatmap", "blueprint"],
-            "media" if len(declared_profile_parts) >= 3 else "baja-media",
+            ["contexto", "diagnóstico base", "score comercial"],
+            "media" if (request.industry or request.offer or request.notes) else "baja-media",
         )
 
-    for source in public_audit.public_sources_summary[:10]:
+    if declared_links:
         add(
-            "public_sources",
+            "declared_assets",
+            "user_declared_urls",
+            "Activos públicos declarados",
+            "; ".join(declared_links),
+            ["rutas públicas conocidas", "puntos de contacto a verificar"],
+            "baja-media",
+        )
+
+    verified_sources = verified_public_sources(public_audit)
+    declared_only_sources = [source for source in (public_audit.public_sources_summary or []) if source_is_declared_only(source)]
+
+    for source in verified_sources[:10]:
+        add(
+            "verified_public_sources",
             source.category or "public_source",
-            source.title or source.url or "Fuente pública",
-            source.signal or "Fuente pública encontrada/declarada.",
-            ["validación externa", "presencia pública", "confianza", "diferenciación"],
+            source.title or source.url or "Fuente pública verificada/encontrada",
+            source.signal or "Fuente pública encontrada por búsqueda externa.",
+            ["validación externa", "presencia pública", "confianza", "diferenciación", "visual generation gate"],
             "media-alta" if source.url else "media",
+        )
+
+    # Las URLs declaradas ayudan a ubicar activos, pero no validan por sí mismas la confiabilidad de un visual.
+    for source in declared_only_sources[:6]:
+        add(
+            "declared_assets",
+            source.category or "declared_source",
+            source.title or source.url or "Fuente declarada",
+            source.signal or "Fuente declarada por el usuario.",
+            ["contexto", "asset declarado", "requiere cotejo"],
+            "baja-media",
         )
 
     has_social_declared_context = bool(
@@ -8030,7 +8320,7 @@ def build_evidence_cross_check_report(
             "internal_or_manual_samples",
             "Muestras de contenido cargadas",
             f"samples={len(request.social_content_samples)}; métricas internas presentes={has_internal_social_evidence(request)}",
-            ["retención", "hook", "message fit", "CTA social"],
+            ["retención", "hook", "message fit", "CTA social", "visual generation gate"],
             "media-alta" if has_internal_social_evidence(request) else "media",
         )
     elif getattr(request, "social_content_notes", None):
@@ -8049,7 +8339,7 @@ def build_evidence_cross_check_report(
             "campaign_metrics",
             "Campañas cargadas",
             f"campaigns={len(request.campaigns)}; data_quality={campaign_performance.data_quality if campaign_performance else 'n/d'}",
-            ["performance", "tracking", "lead quality", "presupuesto", "blueprint"],
+            ["performance", "tracking", "lead quality", "presupuesto", "blueprint", "visual generation gate"],
             "media-alta" if campaign_performance and campaign_performance.data_quality not in ["sin_datos", "mínima"] else "media",
         )
     if campaign_performance and campaign_performance.data_quality != "sin_datos":
@@ -8063,72 +8353,64 @@ def build_evidence_cross_check_report(
             "media-alta" if campaign_performance.data_completeness.score >= 70 and not tracking_critical else "media",
         )
 
-    add(
-        "generated_maps",
-        "cross_module_output",
-        "Mapas generados después del cruce",
-        (
-            f"awareness={public_audit.awareness_funnel_locator.dominant_stage}->{public_audit.awareness_funnel_locator.blocked_stage}; "
-            f"heatmap={public_audit.temperature_heatmap.average_temperature}; "
-            f"density={public_audit.customer_intent_density_map.dominant_zone.x}/{public_audit.customer_intent_density_map.dominant_zone.y}; "
-            f"blueprint_breaks={'; '.join(public_audit.funnel_blueprint.breakpoints[:3])}"
-        ),
-        ["visuales", "análisis escrito", "stability output"],
-        "media",
-    )
+    groups = sorted(set(item.evidence_group for item in items))
+    verified_count = len(verified_sources)
+    has_offer_or_industry = bool(request.offer or request.industry)
+    has_substantive_manual_context = len(" ".join([request.notes or "", getattr(request, "social_content_notes", None) or "", getattr(request, "campaign_notes", None) or ""])) >= 180
+    has_campaigns = bool(getattr(request, "campaigns", None))
+    has_social_samples = bool(getattr(request, "social_content_samples", None))
 
-    groups = sorted(set(item.evidence_group for item in items if item.evidence_group != "generated_maps"))
     missing: List[str] = []
-    if not public_audit.public_sources_summary:
-        missing.append("No hay fuentes públicas suficientes para validar externamente el diagnóstico.")
+    if verified_count < 2:
+        missing.append("Faltan al menos 2 fuentes públicas no declaradas por el usuario para sostener visuales comparables.")
     if not request.offer:
         missing.append("Falta oferta principal explícita; la propuesta de valor se infiere con menor precisión.")
-    if not request.campaigns:
+    if not has_campaigns:
         missing.append("No hay campañas reales; no se pueden validar CPL, CPA, CTR, conversión ni calidad de lead.")
-    if not getattr(request, "social_content_samples", None):
+    if not has_social_samples:
         missing.append("No hay muestras/métricas internas de contenido; retención social queda como inferencia.")
+    if declared_links and verified_count == 0:
+        missing.append("Hay URLs declaradas, pero todavía no hay cotejo externo suficiente de esas fuentes.")
 
     crossed_signals = [
         f"Diagnóstico final construido desde {analysis_trace.primary_diagnosis_source} con modo {analysis_trace.analysis_mode}.",
-        f"Awareness y heatmap cruzan score comercial, fuentes, oferta, CTA, confianza y activos declarados.",
-        f"Blueprint usa ruptura principal + señales de score + overlays sociales/performance si existen.",
+        "Los visuales solo se habilitan si hay cruce real entre contexto declarado y evidencia externa/interna suficiente.",
+        f"Fuentes públicas verificadas/no declaradas usadas para gate: {verified_count}.",
     ]
-    if request.campaigns:
+    if has_campaigns:
         crossed_signals.append("Campañas cruzadas contra tracking, lead quality, data completeness y mapa comercial.")
-    if social_fit:
-        crossed_signals.append("Social Content Fit cruzado contra perfiles, notas, samples y oferta.")
+    if has_social_samples:
+        crossed_signals.append("Samples sociales cargados cruzados contra oferta, CTA, plataforma y retención probable.")
 
-    has_minimum_business_context = bool(
-        request.industry
-        or request.offer
-        or request.website
-        or request.instagram
-        or getattr(request, "tiktok", None)
-        or getattr(request, "facebook", None)
-        or getattr(request, "youtube", None)
-        or request.linkedin
-        or request.notes
-        or request.campaigns
-        or getattr(request, "social_content_samples", None)
-        or getattr(request, "social_content_notes", None)
+    # Gate estricto: website declarado + rubro/oferta NO alcanza para visuales.
+    visual_ready = bool(
+        has_offer_or_industry
+        and (
+            verified_count >= 2
+            or (verified_count >= 1 and (has_campaigns or has_social_samples or has_substantive_manual_context))
+            or (has_campaigns and (has_social_samples or has_substantive_manual_context))
+        )
+    )
+    text_ready = bool(
+        has_offer_or_industry
+        or verified_count >= 1
+        or has_campaigns
+        or has_social_samples
+        or has_substantive_manual_context
     )
 
-    if not items or (not has_minimum_business_context and not public_audit.public_sources_summary):
-        status = "insufficient"
-    elif len(groups) >= 2:
+    if visual_ready:
         status = "cross_checked"
-    else:
+        generic_risk = "bajo" if verified_count >= 3 or has_campaigns or has_social_samples else "medio"
+        explanation = "Visuales permitidos: hay cruce suficiente entre contexto comercial y evidencia externa/interna."
+    elif text_ready:
         status = "limited"
-
-    if status == "cross_checked":
-        generic_risk = "bajo" if len(items) >= 5 else "medio"
-        explanation = "Se cruzaron múltiples grupos de evidencia antes de generar análisis y visuales."
-    elif status == "limited":
         generic_risk = "medio-alto"
-        explanation = "Hay evidencia mínima utilizable, pero el análisis debe presentarse como preliminar y no como verdad operativa."
+        explanation = "Texto preliminar permitido, pero visuales bloqueados: la evidencia no alcanza para heatmaps/blueprints presentables sin riesgo de genericidad."
     else:
+        status = "insufficient"
         generic_risk = "alto"
-        explanation = "La evidencia disponible no alcanza para generar visuales o análisis presentables sin riesgo alto de genericidad."
+        explanation = "La evidencia disponible no alcanza para generar visuales ni análisis presentables sin riesgo alto de genericidad."
 
     return EvidenceCrossCheckReport(
         status=status,
@@ -8136,12 +8418,15 @@ def build_evidence_cross_check_report(
         evidence_items=items,
         crossed_signals=crossed_signals,
         missing_data=list(dict.fromkeys(missing)),
-        visual_generation_allowed=status != "insufficient",
-        text_generation_allowed=status != "insufficient",
+        visual_generation_allowed=visual_ready,
+        text_generation_allowed=text_ready,
         generic_output_risk=generic_risk,
+        rule_applied=(
+            "Regla estricta V1.30: no generar heatmap, funnel ni blueprint visual si no existen al menos dos fuentes públicas verificadas "
+            "o una fuente verificada combinada con campañas, samples sociales o notas sustantivas. URLs declaradas no cuentan como cotejo externo."
+        ),
         explanation=explanation,
     )
-
 
 def build_deliverable_reliability_report(
     stable_output: StableAuditOutput,
@@ -8150,6 +8435,8 @@ def build_deliverable_reliability_report(
 ) -> DeliverableReliabilityReport:
     if not stable_output.safe_to_present or evidence_cross_check.status == "insufficient":
         reliability = "not_safe"
+    elif evidence_cross_check.status == "limited":
+        reliability = "preliminary"
     elif stable_output.stability_status in ["locked", "comparable"]:
         reliability = stable_output.stability_status
     elif stable_output.stability_status == "preliminary":
@@ -8339,9 +8626,17 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         notes=request.social_content_notes or request.notes,
         recent_content_samples=request.social_content_samples,
         num_results_per_query=request.num_results_per_query,
-        research_mode=getattr(request, "research_mode", "live_public_search"),
+        research_mode="declared_only",
     )
+    # El endpoint completo ya hizo la búsqueda pública principal. Social fit opera sobre fuentes declaradas/samples para evitar doble búsqueda live y timeouts.
     social_content_fit = audit_social_content_fit(social_request)
+
+    commercial_signal_vector = build_commercial_signal_vector(
+        request=request,
+        public_audit=public_audit,
+        social_fit=social_content_fit,
+        campaign_performance=campaign_performance,
+    )
 
     # Rebuild every visual map only after all reachable evidence layers are available.
     # This prevents generic/duplicated funnels, heatmaps and blueprints when two clients share the same bottleneck label.
@@ -8357,11 +8652,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         social_fit=social_content_fit,
         campaign_performance=campaign_performance,
     )
-    public_audit.customer_intent_density_map = build_customer_intent_density_map(
-        awareness_funnel_locator=public_audit.awareness_funnel_locator,
-        heatmap=public_audit.temperature_heatmap,
-        audit=public_audit.audit,
-    )
+    public_audit.customer_intent_density_map = build_signal_based_customer_intent_density_map(commercial_signal_vector)
     public_audit.funnel_blueprint = adapt_blueprint_to_public_evidence(public_audit, request)
 
     # Adapt blueprint to campaign/social evidence when those layers reveal a specific rupture.
@@ -8488,7 +8779,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
             drive_bundle=drive_bundle,
         )
 
-    if visual_report_status == "generated" and visual_report_url:
+    if visual_report_status == "generated" and visual_report_url and FULL_SYSTEM_ENABLE_DRIVE_BUNDLE and request.generate_drive_bundle:
         try:
             written_report_markdown = build_written_audit_report_markdown(
                 request=request,
@@ -8527,6 +8818,12 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
                 error=f"drive_bundle_generation_failed: {str(exc)}",
                 note="El reporte visual se generó, pero el bundle de Drive falló.",
             )
+    elif visual_report_status == "generated" and visual_report_url:
+        drive_bundle = DriveBundleExport(
+            status="not_requested",
+            storage_provider="render_temp",
+            note="Drive bundle omitido en /audit/full-commercial-system para evitar timeouts. Para Drive: usar /deliverables/save-gpt-report-to-drive o activar generate_drive_bundle=true + FULL_SYSTEM_ENABLE_DRIVE_BUNDLE=true."
+        )
 
     deliverable_reliability = build_deliverable_reliability_report(
         stable_output=stable_output,
@@ -8554,6 +8851,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         drive_bundle=drive_bundle,
         evidence_cross_check=evidence_cross_check,
         deliverable_reliability=deliverable_reliability,
+        commercial_signal_vector=commercial_signal_vector,
         generation_gate_status=generation_gate_status,
         generation_gate_reason=generation_gate_reason,
         research_confidence=public_audit.research_confidence,
@@ -8587,6 +8885,6 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         timed_action_plan=campaign_performance.timed_action_plan,
         response_note=(
             "Respuesta compacta para evitar response_too_large en Custom GPT Actions. "
-            "Los visuales completos no viajan en JSON; usar visual_report_url o /deliverables/visual-report."
+            "Los visuales completos no viajan en JSON; usar visual_report_url cuando visual_report_status=generated."
         ),
     )
