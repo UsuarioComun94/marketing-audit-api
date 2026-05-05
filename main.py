@@ -1141,6 +1141,62 @@ class CampaignPerformanceCompactResponse(BaseModel):
     next_data_needed: List[str]
 
 
+class CampaignFixtureDefinition(BaseModel):
+    fixture_id: str
+    description: str
+    expected_primary_issue: str
+    expected_diagnosis_keywords: List[str] = Field(default_factory=list)
+    expected_action_keywords: List[str] = Field(default_factory=list)
+    forbidden_recommendation_keywords: List[str] = Field(default_factory=list)
+    campaigns: List[CampaignMetric] = Field(default_factory=list)
+    target_cpl: Optional[float] = None
+    target_cpa: Optional[float] = None
+    target_ctr_percent: float = 1.0
+    target_landing_conversion_rate_percent: float = 2.0
+    min_lead_quality_rate_percent: float = 50.0
+
+
+class CampaignFixtureActualSnapshot(BaseModel):
+    data_quality: str
+    campaigns_analyzed: int
+    summary: str
+    findings: List[str] = Field(default_factory=list)
+    cross_metric_findings: List[str] = Field(default_factory=list)
+    tracking_health: List[str] = Field(default_factory=list)
+    lead_quality_assessment: List[str] = Field(default_factory=list)
+    prioritized_actions: List[str] = Field(default_factory=list)
+    next_data_needed: List[str] = Field(default_factory=list)
+
+
+class CampaignFixtureEvaluation(BaseModel):
+    fixture_id: str
+    description: str
+    expected_primary_issue: str
+    pass_status: str = Field(..., description="passed, partial, failed")
+    qa_score_0_to_7: int
+    checks: Dict[str, bool] = Field(default_factory=dict)
+    expected_keyword_hits: List[str] = Field(default_factory=list)
+    missing_expected_keywords: List[str] = Field(default_factory=list)
+    expected_action_hits: List[str] = Field(default_factory=list)
+    missing_expected_action_keywords: List[str] = Field(default_factory=list)
+    forbidden_hits: List[str] = Field(default_factory=list)
+    diagnostic_notes: List[str] = Field(default_factory=list)
+    actual_snapshot: CampaignFixtureActualSnapshot
+
+
+class CampaignFixtureTestResponse(BaseModel):
+    audit_type: str = "campaign_fixture_tests"
+    purpose: str = "QA interno: audita si el módulo de campañas diagnostica escenarios conocidos sin recomendaciones genéricas."
+    total_fixtures: int
+    passed: int
+    partial: int
+    failed: int
+    overall_status: str
+    evaluations: List[CampaignFixtureEvaluation]
+    recommended_next_fix: List[str] = Field(default_factory=list)
+    note: str = "Este endpoint no analiza clientes reales. Evalúa el motor del auditor contra casos sintéticos con diagnóstico esperado."
+
+
 
 class SocialContentSample(BaseModel):
     platform: str = Field(..., description="TikTok, Instagram, Reels, YouTube Shorts, etc.")
@@ -7811,6 +7867,307 @@ def audit_campaign_performance(request: CampaignPerformanceRequest):
         timed_action_plan=result.timed_action_plan,
         next_data_needed=result.next_data_needed[:12],
     )
+
+
+def _campaign_fixture_text(result: CampaignPerformanceResponse) -> str:
+    parts: List[str] = [result.summary or ""]
+    parts.extend([f"{item.title} {item.evidence} {item.interpretation} {item.severity}" for item in result.findings])
+    parts.extend([f"{item.pattern} {item.evidence} {item.interpretation} {item.recommended_action} {item.severity}" for item in result.cross_metric_findings])
+    parts.extend([f"{item.issue} {item.evidence} {item.business_risk} {item.recommended_fix} {item.severity}" for item in result.tracking_health])
+    parts.extend([f"{item.quality_level} {item.evidence} {item.recommendation}" for item in result.lead_quality_assessment])
+    parts.extend([f"{item.category} {item.action} {item.trigger} {item.evidence} {item.expected_impact} {item.verification_metric} {item.priority}" for item in result.prioritized_actions])
+    parts.extend(result.next_data_needed or [])
+    parts.extend(result.sample_size_warnings or [])
+    return " ".join(parts).casefold()
+
+
+def build_default_campaign_fixtures() -> List[CampaignFixtureDefinition]:
+    """Casos sintéticos de QA: no representan benchmarks universales; evalúan razonamiento del motor."""
+    return [
+        CampaignFixtureDefinition(
+            fixture_id="synthetic_lead_quality_bad",
+            description="CTR y CPL buenos, muchos leads, pocos calificados y sin ventas. El problema esperado es calidad de lead/segmentación/promesa, no volumen de tráfico.",
+            expected_primary_issue="lead_quality_problem",
+            campaigns=[CampaignMetric(
+                channel="Meta Ads",
+                campaign_name="Lead quality bad - control",
+                funnel_stage="conversion",
+                objective="leads",
+                spend=500,
+                impressions=50000,
+                clicks=2500,
+                leads=120,
+                qualified_leads=8,
+                bad_leads=112,
+                conversions=0,
+                sales=0,
+                ctr_percent=5.0,
+                cpc=0.20,
+                cpl=4.16,
+                lead_quality_score=7,
+                landing_visits=2300,
+                form_submits=120,
+                utms_present=True,
+                events_configured=True,
+                notes="Caso QA: muchos leads baratos, muy pocos calificados.",
+            )],
+            target_cpl=20,
+            target_ctr_percent=1.0,
+            target_landing_conversion_rate_percent=2.0,
+            min_lead_quality_rate_percent=50.0,
+            expected_diagnosis_keywords=["calidad", "lead", "calificado", "malos", "segment"],
+            expected_action_keywords=["calidad", "calificado", "segment", "crm", "lead"],
+            forbidden_recommendation_keywords=["escalar presupuesto", "aumentar presupuesto", "duplicar presupuesto"],
+        ),
+        CampaignFixtureDefinition(
+            fixture_id="synthetic_post_click_problem",
+            description="CTR alto y tráfico suficiente, pero baja conversión a lead. El problema esperado es landing/fricción post-click, no creatividad inicial.",
+            expected_primary_issue="post_click_landing_problem",
+            campaigns=[CampaignMetric(
+                channel="Meta Ads",
+                campaign_name="Post click problem - control",
+                funnel_stage="consideration",
+                objective="leads",
+                spend=800,
+                impressions=40000,
+                clicks=2400,
+                landing_visits=2200,
+                leads=20,
+                qualified_leads=12,
+                conversions=2,
+                ctr_percent=6.0,
+                cpc=0.33,
+                cpl=40.0,
+                utms_present=True,
+                events_configured=True,
+                landing_message="Landing genérica con formulario largo.",
+                ad_promise="Consulta rápida",
+                notes="Caso QA: buen interés inicial, caída después del click.",
+            )],
+            target_cpl=20,
+            target_ctr_percent=1.0,
+            target_landing_conversion_rate_percent=2.0,
+            min_lead_quality_rate_percent=50.0,
+            expected_diagnosis_keywords=["landing", "post", "click", "fricción", "baja conversión"],
+            expected_action_keywords=["landing", "formulario", "fricción", "mensaje", "conversión"],
+            forbidden_recommendation_keywords=["cambiar audiencia"],
+        ),
+        CampaignFixtureDefinition(
+            fixture_id="synthetic_creative_message_problem",
+            description="Bajo CTR, CPC alto y poco volumen de respuesta. El problema esperado es creatividad/hook/mensaje/segmentación inicial.",
+            expected_primary_issue="creative_message_problem",
+            campaigns=[CampaignMetric(
+                channel="Meta Ads",
+                campaign_name="Creative weak - control",
+                funnel_stage="awareness",
+                objective="traffic",
+                spend=600,
+                impressions=60000,
+                clicks=240,
+                leads=10,
+                ctr_percent=0.4,
+                cpc=2.5,
+                cpl=60.0,
+                hook="Texto institucional genérico",
+                angle="genérico",
+                creative_format="imagen",
+                utms_present=True,
+                events_configured=True,
+                notes="Caso QA: baja respuesta al anuncio.",
+            )],
+            target_cpl=30,
+            target_ctr_percent=1.0,
+            target_landing_conversion_rate_percent=2.0,
+            min_lead_quality_rate_percent=50.0,
+            expected_diagnosis_keywords=["ctr", "creativo", "hook", "atención", "cpc"],
+            expected_action_keywords=["hook", "creativo", "mensaje", "audiencia", "test"],
+            forbidden_recommendation_keywords=["rehacer landing"],
+        ),
+        CampaignFixtureDefinition(
+            fixture_id="synthetic_tracking_broken",
+            description="Hay clicks, pero no hay eventos posteriores ni conversiones informadas. El diagnóstico esperado es tracking/medición antes de optimizar performance.",
+            expected_primary_issue="tracking_problem",
+            campaigns=[CampaignMetric(
+                channel="Meta Ads",
+                campaign_name="Tracking broken - control",
+                funnel_stage="conversion",
+                objective="leads",
+                spend=700,
+                impressions=30000,
+                clicks=1500,
+                ctr_percent=5.0,
+                cpc=0.46,
+                utms_present=False,
+                events_configured=False,
+                notes="Caso QA: clicks sin eventos downstream medidos.",
+            )],
+            target_cpl=25,
+            target_ctr_percent=1.0,
+            target_landing_conversion_rate_percent=2.0,
+            min_lead_quality_rate_percent=50.0,
+            expected_diagnosis_keywords=["tracking", "eventos", "medición", "pixel", "utm"],
+            expected_action_keywords=["tracking", "eventos", "utm", "pixel", "capi"],
+            forbidden_recommendation_keywords=["escalar presupuesto", "optimizar roas", "bajo roas"],
+        ),
+        CampaignFixtureDefinition(
+            fixture_id="synthetic_high_spend_no_sales",
+            description="Hay gasto, clicks y leads, pero no ventas. El diagnóstico esperado es cierre/calidad/CRM o promesa, no afirmar ROAS sin revenue suficiente.",
+            expected_primary_issue="post_lead_sales_problem",
+            campaigns=[CampaignMetric(
+                channel="Meta Ads",
+                campaign_name="High spend no sales - control",
+                funnel_stage="conversion",
+                objective="sales",
+                spend=1500,
+                impressions=70000,
+                clicks=3500,
+                landing_visits=3200,
+                leads=160,
+                qualified_leads=20,
+                bad_leads=140,
+                sales=0,
+                revenue=0,
+                ctr_percent=5.0,
+                cpc=0.42,
+                cpl=9.37,
+                lead_quality_score=12,
+                utms_present=True,
+                events_configured=True,
+                crm_stage="sin ventas",
+                notes="Caso QA: lead volume existe, ventas no aparecen.",
+            )],
+            target_cpl=25,
+            target_cpa=200,
+            target_ctr_percent=1.0,
+            target_landing_conversion_rate_percent=2.0,
+            min_lead_quality_rate_percent=50.0,
+            expected_diagnosis_keywords=["calidad", "lead", "ventas", "crm", "cierre"],
+            expected_action_keywords=["crm", "calidad", "seguimiento", "ventas", "calificado"],
+            forbidden_recommendation_keywords=["escalar presupuesto", "aumentar presupuesto"],
+        ),
+    ]
+
+
+def _fixture_actual_snapshot(result: CampaignPerformanceResponse) -> CampaignFixtureActualSnapshot:
+    return CampaignFixtureActualSnapshot(
+        data_quality=result.data_quality,
+        campaigns_analyzed=result.campaigns_analyzed,
+        summary=result.summary,
+        findings=[f"{item.title}: {item.interpretation}" for item in result.findings[:8]],
+        cross_metric_findings=[f"{item.pattern}: {item.interpretation}" for item in result.cross_metric_findings[:8]],
+        tracking_health=[f"{item.issue}: {item.recommended_fix}" for item in result.tracking_health[:8]],
+        lead_quality_assessment=[f"{item.campaign_name}: {item.quality_level} - {item.recommendation}" for item in result.lead_quality_assessment[:8]],
+        prioritized_actions=[f"{item.priority} · {item.category}: {item.action}" for item in result.prioritized_actions[:10]],
+        next_data_needed=result.next_data_needed[:10],
+    )
+
+
+def evaluate_campaign_fixture(fixture: CampaignFixtureDefinition) -> CampaignFixtureEvaluation:
+    request = CampaignPerformanceRequest(
+        company_name=f"QA Fixture - {fixture.fixture_id}",
+        campaigns=fixture.campaigns,
+        target_cpl=fixture.target_cpl,
+        target_cpa=fixture.target_cpa,
+        target_ctr_percent=fixture.target_ctr_percent,
+        target_landing_conversion_rate_percent=fixture.target_landing_conversion_rate_percent,
+        min_lead_quality_rate_percent=fixture.min_lead_quality_rate_percent,
+        notes=f"Fixture QA: {fixture.description}",
+    )
+    result = run_campaign_performance_audit(request)
+    text = _campaign_fixture_text(result)
+
+    expected_hits = [kw for kw in fixture.expected_diagnosis_keywords if kw.casefold() in text]
+    expected_missing = [kw for kw in fixture.expected_diagnosis_keywords if kw.casefold() not in text]
+    action_hits = [kw for kw in fixture.expected_action_keywords if kw.casefold() in text]
+    action_missing = [kw for kw in fixture.expected_action_keywords if kw.casefold() not in text]
+    forbidden_hits = [kw for kw in fixture.forbidden_recommendation_keywords if kw.casefold() in text]
+
+    checks = {
+        "has_campaign_data": result.campaigns_analyzed > 0 and result.data_quality != "sin_datos",
+        "expected_diagnosis_detected": len(expected_hits) >= max(1, math.ceil(len(fixture.expected_diagnosis_keywords) * 0.4)),
+        "expected_action_detected": len(action_hits) >= max(1, math.ceil(len(fixture.expected_action_keywords) * 0.4)),
+        "no_forbidden_recommendation": len(forbidden_hits) == 0,
+        "next_data_needed_present": bool(result.next_data_needed),
+        "prioritized_actions_present": bool(result.prioritized_actions),
+        "not_overstated_as_complete": result.data_quality in ["parcial", "media", "alta", "alta_con_limitaciones"],
+    }
+
+    score = sum(1 for ok in checks.values() if ok)
+    if score >= 6 and not forbidden_hits:
+        status = "passed"
+    elif score >= 4:
+        status = "partial"
+    else:
+        status = "failed"
+
+    notes = []
+    if expected_missing:
+        notes.append(f"Faltaron keywords esperadas de diagnóstico: {', '.join(expected_missing[:8])}.")
+    if action_missing:
+        notes.append(f"Faltaron keywords esperadas de acción: {', '.join(action_missing[:8])}.")
+    if forbidden_hits:
+        notes.append(f"Aparecieron recomendaciones prohibidas para este fixture: {', '.join(forbidden_hits)}.")
+    if status != "passed":
+        notes.append("Revisar reglas del módulo de campañas antes de usar el diagnóstico como confiable en casos reales similares.")
+
+    return CampaignFixtureEvaluation(
+        fixture_id=fixture.fixture_id,
+        description=fixture.description,
+        expected_primary_issue=fixture.expected_primary_issue,
+        pass_status=status,
+        qa_score_0_to_7=score,
+        checks=checks,
+        expected_keyword_hits=expected_hits,
+        missing_expected_keywords=expected_missing,
+        expected_action_hits=action_hits,
+        missing_expected_action_keywords=action_missing,
+        forbidden_hits=forbidden_hits,
+        diagnostic_notes=notes,
+        actual_snapshot=_fixture_actual_snapshot(result),
+    )
+
+
+def run_campaign_fixture_tests() -> CampaignFixtureTestResponse:
+    fixtures = build_default_campaign_fixtures()
+    evaluations = [evaluate_campaign_fixture(fixture) for fixture in fixtures]
+    passed = len([item for item in evaluations if item.pass_status == "passed"])
+    partial = len([item for item in evaluations if item.pass_status == "partial"])
+    failed = len([item for item in evaluations if item.pass_status == "failed"])
+    if failed:
+        overall = "failed"
+    elif partial:
+        overall = "partial"
+    else:
+        overall = "passed"
+
+    next_fix = []
+    for ev in evaluations:
+        if ev.pass_status != "passed":
+            next_fix.append(f"{ev.fixture_id}: {('; '.join(ev.diagnostic_notes[:2]) or 'ajustar reglas de diagnóstico/acciones')}")
+    if not next_fix:
+        next_fix.append("Los fixtures base pasaron. Siguiente paso: agregar fixtures por industria real y comparar contra campañas reales anonimizadas.")
+
+    return CampaignFixtureTestResponse(
+        total_fixtures=len(evaluations),
+        passed=passed,
+        partial=partial,
+        failed=failed,
+        overall_status=overall,
+        evaluations=evaluations,
+        recommended_next_fix=next_fix[:10],
+    )
+
+
+@app.post(
+    "/debug/campaign-fixture-tests",
+    response_model=CampaignFixtureTestResponse,
+    operation_id="runCampaignFixtureTests",
+    summary="Run campaign fixture tests",
+    description="QA interno: corre campañas sintéticas con diagnóstico esperado para auditar si el motor de campañas razona correctamente.",
+    dependencies=[Security(verify_api_key)],
+)
+def debug_campaign_fixture_tests():
+    return run_campaign_fixture_tests()
 
 
 def bounded_score(value: int) -> int:
