@@ -56,8 +56,8 @@ ASSETS_DIR = os.getenv("ASSETS_DIR", "/tmp/marketing_audit_assets")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
-ANALYSIS_VERSION = "v1.28"
-RULESET_VERSION = "2026-05-04-drive-bundle-export-v1"
+ANALYSIS_VERSION = "v1.29"
+RULESET_VERSION = "2026-05-05-cross-evidence-nongeneric-v1"
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
@@ -389,6 +389,40 @@ class DriveBundleExport(BaseModel):
     note: Optional[str] = None
 
 
+class EvidenceCrossCheckItem(BaseModel):
+    evidence_group: str
+    evidence_type: str
+    source_label: str
+    signal: str
+    used_for: List[str] = Field(default_factory=list)
+    confidence: str = "media"
+
+
+class EvidenceCrossCheckReport(BaseModel):
+    status: str = Field(..., description="cross_checked, limited, insufficient")
+    evidence_groups: List[str] = Field(default_factory=list)
+    evidence_items: List[EvidenceCrossCheckItem] = Field(default_factory=list)
+    crossed_signals: List[str] = Field(default_factory=list)
+    missing_data: List[str] = Field(default_factory=list)
+    visual_generation_allowed: bool = True
+    text_generation_allowed: bool = True
+    generic_output_risk: str = "medio"
+    rule_applied: str = "No generar análisis ni gráficos finales sin cruzar primero la evidencia disponible."
+    explanation: str
+
+
+class DeliverableReliabilityReport(BaseModel):
+    reliability_status: str = Field(..., description="locked, comparable, preliminary, variable o not_safe")
+    safe_to_present: bool
+    safe_to_execute_actions: bool
+    file_confidence_summary: str
+    evidence_cross_check_status: str
+    evidence_basis: List[str] = Field(default_factory=list)
+    risks: List[str] = Field(default_factory=list)
+    required_next_validation: List[str] = Field(default_factory=list)
+    comparison_keys: Dict[str, Any] = Field(default_factory=dict)
+
+
 class VisualReportResponse(BaseModel):
     company_name: str
     report_id: str
@@ -397,6 +431,8 @@ class VisualReportResponse(BaseModel):
     visual_assets: List[str]
     visual_asset_urls: List[VisualAssetLink] = Field(default_factory=list)
     drive_bundle: DriveBundleExport = Field(default_factory=DriveBundleExport)
+    evidence_cross_check: Optional[EvidenceCrossCheckReport] = None
+    deliverable_reliability: Optional[DeliverableReliabilityReport] = None
     report_summary: str
     how_to_use: str
     note: str
@@ -945,6 +981,10 @@ class FullCommercialSystemResponse(BaseModel):
     visual_report_status: str
     visual_asset_urls: List[VisualAssetLink] = Field(default_factory=list)
     drive_bundle: DriveBundleExport = Field(default_factory=DriveBundleExport)
+    evidence_cross_check: EvidenceCrossCheckReport
+    deliverable_reliability: DeliverableReliabilityReport
+    generation_gate_status: str
+    generation_gate_reason: str
     research_confidence: str
     diagnosis_initial: str
     public_sources_summary: List[ReviewedPublicSource]
@@ -1457,11 +1497,14 @@ def build_score_interpretation(
 
 
 
+
 def build_awareness_funnel_locator(
     audit: ProspectAuditResponse,
     score: CommercialScore,
     request: ProspectWithResearchRequest,
 ) -> AwarenessFunnelLocator:
+    """Build an awareness map from multiple crossed signals, not only from bottleneck labels."""
+    stages = ["Unaware", "Problem Aware", "Solution Aware", "Product Aware", "Most Aware"]
     stage_map = {
         "unaware": "Unaware",
         "problem-aware": "Problem Aware",
@@ -1470,70 +1513,139 @@ def build_awareness_funnel_locator(
         "most-aware": "Most Aware",
     }
 
-    dominant_stage = stage_map.get(audit.awareness_level, "Problem Aware")
+    base_stage = stage_map.get((audit.awareness_level or "").casefold(), "Problem Aware")
+    weights_by_stage: Dict[str, float] = {
+        "Unaware": 8.0,
+        "Problem Aware": 24.0,
+        "Solution Aware": 24.0,
+        "Product Aware": 24.0,
+        "Most Aware": 20.0,
+    }
 
-    if dominant_stage == "Unaware":
-        blocked_stage = "Problem Aware"
-        weights = [45, 30, 15, 7, 3]
-    elif dominant_stage == "Problem Aware":
-        blocked_stage = "Solution Aware"
-        weights = [10, 45, 25, 15, 5]
-    elif dominant_stage == "Solution Aware":
-        blocked_stage = "Product Aware"
-        weights = [5, 20, 40, 25, 10]
-    elif dominant_stage == "Product Aware":
-        blocked_stage = "Most Aware"
-        weights = [3, 12, 25, 40, 20]
+    # Base diagnosis bias.
+    diagnosis_bias = {
+        "Unaware": [24, 10, -6, -12, -16],
+        "Problem Aware": [-4, 20, 6, -8, -14],
+        "Solution Aware": [-8, 4, 18, 2, -10],
+        "Product Aware": [-10, -4, 8, 18, 2],
+        "Most Aware": [-12, -6, 2, 10, 20],
+    }.get(base_stage, [-4, 20, 6, -8, -14])
+    for stage, delta in zip(stages, diagnosis_bias):
+        weights_by_stage[stage] += delta
+
+    declared_links_count = len([value for value in [
+        request.website,
+        request.instagram,
+        getattr(request, "tiktok", None),
+        getattr(request, "facebook", None),
+        getattr(request, "youtube", None),
+        request.linkedin,
+    ] if value])
+    has_offer = bool((request.offer or "").strip())
+    has_notes = bool((request.notes or "").strip())
+
+    # Score-based cross checks: these are not real user counts; they are diagnostic weights.
+    if score.public_presence < 5:
+        weights_by_stage["Unaware"] += 10
+        weights_by_stage["Problem Aware"] += 6
+        weights_by_stage["Most Aware"] -= 8
     else:
-        blocked_stage = "Purchase / Conversion"
-        weights = [2, 8, 15, 25, 50]
+        weights_by_stage["Problem Aware"] += 3
+        weights_by_stage["Solution Aware"] += min(7, score.public_presence - 4)
 
-    stages = ["Unaware", "Problem Aware", "Solution Aware", "Product Aware", "Most Aware"]
+    if score.value_proposition < 5:
+        weights_by_stage["Problem Aware"] += 8
+        weights_by_stage["Solution Aware"] += 4
+        weights_by_stage["Product Aware"] -= 6
+    else:
+        weights_by_stage["Solution Aware"] += min(8, score.value_proposition - 4)
+
+    if score.differentiation < 5:
+        weights_by_stage["Solution Aware"] += 8
+        weights_by_stage["Product Aware"] += 3
+        weights_by_stage["Most Aware"] -= 5
+    else:
+        weights_by_stage["Product Aware"] += min(8, score.differentiation - 4)
+
+    if score.trust_signals < 5:
+        weights_by_stage["Product Aware"] += 5
+        weights_by_stage["Most Aware"] -= 7
+    else:
+        weights_by_stage["Most Aware"] += min(7, score.trust_signals - 4)
+
+    if score.cta_strength < 5:
+        weights_by_stage["Product Aware"] += 8
+        weights_by_stage["Most Aware"] -= 10
+    else:
+        weights_by_stage["Most Aware"] += min(10, score.cta_strength - 4)
+
+    if declared_links_count >= 2:
+        weights_by_stage["Problem Aware"] += 2
+        weights_by_stage["Solution Aware"] += 3
+    if has_offer:
+        weights_by_stage["Solution Aware"] += 3
+        weights_by_stage["Product Aware"] += 2
+    if has_notes:
+        weights_by_stage["Problem Aware"] += 2
+
+    # Deterministic micro-variation from the canonical business profile so identical bottlenecks do not create cloned visuals.
+    fingerprint = make_stable_hash({
+        "company": request.company_name,
+        "industry": request.industry,
+        "city": request.city,
+        "offer": request.offer,
+        "website": request.website,
+        "instagram": request.instagram,
+        "linkedin": request.linkedin,
+        "bottleneck": audit.primary_bottleneck,
+    })
+    for index, stage in enumerate(stages):
+        weights_by_stage[stage] += ((int(fingerprint[index:index + 2], 16) % 7) - 3) * 0.8
+
+    normalized_raw = {stage: max(2.0, value) for stage, value in weights_by_stage.items()}
+    total = sum(normalized_raw.values()) or 1.0
+    rounded = {stage: int(round((value / total) * 100)) for stage, value in normalized_raw.items()}
+    drift = 100 - sum(rounded.values())
+    rounded[max(rounded, key=rounded.get)] += drift
+
+    dominant_stage = max(stages, key=lambda stage: rounded[stage])
+
+    gate_scores = {
+        "Problem Aware": score.public_presence,
+        "Solution Aware": round((score.value_proposition + score.public_presence) / 2),
+        "Product Aware": round((score.value_proposition + score.differentiation + score.trust_signals) / 3),
+        "Most Aware": round((score.cta_strength + score.trust_signals + score.differentiation) / 3),
+        "Purchase / Conversion": round((score.cta_strength + score.trust_signals) / 2),
+    }
+    blocked_stage = min(gate_scores, key=gate_scores.get)
 
     distribution = []
-    for stage, weight in zip(stages, weights):
+    for stage in stages:
         if stage == dominant_stage:
             state = "dominant"
         elif stage == blocked_stage:
             state = "blocked"
-        elif weight >= 20:
+        elif rounded[stage] >= 20:
             state = "secondary"
         else:
             state = "neutral"
+        distribution.append(AwarenessStage(stage=stage, weight=rounded[stage], state=state))
 
-        distribution.append(
-            AwarenessStage(
-                stage=stage,
-                weight=weight,
-                state=state,
-            )
-        )
-
-    if audit.primary_bottleneck == "propuesta de valor":
-        explanation = (
-            "El grueso del público reconoce la necesidad o la categoría, pero todavía no percibe "
-            "una razón clara para elegir esta marca frente a otras alternativas."
-        )
-    elif audit.primary_bottleneck == "conversión":
-        explanation = (
-            "El público puede estar más cerca de decidir, pero la acción comercial no está suficientemente "
-            "clara para convertir interés en consulta."
-        )
-    elif audit.primary_bottleneck == "funnel":
-        explanation = (
-            "Hay señales de recorrido incompleto: el público puede avanzar parcialmente, pero falta una "
-            "secuencia clara desde interés hasta oportunidad comercial."
-        )
-    elif audit.primary_bottleneck == "posicionamiento":
-        explanation = (
-            "El público compara alternativas, pero la marca no ocupa una posición suficientemente distinta "
-            "en la mente del mercado."
-        )
-    else:
-        explanation = (
-            "El público muestra señales de consciencia inicial, pero todavía falta construir preferencia "
-            "y dirección comercial."
-        )
+    weakest_metric = min(
+        {
+            "presencia pública": score.public_presence,
+            "propuesta de valor": score.value_proposition,
+            "diferenciación": score.differentiation,
+            "confianza": score.trust_signals,
+            "CTA/conversión": score.cta_strength,
+        }.items(),
+        key=lambda pair: pair[1],
+    )
+    explanation = (
+        f"El funnel se calculó cruzando awareness base, score comercial, cantidad de activos declarados, oferta y señales de confianza/CTA. "
+        f"La mayor concentración queda en {dominant_stage}; el bloqueo operativo cae en {blocked_stage} porque la señal más débil es {weakest_metric[0]} ({weakest_metric[1]}/10). "
+        "Los porcentajes son concentración diagnóstica, no volumen real de usuarios."
+    )
 
     return AwarenessFunnelLocator(
         dominant_stage=dominant_stage,
@@ -1543,66 +1655,90 @@ def build_awareness_funnel_locator(
     )
 
 
+
 def build_temperature_heatmap(
     audit: ProspectAuditResponse,
     score: CommercialScore,
+    request: Optional[ProspectWithResearchRequest] = None,
+    social_fit: Optional[SocialContentFitResponse] = None,
+    campaign_performance: Optional[CampaignPerformanceResponse] = None,
 ) -> TemperatureHeatmap:
-    # Valores 0-100. No son métricas reales; son un mapa diagnóstico inferido desde señales públicas y score.
-    if audit.primary_bottleneck in ["propuesta de valor", "posicionamiento"]:
-        average_temperature = "Templado"
-        rows_data = [
-            ("Frío", 75, 35, 15, 20, 10),
-            ("Tibio", 65, 50, 25, 30, 15),
-            ("Templado", 55, 68, 45, 38, 25),
-            ("Caliente", 25, 40, 45, 35, 28),
-            ("Muy caliente", 10, 20, 25, 20, 15),
-        ]
-        summary = (
-            "Predomina un cliente templado: hay interés inicial, pero todavía falta confianza, "
-            "diferenciación percibida y dirección clara hacia la acción."
-        )
-    elif audit.primary_bottleneck == "conversión":
-        average_temperature = "Caliente"
-        rows_data = [
-            ("Frío", 45, 25, 10, 15, 5),
-            ("Tibio", 55, 45, 25, 25, 15),
-            ("Templado", 50, 60, 45, 40, 25),
-            ("Caliente", 35, 60, 70, 55, 38),
-            ("Muy caliente", 15, 35, 55, 45, 30),
-        ]
-        summary = (
-            "El cliente puede mostrar intención, pero la conversión se enfría porque el CTA, "
-            "la confianza o el siguiente paso no están suficientemente resueltos."
-        )
-    elif audit.primary_bottleneck == "awareness":
-        average_temperature = "Frío"
-        rows_data = [
-            ("Frío", 65, 25, 8, 10, 5),
-            ("Tibio", 40, 30, 15, 15, 8),
-            ("Templado", 25, 25, 20, 18, 10),
-            ("Caliente", 10, 15, 15, 12, 8),
-            ("Muy caliente", 5, 8, 10, 8, 5),
-        ]
-        summary = (
-            "Predomina un cliente frío: hay poca presencia mental o baja activación del problema."
-        )
-    else:
-        average_temperature = "Tibio"
-        rows_data = [
-            ("Frío", 65, 30, 10, 15, 8),
-            ("Tibio", 60, 50, 25, 25, 15),
-            ("Templado", 45, 55, 35, 30, 20),
-            ("Caliente", 20, 35, 40, 35, 22),
-            ("Muy caliente", 8, 18, 22, 20, 12),
-        ]
-        summary = (
-            "Predomina un cliente tibio/templado: existe atención, pero el recorrido comercial todavía "
-            "no empuja con suficiente fuerza hacia conversión."
-        )
+    """Build a temperature map from crossed commercial signals.
+
+    Values remain diagnostic estimates, but they now vary by public presence, value proposition,
+    differentiation, CTA, trust, social fit and campaign-data quality instead of repeating static templates.
+    """
+    def ci(value: float, low: int = 0, high: int = 100) -> int:
+        return max(low, min(high, int(round(value))))
+
+    social_bonus = 0
+    if social_fit:
+        social_bonus = round((social_fit.overall_social_content_fit_score - 50) / 8)
+
+    declared_links_count = 0
+    has_offer = False
+    has_notes = False
+    if request:
+        declared_links_count = len([value for value in [
+            request.website,
+            request.instagram,
+            getattr(request, "tiktok", None),
+            getattr(request, "facebook", None),
+            getattr(request, "youtube", None),
+            request.linkedin,
+        ] if value])
+        has_offer = bool((request.offer or "").strip())
+        has_notes = bool((request.notes or "").strip())
+
+    campaign_quality_bonus = 0
+    tracking_penalty = 0
+    if campaign_performance and campaign_performance.data_quality != "sin_datos":
+        campaign_quality_bonus = round((campaign_performance.data_completeness.score - 50) / 7)
+        if any(item.severity == "crítica" for item in campaign_performance.tracking_health):
+            tracking_penalty = 14
+
+    source_bonus = min(10, declared_links_count * 2)
+    offer_bonus = 5 if has_offer else 0
+    notes_bonus = 3 if has_notes else 0
+
+    bases = {
+        "attention": ci(28 + score.public_presence * 6.3 + source_bonus + social_bonus + notes_bonus),
+        "interest": ci(22 + score.value_proposition * 4.2 + score.differentiation * 2.2 + offer_bonus + social_bonus),
+        "intent": ci(14 + score.cta_strength * 4.8 + score.value_proposition * 1.6 + offer_bonus + campaign_quality_bonus),
+        "trust": ci(16 + score.trust_signals * 5.7 + source_bonus + max(0, social_bonus) - tracking_penalty),
+        "action": ci(8 + score.cta_strength * 6.2 + campaign_quality_bonus + offer_bonus - tracking_penalty),
+    }
+
+    # Bottleneck penalties keep the map commercially interpretable.
+    bottleneck = (audit.primary_bottleneck or "").casefold()
+    if "awareness" in bottleneck:
+        bases["attention"] = ci(bases["attention"] - 16)
+        bases["interest"] = ci(bases["interest"] - 8)
+    if "propuesta" in bottleneck or "posicionamiento" in bottleneck:
+        bases["interest"] = ci(bases["interest"] - 8)
+        bases["trust"] = ci(bases["trust"] - 5)
+    if "convers" in bottleneck or "funnel" in bottleneck:
+        bases["intent"] = ci(bases["intent"] - 5)
+        bases["action"] = ci(bases["action"] - 12)
+
+    profiles = {
+        "Frío": (1.04, 0.48, 0.22, 0.32, 0.18),
+        "Tibio": (0.92, 0.70, 0.42, 0.48, 0.32),
+        "Templado": (0.74, 0.96, 0.70, 0.66, 0.50),
+        "Caliente": (0.48, 0.86, 0.98, 0.84, 0.74),
+        "Muy caliente": (0.26, 0.58, 0.92, 0.96, 1.00),
+    }
 
     rows = []
-    for temperature, attention, interest, intent, trust, action in rows_data:
+    row_scores: Dict[str, int] = {}
+    for temperature, multipliers in profiles.items():
+        attention = ci(bases["attention"] * multipliers[0])
+        interest = ci(bases["interest"] * multipliers[1])
+        intent = ci(bases["intent"] * multipliers[2])
+        trust = ci(bases["trust"] * multipliers[3])
+        action = ci(bases["action"] * multipliers[4])
         average = round((attention + interest + intent + trust + action) / 5)
+        row_scores[temperature] = average
         rows.append(
             TemperatureHeatmapRow(
                 temperature=temperature,
@@ -1616,6 +1752,21 @@ def build_temperature_heatmap(
                 ),
             )
         )
+
+    average_temperature = max(row_scores, key=row_scores.get)
+    weakest_axis = min(bases.items(), key=lambda pair: pair[1])[0]
+    axis_es = {
+        "attention": "atención",
+        "interest": "interés",
+        "intent": "intención",
+        "trust": "confianza",
+        "action": "acción",
+    }[weakest_axis]
+    summary = (
+        f"Predomina temperatura {average_temperature.lower()} según el cruce de presencia pública, propuesta de valor, diferenciación, CTA, confianza"
+        f"{', social content' if social_fit else ''}{' y campañas' if campaign_performance and campaign_performance.data_quality != 'sin_datos' else ''}. "
+        f"La variable más débil del mapa es {axis_es}, por eso el análisis no debe leerse como métrica real de comportamiento sino como diagnóstico de fricción comercial."
+    )
 
     return TemperatureHeatmap(
         average_temperature=average_temperature,
@@ -1639,6 +1790,7 @@ def build_customer_intent_density_map(
         "Solution Aware": "Consideration",
         "Product Aware": "Consideration",
         "Most Aware": "Conversion",
+        "Purchase / Conversion": "Conversion",
     }
 
     dominant_x = stage_to_x.get(awareness_funnel_locator.dominant_stage, "Interest")
@@ -1648,7 +1800,7 @@ def build_customer_intent_density_map(
     dominant_y = "Caliente" if temp == "Muy caliente" else temp if temp in y_axis else "Templado"
 
     if audit.primary_bottleneck in ["propuesta de valor", "posicionamiento"]:
-        blocked_y = dominant_y
+        blocked_y = "Templado" if dominant_y in ["Frío", "Tibio"] else dominant_y
     elif audit.primary_bottleneck == "conversión":
         blocked_y = "Caliente"
     elif audit.primary_bottleneck == "awareness":
@@ -1656,45 +1808,51 @@ def build_customer_intent_density_map(
     else:
         blocked_y = dominant_y
 
-    values = {}
+    stage_weights = {item.stage: item.weight for item in awareness_funnel_locator.stage_distribution}
+    x_weights = {
+        "Awareness": stage_weights.get("Unaware", 0) + round(stage_weights.get("Problem Aware", 0) * 0.35),
+        "Interest": stage_weights.get("Problem Aware", 0) + round(stage_weights.get("Solution Aware", 0) * 0.25),
+        "Consideration": stage_weights.get("Solution Aware", 0) + stage_weights.get("Product Aware", 0),
+        "Conversion": stage_weights.get("Most Aware", 0),
+    }
+    max_x = max(x_weights.values()) or 1
+    x_weights = {key: (value / max_x) * 100 for key, value in x_weights.items()}
+
+    heat_rows = {row.temperature: row.values.average for row in heatmap.rows}
+    y_weights = {
+        "Frío": heat_rows.get("Frío", 10),
+        "Tibio": heat_rows.get("Tibio", 10),
+        "Templado": heat_rows.get("Templado", 10),
+        "Caliente": max(heat_rows.get("Caliente", 10), round(heat_rows.get("Muy caliente", 0) * 0.85)),
+    }
+    max_y = max(y_weights.values()) or 1
+    y_weights = {key: (value / max_y) * 100 for key, value in y_weights.items()}
+
+    values: Dict[tuple, int] = {}
     for y in y_axis:
         for x in x_axis:
-            values[(x, y)] = 12
+            stage_component = x_weights.get(x, 0) * 0.56
+            temp_component = y_weights.get(y, 0) * 0.38
+            diagonal_bonus = 0
+            if (x, y) in [("Awareness", "Frío"), ("Interest", "Tibio"), ("Consideration", "Templado"), ("Conversion", "Caliente")]:
+                diagonal_bonus = 6
+            values[(x, y)] = max(8, min(100, int(round(stage_component + temp_component + diagonal_bonus))))
 
     def set_value(x: str, y: str, value: int):
         values[(x, y)] = max(values.get((x, y), 0), max(0, min(int(value), 100)))
 
-    set_value(dominant_x, dominant_y, 92)
-    set_value(blocked_x, blocked_y, 72)
-
-    x_index = x_axis.index(dominant_x)
-    y_index = y_axis.index(dominant_y)
-
-    for dx, dy, value in [
-        (-1, 0, 64),
-        (1, 0, 58),
-        (0, -1, 55),
-        (0, 1, 62),
-        (-1, -1, 42),
-        (1, 1, 46),
-        (1, -1, 36),
-        (-1, 1, 38),
-    ]:
-        nx = x_index + dx
-        ny = y_index + dy
-        if 0 <= nx < len(x_axis) and 0 <= ny < len(y_axis):
-            set_value(x_axis[nx], y_axis[ny], value)
+    set_value(dominant_x, dominant_y, max(76, values.get((dominant_x, dominant_y), 0) + 14))
+    set_value(blocked_x, blocked_y, max(66, values.get((blocked_x, blocked_y), 0) + 10))
 
     if audit.primary_bottleneck in ["propuesta de valor", "posicionamiento"]:
-        set_value("Conversion", "Caliente", 18)
-        set_value("Conversion", "Templado", 24)
-        set_value("Consideration", "Templado", max(values[("Consideration", "Templado")], 68))
+        set_value("Consideration", "Templado", max(values[("Consideration", "Templado")], 64))
+        values[("Conversion", "Caliente")] = min(values[("Conversion", "Caliente")], 42)
     elif audit.primary_bottleneck == "conversión":
-        set_value("Conversion", "Caliente", 78)
-        set_value("Conversion", "Templado", 60)
+        set_value("Conversion", "Caliente", max(values[("Conversion", "Caliente")], 72))
+        set_value("Conversion", "Templado", max(values[("Conversion", "Templado")], 58))
     elif audit.primary_bottleneck == "awareness":
-        set_value("Awareness", "Frío", 82)
-        set_value("Interest", "Tibio", 45)
+        set_value("Awareness", "Frío", max(values[("Awareness", "Frío")], 76))
+        values[("Conversion", "Caliente")] = min(values[("Conversion", "Caliente")], 36)
 
     density_points = [
         DensityPoint(x=x, y=y, value=values[(x, y)])
@@ -1705,28 +1863,17 @@ def build_customer_intent_density_map(
     interpretation = (
         f"La mayor concentración diagnóstica aparece en {dominant_x} / {dominant_y}. "
         f"La zona de fricción aparece en {blocked_x} / {blocked_y}. "
-        "Este mapa no representa comportamiento medido por analítica web; representa una inferencia comercial "
-        "a partir de fuentes públicas, awareness, temperatura y cuello de botella detectado."
+        "El mapa cruza distribución de awareness con temperatura estimada; no usa plantillas fijas por cuello de botella y no representa clicks, sesiones ni conversiones reales."
     )
 
     return CustomerIntentDensityMap(
         x_axis=x_axis,
         y_axis=y_axis,
         density_points=density_points,
-        dominant_zone=DensityZone(
-            x=dominant_x,
-            y=dominant_y,
-            label="Mayor concentración del público",
-        ),
-        blocked_zone=DensityZone(
-            x=blocked_x,
-            y=blocked_y,
-            label="Zona de bloqueo / pérdida de avance",
-        ),
+        dominant_zone=DensityZone(x=dominant_x, y=dominant_y, label="Mayor concentración del público"),
+        blocked_zone=DensityZone(x=blocked_x, y=blocked_y, label="Zona de bloqueo / pérdida de avance"),
         interpretation=interpretation,
     )
-
-
 
 
 def build_visual_diagram_mermaid(audit: ProspectAuditResponse) -> str:
@@ -2808,6 +2955,9 @@ def build_visual_report_html(
     analysis_trace: Optional[AnalysisTrace] = None,
     strategic_measures_matrix: Optional[StrategicMeasuresMatrix] = None,
     clean_visual_assets: Optional[List[VisualAssetLink]] = None,
+    stable_output: Optional[StableAuditOutput] = None,
+    evidence_cross_check: Optional[EvidenceCrossCheckReport] = None,
+    deliverable_reliability: Optional[DeliverableReliabilityReport] = None,
 ) -> str:
     sources = ''.join([
         f'''
@@ -2903,6 +3053,71 @@ def build_visual_report_html(
         "Luego aparece FAULT: el punto donde el avance se rompe. DG es la compuerta de diagnóstico: convierte la ruptura en criterio de rediseño. "
         "La ruta verde muestra cómo debería moverse el cliente después del rediseño. Abajo, el Support Layer alimenta esa ruta verde con mensajes, prueba, manejo de objeciones, CTA y seguimiento."
     )
+
+
+    evidence_section = ""
+    if evidence_cross_check:
+        evidence_items = "".join([
+            f"""
+            <tr>
+              <td>{h(item.evidence_group)}</td>
+              <td>{h(item.source_label)}</td>
+              <td>{h(item.signal)}</td>
+              <td>{h(', '.join(item.used_for[:4]))}</td>
+              <td>{h(item.confidence)}</td>
+            </tr>
+            """
+            for item in evidence_cross_check.evidence_items[:14]
+        ])
+        crossed = "".join([f"<li>{h(signal)}</li>" for signal in evidence_cross_check.crossed_signals])
+        missing = "".join([f"<li>{h(item)}</li>" for item in evidence_cross_check.missing_data])
+        evidence_section = f"""
+        <section class="card full">
+          <h2>Control anti-genérico / cruce de evidencia</h2>
+          <p><strong>Estado:</strong> {h(evidence_cross_check.status)} · <strong>Riesgo de salida genérica:</strong> {h(evidence_cross_check.generic_output_risk)} · <strong>Visuales permitidos:</strong> {h(str(evidence_cross_check.visual_generation_allowed))}</p>
+          <p>{h(evidence_cross_check.explanation)}</p>
+          <div class="script-box">
+            <p><strong>Regla aplicada:</strong> {h(evidence_cross_check.rule_applied)}</p>
+          </div>
+          <h3>Señales cruzadas antes de generar mapas</h3>
+          <ul>{crossed or '<li>No hay señales cruzadas suficientes.</li>'}</ul>
+          <h3>Datos faltantes que limitan precisión</h3>
+          <ul>{missing or '<li>Sin faltantes críticos declarados por el motor.</li>'}</ul>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Grupo</th><th>Fuente</th><th>Señal usada</th><th>Usado para</th><th>Confianza</th></tr></thead>
+              <tbody>{evidence_items or '<tr><td colspan="5">Sin evidencia suficiente.</td></tr>'}</tbody>
+            </table>
+          </div>
+        </section>
+        """
+
+    reliability_section = ""
+    if deliverable_reliability:
+        rel_risks = "".join([f"<li>{h(item)}</li>" for item in deliverable_reliability.risks])
+        rel_required = "".join([f"<li>{h(item)}</li>" for item in deliverable_reliability.required_next_validation])
+        keys = deliverable_reliability.comparison_keys or {}
+        reliability_section = f"""
+        <section class="card full">
+          <h2>Stability output / confiabilidad del entregable</h2>
+          <p><strong>Estado del archivo:</strong> {h(deliverable_reliability.reliability_status)} · <strong>Seguro para presentar:</strong> {h(str(deliverable_reliability.safe_to_present))} · <strong>Seguro para ejecutar acciones:</strong> {h(str(deliverable_reliability.safe_to_execute_actions))}</p>
+          <p>{h(deliverable_reliability.file_confidence_summary)}</p>
+          <p><strong>canonical_input_hash:</strong> {h(str(keys.get('canonical_input_hash')))} · <strong>sources_hash:</strong> {h(str(keys.get('sources_hash')))}</p>
+          <p><strong>analysis_version:</strong> {h(str(keys.get('analysis_version')))} · <strong>ruleset_version:</strong> {h(str(keys.get('ruleset_version')))} · <strong>analysis_mode:</strong> {h(str(keys.get('analysis_mode')))}</p>
+          <h3>Riesgos</h3>
+          <ul>{rel_risks or '<li>Sin riesgos críticos detectados.</li>'}</ul>
+          <h3>Validaciones siguientes</h3>
+          <ul>{rel_required or '<li>No requiere validación adicional para uso preliminar.</li>'}</ul>
+        </section>
+        """
+    elif stable_output:
+        reliability_section = f"""
+        <section class="card full">
+          <h2>Stability output</h2>
+          <p><strong>stability_status:</strong> {h(stable_output.stability_status)} · <strong>safe_to_present:</strong> {h(str(stable_output.safe_to_present))} · <strong>safe_to_execute_actions:</strong> {h(str(stable_output.safe_to_execute_actions))}</p>
+          <p>{h(stable_output.stability_reason)}</p>
+        </section>
+        """
 
 
     social_section = ""
@@ -3214,6 +3429,10 @@ def build_visual_report_html(
       <p><strong>{h(result.company_name)}</strong> · Confianza de investigación: {h(result.research_confidence)} · Tipo: {h(result.audit_type)}</p>
       <p>{h(result.diagnosis_initial)}</p>
     </section>
+
+    {reliability_section}
+
+    {evidence_section}
 
     {social_section}
 
@@ -3542,45 +3761,90 @@ def render_customer_intent_density_clean_png(density_map: CustomerIntentDensityM
     return encode_png_rgba(width, height, canvas)
 
 
+
 def render_blueprint_clean_png(blueprint: FunnelBlueprint) -> bytes:
     width, height = 1320, 720
     canvas = rgba_canvas(width, height)
 
-    # Transparent blueprint grid only as subtle strokes, no background.
-    for x in range(0, width + 1, 48):
-        draw_line(canvas, width, height, x, 0, x, height, rgba_tuple("#38bdf8", 24), 1)
-    for y in range(0, height + 1, 48):
-        draw_line(canvas, width, height, 0, y, width, y, rgba_tuple("#38bdf8", 24), 1)
+    fingerprint = make_stable_hash({
+        "current_flow": blueprint.current_flow,
+        "breakpoints": blueprint.breakpoints,
+        "recommended_flow": blueprint.recommended_flow,
+        "missing_links": blueprint.missing_links,
+        "summary": blueprint.summary,
+    })
+    seed = int(fingerprint[:8], 16)
 
-    current = [(120, 190), (330, 160), (540, 190), (705, 240), (880, 240)]
-    fault = (650, 325)
-    gate = (790, 330)
-    rebuild = [(930, 330), (1080, 270), (1180, 350), (1050, 455), (850, 455)]
-    support = [(275, 560), (450, 575), (625, 560), (800, 575), (975, 560)]
+    def jitter(index: int, span: int = 28) -> int:
+        raw = (seed >> ((index % 8) * 4)) + index * 7919
+        return int((raw % (span * 2 + 1)) - span)
 
-    draw_polyline(canvas, width, height, current, rgba_tuple("#38bdf8", 230), 8)
-    draw_line(canvas, width, height, current[-1][0], current[-1][1], fault[0], fault[1], rgba_tuple("#fb7185", 230), 7)
-    draw_line(canvas, width, height, fault[0], fault[1], gate[0], gate[1], rgba_tuple("#f472b6", 215), 7)
-    draw_polyline(canvas, width, height, [gate] + rebuild, rgba_tuple("#22c55e", 230), 8)
-    draw_polyline(canvas, width, height, support, rgba_tuple("#a78bfa", 190), 5)
+    # Transparent blueprint grid only as subtle strokes, with deterministic offset per diagnosis.
+    grid_offset_x = abs(jitter(1, 23))
+    grid_offset_y = abs(jitter(2, 23))
+    for x in range(-48 + grid_offset_x, width + 49, 48):
+        draw_line(canvas, width, height, x, 0, x, height, rgba_tuple("#38bdf8", 18 + abs(jitter(x, 5))), 1)
+    for y in range(-48 + grid_offset_y, height + 49, 48):
+        draw_line(canvas, width, height, 0, y, width, y, rgba_tuple("#38bdf8", 18 + abs(jitter(y, 5))), 1)
 
-    # Support-to-rebuild connections.
-    for s, r in zip(support, rebuild):
-        draw_line(canvas, width, height, s[0], s[1] - 20, r[0], r[1] + 28, rgba_tuple("#c084fc", 130), 4)
+    current_base = [(120, 190), (330, 160), (540, 190), (705, 240), (880, 240)]
+    rebuild_base = [(930, 330), (1080, 270), (1180, 350), (1050, 455), (850, 455)]
+    support_base = [(275, 560), (450, 575), (625, 560), (800, 575), (975, 560)]
+
+    current_strength = max(1, len(blueprint.current_flow))
+    break_strength = max(1, len(blueprint.breakpoints))
+    rebuild_strength = max(1, len(blueprint.recommended_flow))
+    support_strength = max(1, len(blueprint.missing_links))
+
+    current = [(x + jitter(i, 22), y + jitter(i + 10, 18)) for i, (x, y) in enumerate(current_base[:current_strength])]
+    fault = (650 + jitter(31, 36), 325 + jitter(32, 24))
+    gate = (790 + jitter(33, 34), 330 + jitter(34, 24))
+    rebuild = [(x + jitter(i + 40, 26), y + jitter(i + 50, 24)) for i, (x, y) in enumerate(rebuild_base[:rebuild_strength])]
+    support = [(x + jitter(i + 60, 24), y + jitter(i + 70, 18)) for i, (x, y) in enumerate(support_base[:min(5, support_strength)])]
+
+    blue_alpha = 205 + (seed % 35)
+    green_alpha = 205 + ((seed >> 3) % 35)
+    fault_alpha = 215 + ((seed >> 6) % 30)
+    support_alpha = 165 + ((seed >> 9) % 45)
+
+    if len(current) >= 2:
+        draw_polyline(canvas, width, height, current, rgba_tuple("#38bdf8", blue_alpha), 6 + current_strength)
+        draw_line(canvas, width, height, current[-1][0], current[-1][1], fault[0], fault[1], rgba_tuple("#fb7185", fault_alpha), 6 + min(4, break_strength))
+    draw_line(canvas, width, height, fault[0], fault[1], gate[0], gate[1], rgba_tuple("#f472b6", 205), 6)
+    if rebuild:
+        draw_polyline(canvas, width, height, [gate] + rebuild, rgba_tuple("#22c55e", green_alpha), 6 + min(5, rebuild_strength))
+    if len(support) >= 2:
+        draw_polyline(canvas, width, height, support, rgba_tuple("#a78bfa", support_alpha), 4 + min(4, support_strength))
+
+    for index, spt in enumerate(support):
+        if rebuild:
+            target = rebuild[index % len(rebuild)]
+            draw_line(canvas, width, height, spt[0], spt[1] - 20, target[0], target[1] + 28, rgba_tuple("#c084fc", 105 + abs(jitter(index, 35))), 3 + (index % 3))
 
     def hexagon(cx, cy, r):
-        return [(cx + r * math.cos(math.radians(60 * i)), cy + r * math.sin(math.radians(60 * i))) for i in range(6)]
+        rotation = (seed % 30) - 15
+        return [(cx + r * math.cos(math.radians(60 * i + rotation)), cy + r * math.sin(math.radians(60 * i + rotation))) for i in range(6)]
 
-    for cx, cy in current:
-        draw_polygon(canvas, width, height, hexagon(cx, cy, 36), rgba_tuple("#0ea5e9", 225))
-        draw_polygon(canvas, width, height, hexagon(cx, cy, 48), rgba_tuple("#38bdf8", 45))
-    draw_polygon(canvas, width, height, hexagon(fault[0], fault[1], 42), rgba_tuple("#fb7185", 235))
-    draw_polygon(canvas, width, height, hexagon(gate[0], gate[1], 42), rgba_tuple("#f472b6", 225))
-    for cx, cy in rebuild:
-        draw_polygon(canvas, width, height, hexagon(cx, cy, 36), rgba_tuple("#22c55e", 225))
-        draw_polygon(canvas, width, height, hexagon(cx, cy, 48), rgba_tuple("#86efac", 45))
-    for cx, cy in support:
-        draw_polygon(canvas, width, height, hexagon(cx, cy, 30), rgba_tuple("#8b5cf6", 205))
+    for index, (cx, cy) in enumerate(current):
+        radius = 32 + (index % 2) * 4 + min(6, current_strength)
+        draw_polygon(canvas, width, height, hexagon(cx, cy, radius), rgba_tuple("#0ea5e9", 210 + abs(jitter(index, 20))))
+        draw_polygon(canvas, width, height, hexagon(cx, cy, radius + 12), rgba_tuple("#38bdf8", 35 + abs(jitter(index + 80, 18))))
+    draw_polygon(canvas, width, height, hexagon(fault[0], fault[1], 40 + min(8, break_strength)), rgba_tuple("#fb7185", fault_alpha))
+    draw_polygon(canvas, width, height, hexagon(gate[0], gate[1], 38 + min(7, break_strength)), rgba_tuple("#f472b6", 215))
+    for index, (cx, cy) in enumerate(rebuild):
+        radius = 32 + min(7, rebuild_strength) + (index % 2) * 3
+        draw_polygon(canvas, width, height, hexagon(cx, cy, radius), rgba_tuple("#22c55e", 210 + abs(jitter(index + 90, 20))))
+        draw_polygon(canvas, width, height, hexagon(cx, cy, radius + 12), rgba_tuple("#86efac", 38 + abs(jitter(index + 100, 18))))
+    for index, (cx, cy) in enumerate(support):
+        radius = 26 + min(8, support_strength) + (index % 2) * 2
+        draw_polygon(canvas, width, height, hexagon(cx, cy, radius), rgba_tuple("#8b5cf6", 185 + abs(jitter(index + 110, 24))))
+
+    # Diagnostic watermark pattern: abstract dots only, no text, derived from breakpoints count/content.
+    for i in range(min(18, 6 + break_strength * 2 + support_strength)):
+        px = 80 + ((seed >> (i % 12)) + i * 137) % (width - 160)
+        py = 80 + ((seed >> ((i + 3) % 12)) + i * 91) % (height - 160)
+        draw_circle(canvas, width, height, px, py, 3 + (i % 4), rgba_tuple("#111827", 20 + (i % 5) * 6))
+
     return encode_png_rgba(width, height, canvas)
 
 
@@ -3708,6 +3972,8 @@ def build_written_audit_report_markdown(
     stable_output: StableAuditOutput,
     strategic_measures_matrix: StrategicMeasuresMatrix,
     visual_report_url: Optional[str],
+    evidence_cross_check: Optional[EvidenceCrossCheckReport] = None,
+    deliverable_reliability: Optional[DeliverableReliabilityReport] = None,
 ) -> str:
     sources = "\\n".join([
         f"- {source.category}: {source.title} | {source.url} | Señal: {source.signal}"
@@ -3720,6 +3986,32 @@ def build_written_audit_report_markdown(
     ]) or "- Sin medidas suficientes."
 
     risks = "\\n".join([f"- {risk}" for risk in (stable_output.instability_risks or [])]) or "- Sin riesgos de estabilidad relevantes."
+
+    evidence_block = "- No se generó reporte de cruce de evidencia."
+    if evidence_cross_check:
+        evidence_lines = [
+            f"- Estado de cruce: {evidence_cross_check.status}",
+            f"- Riesgo de salida genérica: {evidence_cross_check.generic_output_risk}",
+            f"- Visuales permitidos: {evidence_cross_check.visual_generation_allowed}",
+            f"- Grupos de evidencia: {', '.join(evidence_cross_check.evidence_groups) or 'n/d'}",
+            f"- Explicación: {evidence_cross_check.explanation}",
+        ]
+        evidence_lines.extend([f"- Señal cruzada: {item}" for item in evidence_cross_check.crossed_signals[:5]])
+        evidence_lines.extend([f"- Dato faltante: {item}" for item in evidence_cross_check.missing_data[:6]])
+        evidence_block = "\n".join(evidence_lines)
+
+    reliability_block = "- No se generó reporte de confiabilidad del entregable."
+    if deliverable_reliability:
+        reliability_lines = [
+            f"- reliability_status: {deliverable_reliability.reliability_status}",
+            f"- safe_to_present: {deliverable_reliability.safe_to_present}",
+            f"- safe_to_execute_actions: {deliverable_reliability.safe_to_execute_actions}",
+            f"- confidence_summary: {deliverable_reliability.file_confidence_summary}",
+            f"- evidence_cross_check_status: {deliverable_reliability.evidence_cross_check_status}",
+        ]
+        reliability_lines.extend([f"- Riesgo: {item}" for item in deliverable_reliability.risks[:8]])
+        reliability_lines.extend([f"- Validación siguiente: {item}" for item in deliverable_reliability.required_next_validation[:8]])
+        reliability_block = "\n".join(reliability_lines)
 
     return f"""# Informe preliminar de auditoría comercial
 
@@ -3778,6 +4070,12 @@ def build_written_audit_report_markdown(
 - analysis_version: {stable_output.analysis_version}
 - ruleset_version: {stable_output.ruleset_version}
 
+## Confiabilidad del entregable
+{reliability_block}
+
+## Control anti-genérico / cruce de evidencia
+{evidence_block}
+
 ## Riesgos / límites
 {risks}
 
@@ -3796,6 +4094,8 @@ def export_audit_bundle_to_drive(
     clean_visual_assets: List[VisualAssetLink],
     written_report_markdown: str,
     stable_output: Optional[StableAuditOutput] = None,
+    evidence_cross_check: Optional[EvidenceCrossCheckReport] = None,
+    deliverable_reliability: Optional[DeliverableReliabilityReport] = None,
 ) -> DriveBundleExport:
     if not google_apps_script_configured():
         return DriveBundleExport(
@@ -3840,6 +4140,15 @@ def export_audit_bundle_to_drive(
             "canonical_input_hash": getattr(stable_output, "canonical_input_hash", None),
             "sources_hash": getattr(stable_output, "sources_hash", None),
             "stability_status": getattr(stable_output, "stability_status", None),
+            "safe_to_present": getattr(stable_output, "safe_to_present", None),
+            "safe_to_execute_actions": getattr(stable_output, "safe_to_execute_actions", None),
+            "report_use": getattr(stable_output, "report_use", None),
+            "evidence_cross_check_status": getattr(evidence_cross_check, "status", None),
+            "evidence_groups": getattr(evidence_cross_check, "evidence_groups", None),
+            "generic_output_risk": getattr(evidence_cross_check, "generic_output_risk", None),
+            "visual_generation_allowed": getattr(evidence_cross_check, "visual_generation_allowed", None),
+            "deliverable_reliability_status": getattr(deliverable_reliability, "reliability_status", None),
+            "file_confidence_summary": getattr(deliverable_reliability, "file_confidence_summary", None),
         },
     }
 
@@ -4787,6 +5096,7 @@ def audit_prospect_with_research(request: ProspectWithResearchRequest):
     temperature_heatmap = build_temperature_heatmap(
         audit=audit,
         score=commercial_score,
+        request=request,
     )
 
     customer_intent_density_map = build_customer_intent_density_map(
@@ -7634,6 +7944,342 @@ def build_stable_audit_output(
     )
 
 
+
+
+def get_request_declared_links(request: Any) -> List[str]:
+    links: List[str] = []
+    for attr in ["website", "instagram", "tiktok", "facebook", "youtube", "linkedin"]:
+        value = getattr(request, attr, None)
+        if value:
+            links.append(f"{attr}: {value}")
+    return links
+
+
+def build_evidence_cross_check_report(
+    request: FullCommercialSystemRequest,
+    public_audit: ProspectWithResearchResponse,
+    social_fit: Optional[SocialContentFitResponse],
+    campaign_performance: Optional[CampaignPerformanceResponse],
+    analysis_trace: AnalysisTrace,
+) -> EvidenceCrossCheckReport:
+    items: List[EvidenceCrossCheckItem] = []
+
+    def add(group: str, evidence_type: str, label: str, signal: str, used_for: List[str], confidence: str = "media"):
+        if signal:
+            items.append(
+                EvidenceCrossCheckItem(
+                    evidence_group=group,
+                    evidence_type=evidence_type,
+                    source_label=label,
+                    signal=" ".join(str(signal).split())[:420],
+                    used_for=used_for,
+                    confidence=confidence,
+                )
+            )
+
+    declared_links = get_request_declared_links(request)
+    declared_profile_parts = [
+        f"empresa={request.company_name}",
+        f"industria={request.industry}" if request.industry else "",
+        f"ciudad={request.city}" if request.city else "",
+        f"país={request.country}" if request.country else "",
+        f"oferta={request.offer}" if request.offer else "",
+        f"notas={request.notes}" if request.notes else "",
+    ] + declared_links
+    declared_profile = "; ".join([part for part in declared_profile_parts if part])
+    if declared_profile:
+        add(
+            "declared_profile",
+            "user_declared_input",
+            "Datos declarados por el usuario",
+            declared_profile,
+            ["diagnóstico base", "score comercial", "awareness", "heatmap", "blueprint"],
+            "media" if len(declared_profile_parts) >= 3 else "baja-media",
+        )
+
+    for source in public_audit.public_sources_summary[:10]:
+        add(
+            "public_sources",
+            source.category or "public_source",
+            source.title or source.url or "Fuente pública",
+            source.signal or "Fuente pública encontrada/declarada.",
+            ["validación externa", "presencia pública", "confianza", "diferenciación"],
+            "media-alta" if source.url else "media",
+        )
+
+    has_social_declared_context = bool(
+        getattr(request, "social_content_samples", None)
+        or getattr(request, "social_content_notes", None)
+        or request.instagram
+        or getattr(request, "tiktok", None)
+        or getattr(request, "facebook", None)
+        or getattr(request, "youtube", None)
+    )
+    if social_fit and has_social_declared_context:
+        add(
+            "social_content",
+            "social_content_fit",
+            "Social Content Fit",
+            f"score={social_fit.overall_social_content_fit_score}/100; brecha={social_fit.primary_content_gap}; plataformas={', '.join(social_fit.platforms_analyzed[:5])}",
+            ["contenido", "retención probable", "CTA social", "blueprint"],
+            "media" if getattr(request, "social_content_samples", None) else "baja-media",
+        )
+    if getattr(request, "social_content_samples", None):
+        add(
+            "social_content",
+            "internal_or_manual_samples",
+            "Muestras de contenido cargadas",
+            f"samples={len(request.social_content_samples)}; métricas internas presentes={has_internal_social_evidence(request)}",
+            ["retención", "hook", "message fit", "CTA social"],
+            "media-alta" if has_internal_social_evidence(request) else "media",
+        )
+    elif getattr(request, "social_content_notes", None):
+        add(
+            "social_content",
+            "user_social_notes",
+            "Notas sociales del usuario",
+            request.social_content_notes or "",
+            ["riesgo social", "contenido", "CTA social"],
+            "baja-media",
+        )
+
+    if getattr(request, "campaigns", None):
+        add(
+            "campaign_data",
+            "campaign_metrics",
+            "Campañas cargadas",
+            f"campaigns={len(request.campaigns)}; data_quality={campaign_performance.data_quality if campaign_performance else 'n/d'}",
+            ["performance", "tracking", "lead quality", "presupuesto", "blueprint"],
+            "media-alta" if campaign_performance and campaign_performance.data_quality not in ["sin_datos", "mínima"] else "media",
+        )
+    if campaign_performance and campaign_performance.data_quality != "sin_datos":
+        tracking_critical = any(item.severity == "crítica" for item in campaign_performance.tracking_health)
+        add(
+            "performance_quality",
+            "computed_performance_audit",
+            "Auditoría de performance",
+            f"completitud={campaign_performance.data_completeness.score}/100; tracking_crítico={tracking_critical}; campañas_analizadas={campaign_performance.campaigns_analyzed}",
+            ["acciones operativas", "safe_to_execute_actions", "reallocación", "tracking"],
+            "media-alta" if campaign_performance.data_completeness.score >= 70 and not tracking_critical else "media",
+        )
+
+    add(
+        "generated_maps",
+        "cross_module_output",
+        "Mapas generados después del cruce",
+        (
+            f"awareness={public_audit.awareness_funnel_locator.dominant_stage}->{public_audit.awareness_funnel_locator.blocked_stage}; "
+            f"heatmap={public_audit.temperature_heatmap.average_temperature}; "
+            f"density={public_audit.customer_intent_density_map.dominant_zone.x}/{public_audit.customer_intent_density_map.dominant_zone.y}; "
+            f"blueprint_breaks={'; '.join(public_audit.funnel_blueprint.breakpoints[:3])}"
+        ),
+        ["visuales", "análisis escrito", "stability output"],
+        "media",
+    )
+
+    groups = sorted(set(item.evidence_group for item in items if item.evidence_group != "generated_maps"))
+    missing: List[str] = []
+    if not public_audit.public_sources_summary:
+        missing.append("No hay fuentes públicas suficientes para validar externamente el diagnóstico.")
+    if not request.offer:
+        missing.append("Falta oferta principal explícita; la propuesta de valor se infiere con menor precisión.")
+    if not request.campaigns:
+        missing.append("No hay campañas reales; no se pueden validar CPL, CPA, CTR, conversión ni calidad de lead.")
+    if not getattr(request, "social_content_samples", None):
+        missing.append("No hay muestras/métricas internas de contenido; retención social queda como inferencia.")
+
+    crossed_signals = [
+        f"Diagnóstico final construido desde {analysis_trace.primary_diagnosis_source} con modo {analysis_trace.analysis_mode}.",
+        f"Awareness y heatmap cruzan score comercial, fuentes, oferta, CTA, confianza y activos declarados.",
+        f"Blueprint usa ruptura principal + señales de score + overlays sociales/performance si existen.",
+    ]
+    if request.campaigns:
+        crossed_signals.append("Campañas cruzadas contra tracking, lead quality, data completeness y mapa comercial.")
+    if social_fit:
+        crossed_signals.append("Social Content Fit cruzado contra perfiles, notas, samples y oferta.")
+
+    has_minimum_business_context = bool(
+        request.industry
+        or request.offer
+        or request.website
+        or request.instagram
+        or getattr(request, "tiktok", None)
+        or getattr(request, "facebook", None)
+        or getattr(request, "youtube", None)
+        or request.linkedin
+        or request.notes
+        or request.campaigns
+        or getattr(request, "social_content_samples", None)
+        or getattr(request, "social_content_notes", None)
+    )
+
+    if not items or (not has_minimum_business_context and not public_audit.public_sources_summary):
+        status = "insufficient"
+    elif len(groups) >= 2:
+        status = "cross_checked"
+    else:
+        status = "limited"
+
+    if status == "cross_checked":
+        generic_risk = "bajo" if len(items) >= 5 else "medio"
+        explanation = "Se cruzaron múltiples grupos de evidencia antes de generar análisis y visuales."
+    elif status == "limited":
+        generic_risk = "medio-alto"
+        explanation = "Hay evidencia mínima utilizable, pero el análisis debe presentarse como preliminar y no como verdad operativa."
+    else:
+        generic_risk = "alto"
+        explanation = "La evidencia disponible no alcanza para generar visuales o análisis presentables sin riesgo alto de genericidad."
+
+    return EvidenceCrossCheckReport(
+        status=status,
+        evidence_groups=groups,
+        evidence_items=items,
+        crossed_signals=crossed_signals,
+        missing_data=list(dict.fromkeys(missing)),
+        visual_generation_allowed=status != "insufficient",
+        text_generation_allowed=status != "insufficient",
+        generic_output_risk=generic_risk,
+        explanation=explanation,
+    )
+
+
+def build_deliverable_reliability_report(
+    stable_output: StableAuditOutput,
+    evidence_cross_check: EvidenceCrossCheckReport,
+    drive_bundle: Optional[DriveBundleExport] = None,
+) -> DeliverableReliabilityReport:
+    if not stable_output.safe_to_present or evidence_cross_check.status == "insufficient":
+        reliability = "not_safe"
+    elif stable_output.stability_status in ["locked", "comparable"]:
+        reliability = stable_output.stability_status
+    elif stable_output.stability_status == "preliminary":
+        reliability = "preliminary"
+    else:
+        reliability = "variable"
+
+    risks = list(stable_output.instability_risks or [])
+    if evidence_cross_check.generic_output_risk in ["medio-alto", "alto"]:
+        risks.append(f"Riesgo de salida genérica: {evidence_cross_check.generic_output_risk}.")
+    if drive_bundle and drive_bundle.status not in ["uploaded_to_google_drive", "not_requested"]:
+        risks.append(f"Drive bundle no confirmado: {drive_bundle.status}.")
+
+    required = list(evidence_cross_check.missing_data)
+    if stable_output.needs_second_run:
+        required.append("Repetir auditoría con payload fijo/canónico antes de presentar.")
+    if not stable_output.safe_to_execute_actions:
+        required.append("No ejecutar decisiones operativas fuertes sin campañas, CRM/tracking y calidad de lead suficiente.")
+
+    if reliability == "locked":
+        summary = "Archivo confiable para diagnóstico preliminar reproducible: input canónico, fuentes, versión y módulos quedan fijados."
+    elif reliability == "comparable":
+        summary = "Archivo comparable si se guardan hashes, versión, ruleset, analysis_mode y módulos usados. Puede cambiar si cambia búsqueda live o evidencia."
+    elif reliability == "preliminary":
+        summary = "Archivo útil solo como exploración preliminar; requiere más evidencia antes de decisiones fuertes."
+    elif reliability == "variable":
+        summary = "Archivo variable: no conviene compararlo ni presentarlo como estable sin repetir con payload fijo y fuentes controladas."
+    else:
+        summary = "No seguro para presentar como entregable: faltan condiciones mínimas de evidencia o estabilidad."
+
+    return DeliverableReliabilityReport(
+        reliability_status=reliability,
+        safe_to_present=bool(stable_output.safe_to_present and evidence_cross_check.text_generation_allowed),
+        safe_to_execute_actions=stable_output.safe_to_execute_actions,
+        file_confidence_summary=summary,
+        evidence_cross_check_status=evidence_cross_check.status,
+        evidence_basis=evidence_cross_check.evidence_groups,
+        risks=list(dict.fromkeys(risks)),
+        required_next_validation=list(dict.fromkeys(required)),
+        comparison_keys={
+            "canonical_input_hash": stable_output.canonical_input_hash,
+            "sources_hash": stable_output.sources_hash,
+            "analysis_version": stable_output.analysis_version,
+            "ruleset_version": stable_output.ruleset_version,
+            "analysis_mode": stable_output.analysis_mode,
+            "modules_used": stable_output.modules_used,
+        },
+    )
+
+
+def adapt_blueprint_to_public_evidence(
+    public_audit: ProspectWithResearchResponse,
+    request: FullCommercialSystemRequest,
+) -> FunnelBlueprint:
+    score = public_audit.commercial_score
+    source_count = len(public_audit.public_sources_summary or [])
+    declared_links = get_request_declared_links(request)
+    base = public_audit.funnel_blueprint
+
+    weakest_metric, weakest_value = min(
+        {
+            "presencia pública": score.public_presence,
+            "propuesta de valor": score.value_proposition,
+            "diferenciación": score.differentiation,
+            "CTA/conversión": score.cta_strength,
+            "confianza": score.trust_signals,
+        }.items(),
+        key=lambda pair: pair[1],
+    )
+
+    first_asset = "Sitio web declarado" if request.website else ("Perfiles sociales declarados" if declared_links else "Nombre/rubro declarado")
+    offer_node = f"Oferta: {request.offer[:52]}" if request.offer else "Oferta no explicitada"
+    source_node = f"{source_count} señales/fuentes públicas" if source_count else "Sin validación pública suficiente"
+    cta_node = "CTA visible / consulta" if score.cta_strength >= 6 else "CTA débil o poco verificable"
+    trust_node = "Confianza/proof visible" if score.trust_signals >= 6 else "Confianza insuficiente"
+
+    breakpoints = [
+        f"Ruptura principal: {weakest_metric} ({weakest_value}/10)",
+    ]
+    if not request.offer:
+        breakpoints.append("La oferta no está suficientemente explícita para defender propuesta de valor.")
+    if score.cta_strength < 6:
+        breakpoints.append("El siguiente paso comercial no reduce suficiente fricción.")
+    if score.trust_signals < 6:
+        breakpoints.append("Faltan pruebas o señales de confianza para sostener decisión.")
+    if source_count < 2:
+        breakpoints.append("Pocas fuentes públicas para validar presencia y reputación.")
+    breakpoints.extend(base.breakpoints[:2])
+
+    if weakest_metric == "presencia pública":
+        recommended = ["Clarificar presencia mínima verificable", "Ordenar activos públicos", "Mensaje por problema", "CTA simple", "Medición básica"]
+    elif weakest_metric == "propuesta de valor":
+        recommended = ["Problema específico", "Promesa verificable", "Diferenciador", "Prueba", "CTA de diagnóstico"]
+    elif weakest_metric == "diferenciación":
+        recommended = ["Categoría", "Alternativas", "Contraste", "Razón para elegir", "Consulta calificada"]
+    elif weakest_metric == "confianza":
+        recommended = ["Prueba social", "Casos/evidencia", "Objeciones", "Garantías o proceso", "CTA con menor riesgo"]
+    else:
+        recommended = ["CTA principal", "Ruta de contacto", "Formulario/WhatsApp", "Follow-up", "Medición de conversión"]
+
+    missing_links = list(dict.fromkeys([
+        "Matriz de evidencia antes de escribir conclusiones",
+        "Mensaje conectado a oferta y dolor real",
+        "Prueba de confianza verificable",
+        "CTA con próximo paso inequívoco",
+        "Métrica para validar si el bloqueo se mueve",
+    ] + base.missing_links))[:7]
+
+    current_flow = list(dict.fromkeys([
+        first_asset,
+        offer_node,
+        source_node,
+        cta_node,
+        trust_node,
+    ]))[:5]
+
+    summary = (
+        f"Blueprint recalculado con cruce de evidencia: activos declarados={len(declared_links)}, fuentes públicas={source_count}, "
+        f"score general={score.overall}/10 y métrica más débil={weakest_metric} ({weakest_value}/10). "
+        "La ruta recomendada evita una plantilla genérica y prioriza el eslabón que limita el avance comercial."
+    )
+
+    return FunnelBlueprint(
+        current_flow=current_flow,
+        missing_links=missing_links,
+        breakpoints=list(dict.fromkeys(breakpoints))[:6],
+        recommended_flow=list(dict.fromkeys(recommended))[:5],
+        summary=summary,
+    )
+
 @app.post(
     "/audit/full-commercial-system",
     response_model=FullCommercialSystemResponse,
@@ -7697,8 +8343,28 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
     )
     social_content_fit = audit_social_content_fit(social_request)
 
-    # Adapt blueprint to campaign evidence when performance data reveals a specific rupture.
-    # This prevents the visual blueprint from repeating the same route for every client.
+    # Rebuild every visual map only after all reachable evidence layers are available.
+    # This prevents generic/duplicated funnels, heatmaps and blueprints when two clients share the same bottleneck label.
+    public_audit.awareness_funnel_locator = build_awareness_funnel_locator(
+        audit=public_audit.audit,
+        score=public_audit.commercial_score,
+        request=request,
+    )
+    public_audit.temperature_heatmap = build_temperature_heatmap(
+        audit=public_audit.audit,
+        score=public_audit.commercial_score,
+        request=request,
+        social_fit=social_content_fit,
+        campaign_performance=campaign_performance,
+    )
+    public_audit.customer_intent_density_map = build_customer_intent_density_map(
+        awareness_funnel_locator=public_audit.awareness_funnel_locator,
+        heatmap=public_audit.temperature_heatmap,
+        audit=public_audit.audit,
+    )
+    public_audit.funnel_blueprint = adapt_blueprint_to_public_evidence(public_audit, request)
+
+    # Adapt blueprint to campaign/social evidence when those layers reveal a specific rupture.
     adapted_blueprint = build_campaign_adapted_blueprint(public_audit, campaign_performance)
     adapted_blueprint = build_social_adapted_blueprint(adapted_blueprint, social_content_fit, campaign_performance, request=request)
     public_audit.funnel_blueprint = adapted_blueprint
@@ -7742,44 +8408,85 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         analysis_trace=analysis_trace,
     )
 
+    evidence_cross_check = build_evidence_cross_check_report(
+        request=request,
+        public_audit=public_audit,
+        social_fit=social_content_fit,
+        campaign_performance=campaign_performance,
+        analysis_trace=analysis_trace,
+    )
+    generation_gate_status = "allowed" if evidence_cross_check.visual_generation_allowed else "blocked"
+    generation_gate_reason = evidence_cross_check.explanation
+
     visual_report_url = None
     visual_report_status = "not_generated"
     clean_visual_assets: List[VisualAssetLink] = []
     drive_bundle = DriveBundleExport()
-    try:
-        awareness_svg = render_awareness_funnel_svg(public_audit.awareness_funnel_locator)
-        temperature_svg = render_temperature_heatmap_svg(public_audit.temperature_heatmap)
-        density_svg = render_customer_intent_density_svg(public_audit.customer_intent_density_map)
-        blueprint_svg = render_funnel_blueprint_svg(public_audit.funnel_blueprint)
-        score_svg = render_score_chart_svg(public_audit.commercial_score)
-        report_id = uuid.uuid4().hex
-        clean_visual_assets = build_clean_visual_asset_links(public_audit, report_id=report_id)
-        report_html = build_visual_report_html(
-            result=public_audit,
-            awareness_svg=awareness_svg,
-            temperature_svg=temperature_svg,
-            density_svg=density_svg,
-            blueprint_svg=blueprint_svg,
-            score_svg=score_svg,
-            social_content_fit=social_content_fit,
-            analysis_trace=analysis_trace,
-            strategic_measures_matrix=strategic_measures_matrix,
-            clean_visual_assets=clean_visual_assets,
-        )
-        save_visual_report_html(report_id, report_html)
-        visual_report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
-        visual_report_status = "generated"
-    except Exception as exc:
-        visual_report_status = f"visual_report_generation_failed: {str(exc)}"
+    stable_output: Optional[StableAuditOutput] = None
+    deliverable_reliability: Optional[DeliverableReliabilityReport] = None
 
-    stable_output = build_stable_audit_output(
-        public_audit=public_audit,
-        social_fit=social_content_fit,
-        analysis_trace=analysis_trace,
-        visual_report_url=visual_report_url,
-        request=request,
-        campaign_performance=campaign_performance,
-    )
+    if evidence_cross_check.visual_generation_allowed:
+        try:
+            awareness_svg = render_awareness_funnel_svg(public_audit.awareness_funnel_locator)
+            temperature_svg = render_temperature_heatmap_svg(public_audit.temperature_heatmap)
+            density_svg = render_customer_intent_density_svg(public_audit.customer_intent_density_map)
+            blueprint_svg = render_funnel_blueprint_svg(public_audit.funnel_blueprint)
+            score_svg = render_score_chart_svg(public_audit.commercial_score)
+            report_id = uuid.uuid4().hex
+            visual_report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
+            clean_visual_assets = build_clean_visual_asset_links(public_audit, report_id=report_id)
+            stable_output = build_stable_audit_output(
+                public_audit=public_audit,
+                social_fit=social_content_fit,
+                analysis_trace=analysis_trace,
+                visual_report_url=visual_report_url,
+                request=request,
+                campaign_performance=campaign_performance,
+            )
+            deliverable_reliability = build_deliverable_reliability_report(
+                stable_output=stable_output,
+                evidence_cross_check=evidence_cross_check,
+                drive_bundle=drive_bundle,
+            )
+            report_html = build_visual_report_html(
+                result=public_audit,
+                awareness_svg=awareness_svg,
+                temperature_svg=temperature_svg,
+                density_svg=density_svg,
+                blueprint_svg=blueprint_svg,
+                score_svg=score_svg,
+                social_content_fit=social_content_fit,
+                analysis_trace=analysis_trace,
+                strategic_measures_matrix=strategic_measures_matrix,
+                clean_visual_assets=clean_visual_assets,
+                stable_output=stable_output,
+                evidence_cross_check=evidence_cross_check,
+                deliverable_reliability=deliverable_reliability,
+            )
+            save_visual_report_html(report_id, report_html)
+            visual_report_status = "generated"
+        except Exception as exc:
+            visual_report_url = None
+            visual_report_status = f"visual_report_generation_failed: {str(exc)}"
+    else:
+        visual_report_status = "blocked_by_evidence_gate"
+
+    if stable_output is None:
+        stable_output = build_stable_audit_output(
+            public_audit=public_audit,
+            social_fit=social_content_fit,
+            analysis_trace=analysis_trace,
+            visual_report_url=visual_report_url,
+            request=request,
+            campaign_performance=campaign_performance,
+        )
+
+    if deliverable_reliability is None:
+        deliverable_reliability = build_deliverable_reliability_report(
+            stable_output=stable_output,
+            evidence_cross_check=evidence_cross_check,
+            drive_bundle=drive_bundle,
+        )
 
     if visual_report_status == "generated" and visual_report_url:
         try:
@@ -7792,6 +8499,8 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
                 stable_output=stable_output,
                 strategic_measures_matrix=strategic_measures_matrix,
                 visual_report_url=visual_report_url,
+                evidence_cross_check=evidence_cross_check,
+                deliverable_reliability=deliverable_reliability,
             )
             report_id_for_bundle = visual_report_url.rstrip("/").rsplit("/", 1)[-1]
             report_html_for_bundle = load_visual_report_html(report_id_for_bundle) or ""
@@ -7802,8 +8511,15 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
                 clean_visual_assets=clean_visual_assets,
                 written_report_markdown=written_report_markdown,
                 stable_output=stable_output,
+                evidence_cross_check=evidence_cross_check,
+                deliverable_reliability=deliverable_reliability,
             )
             clean_visual_assets = update_visual_asset_links_from_drive_bundle(clean_visual_assets, drive_bundle)
+            deliverable_reliability = build_deliverable_reliability_report(
+                stable_output=stable_output,
+                evidence_cross_check=evidence_cross_check,
+                drive_bundle=drive_bundle,
+            )
         except Exception as exc:
             drive_bundle = DriveBundleExport(
                 status="failed",
@@ -7811,6 +8527,12 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
                 error=f"drive_bundle_generation_failed: {str(exc)}",
                 note="El reporte visual se generó, pero el bundle de Drive falló.",
             )
+
+    deliverable_reliability = build_deliverable_reliability_report(
+        stable_output=stable_output,
+        evidence_cross_check=evidence_cross_check,
+        drive_bundle=drive_bundle,
+    )
 
     return FullCommercialSystemResponse(
         company_name=request.company_name,
@@ -7830,6 +8552,10 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         visual_report_status=visual_report_status,
         visual_asset_urls=clean_visual_assets,
         drive_bundle=drive_bundle,
+        evidence_cross_check=evidence_cross_check,
+        deliverable_reliability=deliverable_reliability,
+        generation_gate_status=generation_gate_status,
+        generation_gate_reason=generation_gate_reason,
         research_confidence=public_audit.research_confidence,
         diagnosis_initial=public_audit.diagnosis_initial,
         public_sources_summary=public_audit.public_sources_summary[:8],
