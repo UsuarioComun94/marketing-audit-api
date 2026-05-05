@@ -56,8 +56,8 @@ ASSETS_DIR = os.getenv("ASSETS_DIR", "/tmp/marketing_audit_assets")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
-ANALYSIS_VERSION = "v1.29"
-RULESET_VERSION = "2026-05-05-cross-evidence-nongeneric-v1"
+ANALYSIS_VERSION = "v1.30"
+RULESET_VERSION = "2026-05-05-evidence-first-analytical-core-v1"
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
@@ -427,71 +427,77 @@ class DeliverableReliabilityReport(BaseModel):
 
 class AnalyticalEvidenceItem(BaseModel):
     evidence_id: str
-    source_type: str = Field(..., description="user_declared, public_observed, campaign_metric, social_sample, computed_metric, absence_from_review o unavailable")
+    source_type: str = Field(..., description="declared_input, public_source, social_sample, campaign_metric, missing_input, module_observation")
     source_label: str
     source_url: Optional[str] = None
     observed_fact: str
     supports_signals: List[str] = Field(default_factory=list)
-    reliability: str = Field("media", description="alta, media, baja o desconocida")
-    usable_for_claims: bool = True
-    limitations: List[str] = Field(default_factory=list)
+    reliability: str = Field("medium", description="low, medium, high")
+    can_support_claims: bool = True
+    extraction_note: str = ""
 
 
-class AnalyticalSignal(BaseModel):
-    signal_key: str
-    label: str
-    score_0_to_100: Optional[int] = None
-    status: str = Field(..., description="measured, derived, limited, insufficient o not_applicable")
+class AnalyticalSignalScore(BaseModel):
+    signal: str
+    score_0_to_10: int
+    confidence: str
     evidence_ids: List[str] = Field(default_factory=list)
     rationale: str
     missing_data: List[str] = Field(default_factory=list)
-    confidence: str = "media"
 
 
 class AnalyticalClaim(BaseModel):
     claim_id: str
-    claim_type: str = Field(..., description="fact, diagnostic, inference, performance_claim, risk o recommendation_basis")
+    claim_type: str = Field(..., description="fact, diagnostic_inference, risk, missing_data, performance_claim")
     statement: str
-    support_status: str = Field(..., description="supported, partially_supported, inferred, unsupported o blocked")
+    support_status: str = Field(..., description="supported, partially_supported, inferred, unsupported, blocked")
     evidence_ids: List[str] = Field(default_factory=list)
-    confidence: str = "media"
-    safe_to_include: bool = True
+    signal_refs: List[str] = Field(default_factory=list)
+    confidence: str = "low"
     allowed_language: str = ""
-    forbidden_language: str = ""
-    limits: List[str] = Field(default_factory=list)
+    blocked_reason: Optional[str] = None
 
 
 class AnalyticalRecommendation(BaseModel):
     recommendation_id: str
     recommendation: str
-    priority: str = "media"
-    triggered_by_claims: List[str] = Field(default_factory=list)
+    priority: str
+    derived_from_claim_ids: List[str] = Field(default_factory=list)
     evidence_ids: List[str] = Field(default_factory=list)
-    expected_impact: str
-    validation_needed: List[str] = Field(default_factory=list)
-    confidence: str = "media"
-    non_generic_reason: str
+    rationale: str
+    confidence: str
+    implementation_level: str = Field("preliminary", description="preliminary, campaign_ready, complete")
+    required_data_to_validate: List[str] = Field(default_factory=list)
+    blocked_reason: Optional[str] = None
 
 
-class AnalyticalCoreReport(BaseModel):
-    engine_version: str = "analytical-core-v1.0"
-    no_invention_policy_applied: bool = True
-    analysis_mode: str
-    confidence_status: str = Field(..., description="not_safe, preliminary, comparable, campaign_ready o complete")
-    evidence_first_summary: str
-    data_reliability_summary: str
+class PreReportFactualityCheck(BaseModel):
+    status: str = Field(..., description="passed, passed_with_limitations, failed")
+    safe_to_write_report: bool
+    unsupported_claims_removed: int = 0
+    claims_degraded_to_inference: int = 0
+    performance_claims_blocked: int = 0
+    visual_claims_checked: bool = False
+    report_language_constraints: List[str] = Field(default_factory=list)
+    blocked_claim_examples: List[str] = Field(default_factory=list)
+
+
+class AnalyticalCoreResult(BaseModel):
+    analysis_type: str = "evidence_first_commercial_diagnostic"
+    analysis_version: str = ANALYSIS_VERSION
     evidence_ledger: List[AnalyticalEvidenceItem] = Field(default_factory=list)
-    signal_vector: Dict[str, AnalyticalSignal] = Field(default_factory=dict)
+    signal_vector: Dict[str, AnalyticalSignalScore] = Field(default_factory=dict)
     claims: List[AnalyticalClaim] = Field(default_factory=list)
     blocked_claims: List[AnalyticalClaim] = Field(default_factory=list)
     recommendations: List[AnalyticalRecommendation] = Field(default_factory=list)
-    blocked_recommendations: List[str] = Field(default_factory=list)
+    blocked_recommendations: List[AnalyticalRecommendation] = Field(default_factory=list)
     missing_data_for_complete_analysis: List[str] = Field(default_factory=list)
     not_allowed_claims: List[str] = Field(default_factory=list)
-    safe_to_generate_recommendations: bool = False
-    safe_to_generate_visuals: bool = False
-    decision_rule: str = "Toda recomendación requiere cadena evidence_id -> signal -> claim -> recommendation. Si la cadena no existe, la recomendación se bloquea."
-    report_language_constraints: List[str] = Field(default_factory=list)
+    pre_report_factuality_check: PreReportFactualityCheck
+    executive_interpretation: str
+    next_best_data_request: List[str] = Field(default_factory=list)
+    confidence_status: str = Field(..., description="not_safe, preliminary, comparable, campaign_ready, complete")
+    no_invention_rule_applied: bool = True
 
 class VisualReportResponse(BaseModel):
     company_name: str
@@ -1053,7 +1059,7 @@ class FullCommercialSystemResponse(BaseModel):
     drive_bundle: DriveBundleExport = Field(default_factory=DriveBundleExport)
     evidence_cross_check: EvidenceCrossCheckReport
     deliverable_reliability: DeliverableReliabilityReport
-    analytical_core: AnalyticalCoreReport
+    analytical_core: AnalyticalCoreResult
     generation_gate_status: str
     generation_gate_reason: str
     research_confidence: str
@@ -3029,6 +3035,7 @@ def build_visual_report_html(
     stable_output: Optional[StableAuditOutput] = None,
     evidence_cross_check: Optional[EvidenceCrossCheckReport] = None,
     deliverable_reliability: Optional[DeliverableReliabilityReport] = None,
+    analytical_core: Optional[AnalyticalCoreResult] = None,
 ) -> str:
     sources = ''.join([
         f'''
@@ -4045,6 +4052,7 @@ def build_written_audit_report_markdown(
     visual_report_url: Optional[str],
     evidence_cross_check: Optional[EvidenceCrossCheckReport] = None,
     deliverable_reliability: Optional[DeliverableReliabilityReport] = None,
+    analytical_core: Optional[AnalyticalCoreResult] = None,
 ) -> str:
     sources = "\\n".join([
         f"- {source.category}: {source.title} | {source.url} | Señal: {source.signal}"
@@ -4070,6 +4078,31 @@ def build_written_audit_report_markdown(
         evidence_lines.extend([f"- Señal cruzada: {item}" for item in evidence_cross_check.crossed_signals[:5]])
         evidence_lines.extend([f"- Dato faltante: {item}" for item in evidence_cross_check.missing_data[:6]])
         evidence_block = "\n".join(evidence_lines)
+
+    analytical_block = "- No se ejecutó analytical_core."
+    if analytical_core:
+        top_signals = sorted(analytical_core.signal_vector.values(), key=lambda item: item.score_0_to_10, reverse=True)[:8]
+        signal_lines = [f"- {item.signal}: {item.score_0_to_10}/10 · {item.confidence} · {item.rationale}" for item in top_signals]
+        claim_lines = [f"- {claim.claim_id}: {claim.statement} ({claim.support_status}; evidencia={', '.join(claim.evidence_ids) or 'n/d'})" for claim in analytical_core.claims[:8]]
+        rec_lines = [f"- {rec.recommendation_id}: {rec.recommendation} | prioridad={rec.priority} | evidencia={', '.join(rec.evidence_ids) or 'n/d'}" for rec in analytical_core.recommendations[:8]]
+        blocked_lines = [f"- {claim.statement}: {claim.blocked_reason or 'sin soporte suficiente'}" for claim in analytical_core.blocked_claims[:6]]
+        analytical_block = "\n".join([
+            f"- confidence_status: {analytical_core.confidence_status}",
+            f"- interpretación: {analytical_core.executive_interpretation}",
+            f"- factuality_check: {analytical_core.pre_report_factuality_check.status}",
+            "",
+            "### Señales",
+            *(signal_lines or ["- Sin señales suficientes."]),
+            "",
+            "### Claims permitidos",
+            *(claim_lines or ["- Sin claims permitidos."]),
+            "",
+            "### Recomendaciones trazables",
+            *(rec_lines or ["- Sin recomendaciones trazables."]),
+            "",
+            "### Claims bloqueados",
+            *(blocked_lines or ["- Sin claims bloqueados."]),
+        ])
 
     reliability_block = "- No se generó reporte de confiabilidad del entregable."
     if deliverable_reliability:
@@ -4124,7 +4157,10 @@ def build_written_audit_report_markdown(
 - Campañas analizadas: {campaign_performance.campaigns_analyzed}
 - Resumen: {campaign_performance.summary}
 
-## Medidas estratégicas recomendadas
+## Motor analítico evidence-first
+{analytical_block}
+
+## Medidas estratégicas recomendadas legacy
 {measures}
 
 ## Fuentes públicas revisadas
@@ -8134,8 +8170,19 @@ def build_evidence_cross_check_report(
             "media-alta" if campaign_performance.data_completeness.score >= 70 and not tracking_critical else "media",
         )
 
-    # Regla anti-invención: los mapas/outputs generados NO cuentan como evidencia.
-    # Solo evidencia observada/declarada/campañas/samples puede habilitar claims o visuales.
+    add(
+        "generated_maps",
+        "cross_module_output",
+        "Mapas generados después del cruce",
+        (
+            f"awareness={public_audit.awareness_funnel_locator.dominant_stage}->{public_audit.awareness_funnel_locator.blocked_stage}; "
+            f"heatmap={public_audit.temperature_heatmap.average_temperature}; "
+            f"density={public_audit.customer_intent_density_map.dominant_zone.x}/{public_audit.customer_intent_density_map.dominant_zone.y}; "
+            f"blueprint_breaks={'; '.join(public_audit.funnel_blueprint.breakpoints[:3])}"
+        ),
+        ["visuales", "análisis escrito", "stability output"],
+        "media",
+    )
 
     groups = sorted(set(item.evidence_group for item in items if item.evidence_group != "generated_maps"))
     missing: List[str] = []
@@ -8261,58 +8308,31 @@ def build_deliverable_reliability_report(
 
 
 
-ANALYTICAL_CORE_VERSION = "analytical-core-v1.0"
+def _normalized_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
 
 
-def ac_text(value: Any) -> str:
-    if value is None:
-        return ""
-    return " ".join(str(value).strip().split())
+def _contains_any(text: str, needles: List[str]) -> bool:
+    haystack = _normalized_text(text)
+    return any(n in haystack for n in needles)
 
 
-def ac_lower(value: Any) -> str:
-    return ac_text(value).lower()
-
-
-def ac_unique(items: List[str]) -> List[str]:
-    out: List[str] = []
+def _unique_keep_order(items: List[str]) -> List[str]:
     seen = set()
+    out = []
     for item in items:
-        cleaned = ac_text(item)
-        if cleaned and cleaned.lower() not in seen:
-            out.append(cleaned)
-            seen.add(cleaned.lower())
+        value = str(item or "").strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key not in seen:
+            out.append(value)
+            seen.add(key)
     return out
 
 
-def ac_any(text_blob: str, keywords: List[str]) -> bool:
-    low = ac_lower(text_blob)
-    return any(keyword.lower() in low for keyword in keywords)
-
-
-def ac_score_from_positive_hits(hits: int, max_hits: int = 4, floor: int = 0) -> int:
-    if hits <= 0:
-        return floor
-    return max(floor, min(100, int(round((hits / max(1, max_hits)) * 100))))
-
-
-def campaign_has_any_numeric_data(campaign: CampaignMetric) -> bool:
-    numeric_fields = [
-        "spend", "impressions", "reach", "frequency", "clicks", "ctr_percent", "cpc", "cpm", "landing_visits",
-        "form_starts", "form_submits", "whatsapp_clicks", "calls", "key_events", "leads", "qualified_leads",
-        "bad_leads", "conversions", "sales", "revenue", "cpl", "cpa", "lead_quality_score", "previous_spend",
-        "previous_impressions", "previous_clicks", "previous_leads", "previous_conversions", "previous_cpl", "previous_cpa",
-        "meetings", "opportunities", "close_rate_percent",
-    ]
-    return any(getattr(campaign, field, None) is not None for field in numeric_fields)
-
-
-def campaign_has_tracking_data(campaign: CampaignMetric) -> bool:
-    return any(getattr(campaign, field, None) is not None for field in ["utms_present", "events_configured", "conversion_event_name"])
-
-
-def campaign_has_quality_data(campaign: CampaignMetric) -> bool:
-    return any(getattr(campaign, field, None) is not None for field in ["qualified_leads", "bad_leads", "lead_quality_score", "crm_stage", "meetings", "opportunities", "sales", "revenue"])
+def _evidence_id(index: int) -> str:
+    return f"ev_{index:03d}"
 
 
 def build_analytical_evidence_ledger(
@@ -8322,852 +8342,608 @@ def build_analytical_evidence_ledger(
     campaign_performance: Optional[CampaignPerformanceResponse],
 ) -> List[AnalyticalEvidenceItem]:
     ledger: List[AnalyticalEvidenceItem] = []
-    counter = 1
 
     def add(
         source_type: str,
         source_label: str,
         observed_fact: str,
-        supports_signals: List[str],
-        reliability: str = "media",
-        usable_for_claims: bool = True,
+        supports: List[str],
+        reliability: str = "medium",
         source_url: Optional[str] = None,
-        limitations: Optional[List[str]] = None,
-    ) -> str:
-        nonlocal counter
-        fact = ac_text(observed_fact)
-        if not fact:
-            return ""
-        eid = f"ev_{counter:03d}"
-        counter += 1
+        can_support_claims: bool = True,
+        extraction_note: str = "",
+    ):
+        observed = " ".join(str(observed_fact or "").split())
+        if not observed:
+            return
         ledger.append(
             AnalyticalEvidenceItem(
-                evidence_id=eid,
+                evidence_id=_evidence_id(len(ledger) + 1),
                 source_type=source_type,
-                source_label=ac_text(source_label)[:180],
+                source_label=source_label[:160],
                 source_url=source_url,
-                observed_fact=fact[:850],
-                supports_signals=ac_unique(supports_signals),
+                observed_fact=observed[:900],
+                supports_signals=_unique_keep_order(supports),
                 reliability=reliability,
-                usable_for_claims=usable_for_claims,
-                limitations=ac_unique(limitations or []),
+                can_support_claims=can_support_claims,
+                extraction_note=extraction_note[:500],
             )
         )
-        return eid
 
-    # Datos declarados: útiles para contexto, no equivalen a validación externa.
-    if request.company_name:
-        add("user_declared", "Nombre de empresa", f"Empresa declarada: {request.company_name}", ["business_context"], "media", True)
+    add(
+        "declared_input",
+        "Nombre de empresa",
+        f"Empresa informada por el usuario: {request.company_name}",
+        ["entity_identity"],
+        reliability="medium",
+        extraction_note="Dato declarado; identifica el objeto de auditoría, pero no prueba performance.",
+    )
     if request.industry:
-        add("user_declared", "Industria declarada", f"Industria declarada: {request.industry}", ["business_context", "audience_specificity"], "media", True)
+        add("declared_input", "Rubro/industria", f"Industria declarada: {request.industry}", ["audience_specificity", "offer_context"], reliability="medium")
     if request.offer:
-        add("user_declared", "Oferta declarada", f"Oferta declarada por usuario: {request.offer}", ["offer_clarity", "business_context"], "media", True, limitations=["Oferta declarada por usuario; requiere cotejo externo para afirmaciones fuertes."])
-    if request.notes:
-        add("user_declared", "Notas del usuario", f"Notas aportadas: {request.notes}", ["business_context", "objection_handling", "audience_specificity"], "baja-media", True, limitations=["Notas no verificadas externamente."])
+        add("declared_input", "Oferta declarada", f"Oferta declarada: {request.offer}", ["offer_clarity", "conversion_path"], reliability="medium")
+    if request.city or request.country:
+        add("declared_input", "Ubicación declarada", f"Mercado declarado: {request.city or 'n/d'}, {request.country or 'n/d'}", ["market_context"], reliability="medium")
+    if request.website:
+        add("declared_input", "Sitio web declarado", f"Website declarado: {request.website}", ["declared_asset", "conversion_path"], reliability="low", source_url=request.website, can_support_claims=False, extraction_note="Una URL declarada no alcanza por sí sola para afirmar que se revisó el contenido del sitio.")
+    for attr, signal in [("instagram", "channel_consistency"), ("facebook", "channel_consistency"), ("tiktok", "channel_consistency"), ("youtube", "content_depth"), ("linkedin", "authority")]:
+        value = getattr(request, attr, None)
+        if value:
+            add("declared_input", f"Perfil {attr} declarado", f"Perfil {attr} declarado: {value}", ["declared_social_asset", signal], reliability="low", source_url=value, can_support_claims=False, extraction_note="Perfil declarado; requiere lectura de contenido o métricas para sostener claims.")
+    if request.notes and len(request.notes.strip()) >= 30:
+        add("declared_input", "Notas manuales del usuario", request.notes, ["manual_context", "objection_handling", "audience_specificity"], reliability="medium", extraction_note="Dato manual; útil para contexto, no para afirmar performance real.")
 
-    declared_links = get_request_declared_links(request)
-    for link in declared_links:
-        add("user_declared_public_pointer", "Link declarado", f"El usuario aportó el link: {link}", ["public_presence"], "baja-media", False, source_url=link, limitations=["Un link declarado es puntero de revisión; no valida por sí solo contenido, autoridad ni performance."])
-
-    # Fuentes públicas observadas por búsqueda/lectura. No usar outputs generados.
-    declared_link_set = set([clean_public_url(link) for link in declared_links])
-    for source in (public_audit.public_sources_summary or [])[:12]:
-        url = clean_public_url(source.url or "")
-        signal = ac_text(source.signal or "")
-        title = ac_text(source.title or source.url or "Fuente pública")
-        label = f"{source.category or 'public_source'}: {title}"
-        is_declared = bool(url and url in declared_link_set)
-        reliability = "media" if signal and not is_declared else "baja-media"
-        usable = bool(signal and len(signal) >= 20)
-        source_type = "public_observed" if usable and not is_declared else "public_declared_or_weak"
+    # Public sources are evidence only when they come from search/research, not from generated maps.
+    for idx, source in enumerate(public_audit.public_sources_summary or [], start=1):
+        label = source.title or source.category or f"fuente pública {idx}"
+        signal_text = source.signal or label
         supports = ["public_presence"]
-        if ac_any(signal + " " + title, ["whatsapp", "contacto", "consultar", "llamar", "tel", "formulario", "enviar"]):
-            supports.append("cta_strength")
-        if ac_any(signal + " " + title, ["testimonio", "reseña", "review", "clientes", "caso", "trust", "google", "excelente"]):
-            supports.append("social_proof")
-        if ac_any(signal + " " + title, ["años", "experiencia", "certif", "miembro", "asociación", "metodología", "método", "profesional"]):
-            supports.append("authority")
-        if ac_any(signal + " " + title, ["blog", "noticia", "podcast", "faq", "preguntas", "metodología", "servicios", "entregables"]):
-            supports.append("content_depth")
-        if ac_any(signal + " " + title, ["precio", "lote", "propiedad", "servicio", "automatización", "selección", "capacitación", "coaching", "consultoría", "roi", "ia"]):
-            supports.append("offer_clarity")
+        if _contains_any(signal_text + " " + label, ["whatsapp", "contacto", "consultar", "llamar", "formulario", "cotizar"]):
+            supports += ["cta_strength", "conversion_path"]
+        if _contains_any(signal_text + " " + label, ["reseña", "review", "testimonio", "cliente", "clientes", "caso", "trustindex", "google"]):
+            supports += ["social_proof", "trust_density"]
+        if _contains_any(signal_text + " " + label, ["blog", "noticia", "podcast", "newsletter", "guía", "faq", "preguntas", "metodología", "servicio", "servicios"]):
+            supports += ["content_depth", "objection_handling"]
+        if _contains_any(signal_text + " " + label, ["años", "experiencia", "miembro", "certificación", "asociación", "profesional", "equipo", "especialista"]):
+            supports += ["authority"]
+        if _contains_any(signal_text + " " + label, ["precio", "precios", "plan", "planes", "lote", "propiedad", "desarrollo", "servicio", "automatización", "ia", "roi"]):
+            supports += ["offer_clarity", "audience_specificity"]
         add(
-            source_type,
+            "public_source",
             label,
-            signal or f"Fuente detectada: {title}",
+            f"{source.category}: {signal_text}",
             supports,
-            reliability,
-            usable,
-            source_url=url or None,
-            limitations=[] if usable else ["Fuente sin señal textual suficiente para claims analíticos fuertes."],
+            reliability="medium" if source.url else "low",
+            source_url=source.url,
+            can_support_claims=True,
+            extraction_note="Fuente pública normalizada por el módulo de investigación. No equivale a métricas internas.",
         )
 
-    # Ausencias observables: solo habilitan inferencias prudentes, nunca afirmaciones absolutas.
-    public_blob = " ".join([ac_text(s.title) + " " + ac_text(s.signal) for s in (public_audit.public_sources_summary or [])])
-    if public_audit.public_sources_summary:
-        if not ac_any(public_blob, ["testimonio", "reseña", "review", "121 reseñas", "clientes", "caso de éxito", "google reviews"]):
+    if social_fit:
+        for idx, source in enumerate(social_fit.public_sources_used or [], start=1):
             add(
-                "absence_from_review",
-                "Revisión pública disponible",
-                "En las fuentes públicas revisadas no se detectó prueba social textual fuerte o reseñas embebidas suficientes.",
-                ["social_proof"],
-                "baja-media",
-                True,
-                limitations=["Ausencia en la muestra revisada; no prueba que la empresa no tenga prueba social en otros canales."],
-            )
-        if not ac_any(public_blob, ["blog", "noticia", "podcast", "faq", "preguntas frecuentes", "metodología", "caso", "guía"]):
-            add(
-                "absence_from_review",
-                "Revisión pública disponible",
-                "En las fuentes públicas revisadas no se detectó una capa amplia de contenido educativo, blog, FAQ o metodología profunda.",
-                ["content_depth"],
-                "baja-media",
-                True,
-                limitations=["Ausencia en la muestra revisada; debe confirmarse con crawling completo del sitio y redes."],
+                "public_source",
+                source.title or f"fuente social pública {idx}",
+                f"{source.category}: {source.signal}",
+                ["channel_consistency", "content_depth", "public_presence"],
+                reliability="medium" if source.url else "low",
+                source_url=source.url,
+                can_support_claims=True,
+                extraction_note="Fuente usada por el módulo de contenido social; no reemplaza métricas nativas de plataforma.",
             )
 
-    # Samples sociales: solo si el usuario los pasó.
-    for idx, sample in enumerate(getattr(request, "social_content_samples", []) or [], start=1):
+    for idx, sample in enumerate(request.social_content_samples or [], start=1):
         parts = [
-            f"plataforma={sample.platform}",
-            f"formato={sample.format}" if getattr(sample, "format", None) else "",
-            f"hook={sample.hook}" if getattr(sample, "hook", None) else "",
-            f"cta={sample.cta}" if getattr(sample, "cta", None) else "",
-            f"métricas: views={getattr(sample, 'views', None)}, likes={getattr(sample, 'likes', None)}, comments={getattr(sample, 'comments', None)}, saves={getattr(sample, 'saves', None)}, shares={getattr(sample, 'shares', None)}",
+            f"platform={getattr(sample, 'platform', None) or 'n/d'}",
+            f"format={getattr(sample, 'format', None) or 'n/d'}",
+            f"hook={getattr(sample, 'hook', None) or 'n/d'}",
+            f"caption={getattr(sample, 'caption_summary', None) or 'n/d'}",
+            f"cta={getattr(sample, 'cta', None) or 'n/d'}",
         ]
-        has_metrics = any(getattr(sample, field, None) is not None for field in ["views", "likes", "comments", "saves", "shares", "clicks", "leads"])
         add(
             "social_sample",
             f"Muestra social #{idx}",
-            "; ".join([part for part in parts if part]),
-            ["channel_consistency", "cta_strength", "content_depth", "social_content_fit"],
-            "media-alta" if has_metrics else "media",
-            True,
-            limitations=[] if has_metrics else ["Muestra sin métricas completas; permite lectura cualitativa, no performance real."],
+            "; ".join(parts),
+            ["channel_consistency", "content_depth", "cta_strength", "creative_relevance"],
+            reliability="high",
+            source_url=getattr(sample, "url", None),
+            can_support_claims=True,
+            extraction_note="Muestra concreta aportada para auditar contenido; no equivale a performance si no trae métricas.",
         )
-    if getattr(request, "social_content_notes", None):
-        add("user_declared", "Notas de contenido social", request.social_content_notes or "", ["channel_consistency", "social_content_fit"], "baja-media", True, limitations=["Notas sociales declaradas; no reemplazan métricas de plataforma."])
+    if request.social_content_notes and len(request.social_content_notes.strip()) >= 20:
+        add("declared_input", "Notas de contenido social", request.social_content_notes, ["channel_consistency", "content_depth", "manual_context"], reliability="medium")
 
-    # Campañas: métricas reales si existen.
-    for idx, campaign in enumerate(getattr(request, "campaigns", []) or [], start=1):
-        facts = [f"campaña={campaign.campaign_name}"]
-        for field in ["channel", "objective", "funnel_stage", "spend", "impressions", "clicks", "ctr_percent", "cpc", "cpm", "landing_visits", "leads", "cpl", "conversions", "sales", "revenue", "qualified_leads", "bad_leads", "lead_quality_score", "utms_present", "events_configured", "crm_stage"]:
-            val = getattr(campaign, field, None)
-            if val is not None and val != "":
-                facts.append(f"{field}={val}")
-        supports = ["performance_data_quality"]
-        if campaign_has_tracking_data(campaign):
-            supports.append("tracking_reliability")
-        if campaign_has_quality_data(campaign):
-            supports.append("lead_quality")
-        if getattr(campaign, "landing_url", None) or getattr(campaign, "landing_message", None):
-            supports.append("message_match")
+    if request.campaigns:
+        for idx, campaign in enumerate(request.campaigns, start=1):
+            fields = campaign.dict(exclude_none=True)
+            metric_parts = [f"{k}={v}" for k, v in fields.items() if k not in ["campaign_name", "ad_name", "adset_name"]]
+            add(
+                "campaign_metric",
+                f"Campaña #{idx}: {campaign.campaign_name}",
+                "; ".join(metric_parts) or f"Campaña declarada: {campaign.campaign_name}",
+                ["campaign_evidence", "tracking_quality", "lead_quality_evidence", "conversion_path"],
+                reliability="high",
+                can_support_claims=True,
+                extraction_note="Métrica de campaña aportada; permite análisis de performance solo si hay volumen y campos suficientes.",
+            )
+    else:
         add(
-            "campaign_metric" if campaign_has_any_numeric_data(campaign) else "campaign_declared_context",
-            f"Campaña #{idx}",
-            "; ".join(facts),
-            supports,
-            "alta" if campaign_has_any_numeric_data(campaign) else "media",
-            True,
-            source_url=getattr(campaign, "landing_url", None),
-            limitations=[] if campaign_has_any_numeric_data(campaign) else ["Campaña sin métricas numéricas suficientes para performance real."],
+            "missing_input",
+            "Campañas no recibidas",
+            "No se recibieron campañas, inversión, impresiones, clics, leads, conversiones ni calidad de lead.",
+            ["campaign_evidence", "tracking_quality", "lead_quality_evidence"],
+            reliability="high",
+            can_support_claims=True,
+            extraction_note="Ausencia de input: habilita pedir datos, pero bloquea claims de performance real.",
         )
-
-    if campaign_performance and campaign_performance.data_quality != "sin_datos":
-        add(
-            "computed_metric",
-            "Auditoría computada de campañas",
-            f"data_quality={campaign_performance.data_quality}; campaigns_analyzed={campaign_performance.campaigns_analyzed}; summary={campaign_performance.summary}",
-            ["performance_data_quality", "tracking_reliability", "lead_quality"],
-            "media-alta",
-            True,
-            limitations=["Métrica computada desde datos cargados; depende de completitud y tracking declarados."],
-        )
+    if request.campaign_notes and len(request.campaign_notes.strip()) >= 20:
+        add("declared_input", "Notas de campañas", request.campaign_notes, ["campaign_evidence", "manual_context"], reliability="medium")
 
     return ledger
 
 
-def ac_evidence_ids_for_signal(ledger: List[AnalyticalEvidenceItem], signal_key: str, usable_only: bool = True) -> List[str]:
-    return [item.evidence_id for item in ledger if signal_key in item.supports_signals and (item.usable_for_claims or not usable_only)]
-
-
-def ac_count_reliable(ledger: List[AnalyticalEvidenceItem], signal_key: str, source_types: Optional[List[str]] = None) -> int:
-    count = 0
-    for item in ledger:
-        if signal_key not in item.supports_signals or not item.usable_for_claims:
-            continue
-        if source_types and item.source_type not in source_types:
-            continue
-        if item.reliability in ["alta", "media-alta", "media"]:
-            count += 1
-    return count
-
-
-def ac_has_absence(ledger: List[AnalyticalEvidenceItem], signal_key: str) -> bool:
-    return any(item.source_type == "absence_from_review" and signal_key in item.supports_signals for item in ledger)
+def _evidence_for_signal(ledger: List[AnalyticalEvidenceItem], signal: str) -> List[AnalyticalEvidenceItem]:
+    return [item for item in ledger if item.can_support_claims and signal in (item.supports_signals or [])]
 
 
 def build_analytical_signal_vector(
-    request: FullCommercialSystemRequest,
     ledger: List[AnalyticalEvidenceItem],
-) -> Dict[str, AnalyticalSignal]:
-    labels = {
-        "offer_clarity": "Claridad de oferta",
-        "audience_specificity": "Especificidad de audiencia",
-        "authority": "Autoridad visible",
-        "social_proof": "Prueba social visible",
-        "cta_strength": "Fuerza de CTA/contacto",
-        "conversion_path": "Camino hacia conversión",
-        "content_depth": "Profundidad de contenido",
-        "objection_handling": "Tratamiento de objeciones",
-        "channel_consistency": "Coherencia por canal",
-        "performance_data_quality": "Calidad de datos de campaña",
-        "tracking_reliability": "Confiabilidad de tracking",
-        "lead_quality": "Evidencia de calidad de lead",
+    request: FullCommercialSystemRequest,
+    campaign_performance: Optional[CampaignPerformanceResponse],
+) -> Dict[str, AnalyticalSignalScore]:
+    signal_specs = {
+        "offer_clarity": "Claridad de oferta observable o declarada",
+        "audience_specificity": "Claridad de público/segmento",
+        "authority": "Autoridad, trayectoria, metodología o credenciales",
+        "social_proof": "Prueba social visible: reseñas, casos, clientes, testimonios",
+        "cta_strength": "Claridad y disponibilidad de CTA/contacto",
+        "conversion_path": "Continuidad observable hacia consulta/lead",
+        "content_depth": "Profundidad de contenido, educación y explicación",
+        "objection_handling": "Manejo de objeciones: FAQ, precios, garantías, metodología",
+        "trust_density": "Densidad de señales de confianza",
+        "channel_consistency": "Consistencia entre activos y canales declarados/observados",
+        "campaign_evidence": "Disponibilidad de datos de campaña",
+        "tracking_quality": "Disponibilidad de tracking/eventos/métricas útiles",
+        "lead_quality_evidence": "Evidencia de calidad de lead o resultado posterior",
     }
+    result: Dict[str, AnalyticalSignalScore] = {}
+    source_count = len([item for item in ledger if item.source_type == "public_source" and item.can_support_claims])
+    declared_count = len([item for item in ledger if item.source_type == "declared_input"])
+    campaign_items = _evidence_for_signal(ledger, "campaign_evidence")
+    has_campaigns = bool(request.campaigns)
 
-    def signal(key: str, score: Optional[int], status: str, rationale: str, missing: Optional[List[str]] = None, confidence: str = "media") -> AnalyticalSignal:
-        return AnalyticalSignal(
-            signal_key=key,
-            label=labels.get(key, key),
-            score_0_to_100=score,
-            status=status,
-            evidence_ids=ac_evidence_ids_for_signal(ledger, key),
-            rationale=ac_text(rationale),
-            missing_data=ac_unique(missing or []),
+    for signal, label in signal_specs.items():
+        ev = _evidence_for_signal(ledger, signal)
+        evidence_ids = [item.evidence_id for item in ev]
+        missing: List[str] = []
+        base = 0
+        confidence = "low"
+        rationale = "Sin evidencia suficiente para puntuar fuerte."
+
+        if signal == "offer_clarity":
+            base = 2
+            if request.offer and len(request.offer.strip()) >= 8:
+                base += 3
+            base += min(3, len(ev))
+            if source_count >= 2:
+                base += 1
+            missing = [] if base >= 6 else ["Oferta escrita con promesa, público, servicio y resultado esperado."]
+        elif signal == "audience_specificity":
+            base = 2 if request.industry else 0
+            if request.city or request.country:
+                base += 1
+            if request.notes and _contains_any(request.notes, ["público", "cliente", "segmento", "audiencia", "perfil"]):
+                base += 2
+            base += min(4, len(ev))
+            missing = [] if base >= 5 else ["Segmento objetivo, problema principal y criterio de compra."]
+        elif signal == "authority":
+            base = min(8, len(ev) * 2)
+            if _contains_any(" ".join(item.observed_fact for item in ev), ["años", "experiencia", "certificación", "miembro", "reseña", "cliente", "metodología"]):
+                base += 1
+            missing = [] if base >= 5 else ["Credenciales, trayectoria, casos, metodología o fuentes externas verificables."]
+        elif signal == "social_proof":
+            base = min(9, len(ev) * 3)
+            if _contains_any(" ".join(item.observed_fact for item in ev), ["121", "reseñas", "testimonios", "clientes", "trustindex", "google"]):
+                base += 1
+            missing = [] if base >= 5 else ["Reseñas, casos, testimonios, logos de clientes o resultados verificables."]
+        elif signal == "cta_strength":
+            text = " ".join(item.observed_fact for item in ev) + " " + " ".join([str(getattr(request, a, '') or '') for a in ["website", "instagram", "facebook", "linkedin"]])
+            base = min(8, len(ev) * 2)
+            if _contains_any(text, ["whatsapp", "wa.me", "contacto", "consultar", "llamar", "teléfono", "formulario"]):
+                base += 2
+            missing = [] if base >= 5 else ["CTA principal observable, canal de contacto y formulario/WhatsApp verificado."]
+        elif signal == "conversion_path":
+            base = 1 if request.website else 0
+            base += min(4, len(_evidence_for_signal(ledger, "cta_strength")))
+            if has_campaigns:
+                base += 2
+            if request.offer:
+                base += 1
+            missing = [] if base >= 6 else ["Landing usada en campañas, pasos de contacto, seguimiento comercial y CRM."]
+        elif signal == "content_depth":
+            base = min(8, len(ev) * 2)
+            if request.notes and len(request.notes) > 120:
+                base += 1
+            if request.social_content_samples:
+                base += 1
+            missing = [] if base >= 5 else ["Páginas de servicio, blog/noticias/FAQ, muestras sociales o piezas educativas."]
+        elif signal == "objection_handling":
+            base = min(8, len(ev) * 2)
+            if _contains_any(" ".join(item.observed_fact for item in ev), ["faq", "preguntas", "precio", "precios", "garantía", "metodología", "incluye"]):
+                base += 1
+            missing = [] if base >= 5 else ["FAQ, precios/planes, condiciones, garantías, metodología y objeciones frecuentes."]
+        elif signal == "trust_density":
+            base = min(8, len(_evidence_for_signal(ledger, "authority")) + len(_evidence_for_signal(ledger, "social_proof")) * 2)
+            missing = [] if base >= 5 else ["Más señales verificables de confianza: reseñas, casos, clientes, prueba externa."]
+        elif signal == "channel_consistency":
+            declared_socials = len([getattr(request, a, None) for a in ["instagram", "facebook", "tiktok", "youtube", "linkedin"] if getattr(request, a, None)])
+            base = min(5, declared_socials) + min(4, len(ev))
+            missing = [] if base >= 5 else ["Links de redes, muestras recientes por plataforma y objetivo de cada canal."]
+        elif signal == "campaign_evidence":
+            base = min(10, len(campaign_items) * 2) if has_campaigns else 0
+            missing = [] if has_campaigns else ["Export de campañas con inversión, impresiones, clics, leads, conversiones y período."]
+        elif signal == "tracking_quality":
+            if has_campaigns:
+                metrics_present = 0
+                for c in request.campaigns:
+                    metrics_present += sum(1 for attr in ["impressions", "clicks", "leads", "ctr_percent", "cpc", "cpl", "cpa"] if getattr(c, attr, None) is not None)
+                base = min(10, 2 + metrics_present // max(1, len(request.campaigns)))
+            else:
+                base = 0
+            missing = [] if base >= 6 else ["Eventos, conversiones, UTMs, landing, CRM y calidad de tracking."]
+        elif signal == "lead_quality_evidence":
+            if has_campaigns:
+                quality_fields = 0
+                for c in request.campaigns:
+                    quality_fields += sum(1 for attr in ["qualified_leads", "sales", "revenue", "lead_quality_rate_percent", "conversion_rate_percent"] if hasattr(c, attr) and getattr(c, attr, None) is not None)
+                base = min(10, quality_fields * 2)
+            else:
+                base = 0
+            missing = [] if base >= 5 else ["Calidad de lead, contacto efectivo, ventas, revenue, CRM o feedback comercial."]
+
+        base = max(0, min(10, int(base)))
+        if base >= 7 and evidence_ids:
+            confidence = "high" if any(item.reliability == "high" for item in ev) else "medium"
+            rationale = f"{label}: señal fuerte según {len(evidence_ids)} evidencia(s) utilizable(s)."
+        elif base >= 4 and evidence_ids:
+            confidence = "medium"
+            rationale = f"{label}: señal presente, pero todavía incompleta o parcialmente declarada."
+        elif evidence_ids:
+            confidence = "low"
+            rationale = f"{label}: señal débil; la evidencia existe pero no alcanza para afirmación fuerte."
+        else:
+            confidence = "low"
+            rationale = f"{label}: no hay evidencia utilizable suficiente; no se deben hacer afirmaciones fuertes."
+
+        result[signal] = AnalyticalSignalScore(
+            signal=signal,
+            score_0_to_10=base,
             confidence=confidence,
+            evidence_ids=evidence_ids,
+            rationale=rationale,
+            missing_data=_unique_keep_order(missing),
         )
-
-    vector: Dict[str, AnalyticalSignal] = {}
-
-    offer_hits = ac_count_reliable(ledger, "offer_clarity")
-    declared_offer = bool(ac_text(getattr(request, "offer", None)))
-    vector["offer_clarity"] = signal(
-        "offer_clarity",
-        min(100, 35 + 25 * offer_hits + (15 if declared_offer else 0)) if offer_hits or declared_offer else 20,
-        "derived" if offer_hits or declared_offer else "limited",
-        "Se calcula desde oferta declarada y señales públicas/observadas sobre servicios, productos o propuesta comercial.",
-        ["Oferta principal explícita y cotejada en sitio/fuentes públicas."] if not offer_hits else [],
-        "media" if offer_hits else "baja-media",
-    )
-
-    aud_hits = ac_count_reliable(ledger, "audience_specificity")
-    has_campaign_audience = any(ac_any(item.observed_fact, ["audience=", "crm_stage", "pymes", "equipos", "inversores", "talentos"]) for item in ledger)
-    vector["audience_specificity"] = signal(
-        "audience_specificity",
-        min(100, 25 + 25 * aud_hits + (25 if has_campaign_audience else 0)) if aud_hits or has_campaign_audience else 25,
-        "derived" if aud_hits or has_campaign_audience else "limited",
-        "Mide si el análisis puede identificar a quién se dirige la oferta, no solo qué vende.",
-        ["Segmento objetivo, buyer persona o audiencia de campañas."] if not has_campaign_audience else [],
-        "media" if has_campaign_audience or aud_hits else "baja-media",
-    )
-
-    authority_hits = ac_count_reliable(ledger, "authority")
-    vector["authority"] = signal(
-        "authority",
-        min(100, 20 + 28 * authority_hits) if authority_hits else 25,
-        "derived" if authority_hits else "limited",
-        "Se basa en señales observables de trayectoria, metodología, certificaciones, membresías, experiencia, entregables o posicionamiento experto.",
-        ["Pruebas verificables de experiencia, metodología, credenciales o casos."] if not authority_hits else [],
-        "media" if authority_hits else "baja-media",
-    )
-
-    social_hits = ac_count_reliable(ledger, "social_proof")
-    absence_social = ac_has_absence(ledger, "social_proof")
-    vector["social_proof"] = signal(
-        "social_proof",
-        min(100, 15 + 30 * social_hits) if social_hits else (20 if absence_social else 30),
-        "derived" if social_hits else "limited",
-        "Se calcula desde reseñas, testimonios, logos, casos o señales públicas de clientes. Si solo hay ausencia en muestra, se marca como inferencia limitada.",
-        ["Reseñas verificables, testimonios con contexto, logos/casos y recencia de prueba social."] if not social_hits else [],
-        "media" if social_hits else "baja-media",
-    )
-
-    cta_hits = ac_count_reliable(ledger, "cta_strength")
-    has_declared_contact_link = any(ac_any(item.observed_fact, ["whatsapp", "wa.me", "contacto", "tel", "instagram", "linkedin"]) for item in ledger)
-    vector["cta_strength"] = signal(
-        "cta_strength",
-        min(100, 20 + 25 * cta_hits + (15 if has_declared_contact_link else 0)) if cta_hits or has_declared_contact_link else 25,
-        "derived" if cta_hits or has_declared_contact_link else "limited",
-        "Mide evidencia observable de llamada a la acción, contacto, WhatsApp, formulario, teléfono o ruta clara a consulta.",
-        ["CTA principal, formulario/contacto revisado y acción esperada del usuario."] if not cta_hits else [],
-        "media" if cta_hits else "baja-media",
-    )
-
-    has_landing_or_leads = any(item.source_type == "campaign_metric" and ac_any(item.observed_fact, ["landing_visits=", "leads=", "form_submits=", "whatsapp_clicks=", "calls="]) for item in ledger)
-    conv_base = int((vector["cta_strength"].score_0_to_100 or 0) * 0.55 + (35 if has_landing_or_leads else 0))
-    vector["conversion_path"] = signal(
-        "conversion_path",
-        min(100, conv_base),
-        "derived" if has_landing_or_leads or cta_hits else "limited",
-        "No afirma conversión real. Solo estima si hay camino observable hacia consulta o si hay datos post-click cargados.",
-        ["Landing, formularios, clicks, leads, conversiones, CRM o WhatsApp medido."] if not has_landing_or_leads else [],
-        "media" if has_landing_or_leads else "baja-media",
-    )
-
-    content_hits = ac_count_reliable(ledger, "content_depth")
-    absence_content = ac_has_absence(ledger, "content_depth")
-    vector["content_depth"] = signal(
-        "content_depth",
-        min(100, 20 + 25 * content_hits) if content_hits else (25 if absence_content else 35),
-        "derived" if content_hits else "limited",
-        "Mide contenido que ayuda a considerar y confiar: blog, noticias, podcast, FAQ, metodología, servicios explicados o entregables.",
-        ["Contenido educativo, FAQ, metodología, casos o objeciones frecuentes."] if not content_hits else [],
-        "media" if content_hits else "baja-media",
-    )
-
-    objection_hits = ac_count_reliable(ledger, "objection_handling")
-    vector["objection_handling"] = signal(
-        "objection_handling",
-        min(100, 20 + 30 * objection_hits) if objection_hits else 25,
-        "derived" if objection_hits else "limited",
-        "Mide si existen datos/notas que respondan objeciones comerciales específicas.",
-        ["Objeciones frecuentes, precios, garantías, plazos, condiciones, preguntas frecuentes o razones de no compra."] if not objection_hits else [],
-        "baja-media" if not objection_hits else "media",
-    )
-
-    channel_hits = ac_count_reliable(ledger, "channel_consistency")
-    vector["channel_consistency"] = signal(
-        "channel_consistency",
-        min(100, 20 + 28 * channel_hits) if channel_hits else 25,
-        "derived" if channel_hits else "limited",
-        "Mide coherencia entre web, redes, samples, mensaje y CTA por plataforma.",
-        ["Muestras recientes de contenido por red y datos de interacción."] if not channel_hits else [],
-        "media" if channel_hits else "baja-media",
-    )
-
-    campaign_count = len(getattr(request, "campaigns", []) or [])
-    numeric_campaigns = sum(1 for c in getattr(request, "campaigns", []) or [] if campaign_has_any_numeric_data(c))
-    perf_score = 0 if campaign_count == 0 else min(100, 20 + 35 * numeric_campaigns)
-    vector["performance_data_quality"] = signal(
-        "performance_data_quality",
-        perf_score,
-        "measured" if numeric_campaigns else ("insufficient" if campaign_count else "not_applicable"),
-        "Mide si existen métricas reales de campaña para analizar performance. Sin campañas, no se permite afirmar ROAS, CPA, CPL o conversión real.",
-        ["Export de campañas con spend, impresiones, clicks, landing visits, leads, CPL/CPA y conversiones."] if numeric_campaigns == 0 else [],
-        "alta" if numeric_campaigns else "baja",
-    )
-
-    tracking_campaigns = sum(1 for c in getattr(request, "campaigns", []) or [] if campaign_has_tracking_data(c))
-    vector["tracking_reliability"] = signal(
-        "tracking_reliability",
-        min(100, 20 + 40 * tracking_campaigns) if campaign_count else 0,
-        "measured" if tracking_campaigns else ("insufficient" if campaign_count else "not_applicable"),
-        "Mide si hay UTMs, eventos, nombre de evento, Pixel/GA4/CAPI o equivalentes declarados/cargados.",
-        ["UTMs, eventos configurados, nombre de evento, Pixel/CAPI/GA4 y consistencia de medición."] if tracking_campaigns == 0 else [],
-        "alta" if tracking_campaigns else "baja",
-    )
-
-    quality_campaigns = sum(1 for c in getattr(request, "campaigns", []) or [] if campaign_has_quality_data(c))
-    vector["lead_quality"] = signal(
-        "lead_quality",
-        min(100, 20 + 35 * quality_campaigns) if campaign_count else 0,
-        "measured" if quality_campaigns else ("insufficient" if campaign_count else "not_applicable"),
-        "Mide si hay evidencia de calidad de lead: calificados, malos, reuniones, oportunidades, CRM, ventas o revenue.",
-        ["Leads calificados, malos leads, reuniones, oportunidades, etapas CRM, ventas o revenue."] if quality_campaigns == 0 else [],
-        "alta" if quality_campaigns else "baja",
-    )
-
-    return vector
+    return result
 
 
-def build_claims_from_signals(vector: Dict[str, AnalyticalSignal], ledger: List[AnalyticalEvidenceItem], request: FullCommercialSystemRequest) -> (List[AnalyticalClaim], List[AnalyticalClaim]):
+def _claim_id(index: int) -> str:
+    return f"cl_{index:03d}"
+
+
+def build_claim_registry(
+    ledger: List[AnalyticalEvidenceItem],
+    signal_vector: Dict[str, AnalyticalSignalScore],
+    request: FullCommercialSystemRequest,
+    campaign_performance: Optional[CampaignPerformanceResponse],
+) -> (List[AnalyticalClaim], List[AnalyticalClaim]):
     claims: List[AnalyticalClaim] = []
     blocked: List[AnalyticalClaim] = []
-    counter = 1
 
-    def add(statement: str, claim_type: str, support_status: str, signal_keys: List[str], confidence: str, safe: bool = True, allowed: str = "", forbidden: str = "", limits: Optional[List[str]] = None) -> str:
-        nonlocal counter
-        evidence_ids = ac_unique([eid for key in signal_keys for eid in (vector.get(key).evidence_ids if vector.get(key) else [])])
-        cid = f"cl_{counter:03d}"
-        counter += 1
-        claim = AnalyticalClaim(
-            claim_id=cid,
+    def add_claim(claim_type: str, statement: str, support_status: str, signals: List[str], confidence: str, allowed_language: str):
+        evidence_ids: List[str] = []
+        for sig in signals:
+            evidence_ids.extend(signal_vector.get(sig, AnalyticalSignalScore(signal=sig, score_0_to_10=0, confidence="low", rationale="")).evidence_ids)
+        evidence_ids = _unique_keep_order(evidence_ids)
+        if not evidence_ids and support_status not in ["blocked", "unsupported"]:
+            blocked.append(AnalyticalClaim(
+                claim_id=_claim_id(len(claims) + len(blocked) + 1),
+                claim_type=claim_type,
+                statement=statement,
+                support_status="blocked",
+                evidence_ids=[],
+                signal_refs=signals,
+                confidence="none",
+                allowed_language="No usar.",
+                blocked_reason="No existe evidencia asociada al claim.",
+            ))
+            return
+        claims.append(AnalyticalClaim(
+            claim_id=_claim_id(len(claims) + len(blocked) + 1),
             claim_type=claim_type,
             statement=statement,
             support_status=support_status,
             evidence_ids=evidence_ids,
+            signal_refs=signals,
             confidence=confidence,
-            safe_to_include=safe,
-            allowed_language=allowed,
-            forbidden_language=forbidden,
-            limits=ac_unique(limits or []),
-        )
-        if safe:
-            claims.append(claim)
-        else:
-            blocked.append(claim)
-        return cid
+            allowed_language=allowed_language,
+        ))
 
-    def score(key: str) -> Optional[int]:
-        return vector.get(key).score_0_to_100 if vector.get(key) else None
+    def score(sig: str) -> int:
+        return signal_vector.get(sig, AnalyticalSignalScore(signal=sig, score_0_to_10=0, confidence="low", rationale="")).score_0_to_10
 
-    offer = score("offer_clarity") or 0
-    cta = score("cta_strength") or 0
-    authority = score("authority") or 0
-    social = score("social_proof") or 0
-    content = score("content_depth") or 0
-    perf = score("performance_data_quality") or 0
-    tracking = score("tracking_reliability") or 0
-    quality = score("lead_quality") or 0
-
-    if offer >= 65:
-        add("La oferta visible/declarada tiene suficiente claridad para un diagnóstico preliminar de presencia digital.", "diagnostic", "partially_supported", ["offer_clarity"], "media", True, "se observa / con la evidencia disponible", "afirmar performance o demanda real")
-    elif offer < 45:
-        add("La claridad de oferta es limitada con la evidencia disponible.", "diagnostic", "inferred", ["offer_clarity"], "baja-media", True, "parece / con la muestra revisada", "afirmar que la oferta no funciona")
-
-    if cta >= 65:
-        add("Existe una ruta visible hacia contacto o consulta.", "fact", "partially_supported", ["cta_strength"], "media", True, "se observa una ruta visible", "afirmar que convierte bien")
-    elif cta < 45:
-        add("La ruta hacia contacto/consulta no queda suficientemente demostrada en la evidencia revisada.", "risk", "inferred", ["cta_strength"], "baja-media", True, "riesgo observable", "afirmar pérdida de ventas")
-
-    if authority >= 60:
-        add("Hay señales de autoridad o posicionamiento experto suficientes para alimentar confianza preliminar.", "diagnostic", "partially_supported", ["authority"], "media", True, "hay señales de", "afirmar liderazgo de mercado")
-    elif authority < 40:
-        add("La autoridad visible necesita más evidencia pública o activos verificables.", "risk", "inferred", ["authority"], "baja-media", True, "necesita reforzar / no se detectó suficiente", "afirmar falta total de autoridad")
-
-    if social >= 60:
-        add("La prueba social visible aporta confianza preliminar.", "diagnostic", "partially_supported", ["social_proof"], "media", True, "aporta señales", "afirmar satisfacción general de clientes")
-    elif social < 40:
-        add("La prueba social visible es débil o insuficiente en la muestra revisada.", "risk", "inferred", ["social_proof"], "baja-media", True, "en la muestra revisada / no se detectó suficiente", "afirmar que no existen clientes satisfechos")
-
-    if content >= 60:
-        add("La profundidad de contenido ayuda a consideración y confianza preliminar.", "diagnostic", "partially_supported", ["content_depth"], "media", True, "ayuda a", "afirmar impacto real en ventas")
-    elif content < 40:
-        add("La profundidad de contenido observable es limitada para educar, resolver objeciones o sostener consideración.", "risk", "inferred", ["content_depth"], "baja-media", True, "observable / preliminar", "afirmar que el usuario abandona por ese motivo")
-
-    if perf <= 0:
-        add("No se puede afirmar performance real de campañas porque no se cargaron métricas suficientes.", "performance_claim", "blocked", ["performance_data_quality"], "alta", False, "no disponible", "afirmar ROAS, CPA, CPL, conversión, fatiga o calidad de lead")
-    elif perf < 50:
-        add("La performance de campañas solo puede analizarse parcialmente por baja completitud de métricas.", "performance_claim", "partially_supported", ["performance_data_quality"], "media", True, "parcial / requiere validación", "afirmar causalidad")
+    if score("offer_clarity") >= 6:
+        add_claim("diagnostic_inference", "La oferta tiene una base de claridad suficiente para análisis preliminar.", "partially_supported", ["offer_clarity"], signal_vector["offer_clarity"].confidence, "Usar como observación preliminar, no como validación de mercado.")
     else:
-        add("Hay métricas suficientes para una primera lectura de performance, sujetas a tracking y calidad de datos.", "performance_claim", "supported", ["performance_data_quality"], "media-alta", True, "primera lectura de performance", "afirmar incrementalidad causal")
+        add_claim("risk", "La oferta no cuenta con evidencia suficiente de claridad comercial en los datos disponibles.", "inferred", ["offer_clarity"], "low", "Usar 'en la evidencia disponible' y pedir definición de promesa/público/resultado.")
 
-    if (getattr(request, "campaigns", None) or []) and tracking < 50:
-        add("No es seguro tomar conversiones/CPA/CPL como verdad operativa sin validar tracking.", "risk", "partially_supported", ["tracking_reliability", "performance_data_quality"], "media", True, "no es seguro / revisar tracking", "optimizar presupuesto con certeza")
+    if score("cta_strength") >= 6:
+        add_claim("diagnostic_inference", "Hay señales de CTA/contacto utilizables para lectura preliminar del recorrido comercial.", "partially_supported", ["cta_strength", "conversion_path"], "medium", "No afirmar tasa de conversión; solo hablar de disponibilidad observable de contacto.")
+    else:
+        add_claim("risk", "El CTA o recorrido a contacto no queda suficientemente probado con la evidencia disponible.", "inferred", ["cta_strength"], "low", "Usar como riesgo observable, no como problema confirmado.")
 
-    if (getattr(request, "campaigns", None) or []) and quality < 50:
-        add("No se puede concluir calidad de lead sin datos de calificación, CRM, reuniones, oportunidades o ventas.", "performance_claim", "blocked", ["lead_quality"], "alta", False, "no disponible", "afirmar leads buenos/malos")
+    if score("social_proof") >= 6:
+        add_claim("diagnostic_inference", "La prueba social visible aporta soporte de confianza preliminar.", "partially_supported", ["social_proof", "trust_density"], "medium", "Hablar de prueba social visible; no inferir ventas ni conversión.")
+    elif score("social_proof") <= 3:
+        add_claim("risk", "La evidencia disponible no muestra una capa fuerte de prueba social verificable.", "inferred", ["social_proof"], "low", "Usar 'no se observa en la evidencia disponible'; no afirmar que no exista fuera de las fuentes revisadas.")
+
+    if score("authority") >= 6:
+        add_claim("diagnostic_inference", "Existen señales de autoridad o especialización aprovechables para el discurso comercial.", "partially_supported", ["authority"], "medium", "Usar como fortaleza preliminar si se citan evidencias.")
+
+    if score("content_depth") >= 6:
+        add_claim("diagnostic_inference", "La profundidad de contenido visible puede ayudar al tramo de consideración/confianza.", "partially_supported", ["content_depth", "objection_handling"], "medium", "No afirmar retención real sin métricas de contenido.")
+    elif score("content_depth") <= 3:
+        add_claim("risk", "La profundidad de contenido no está suficientemente demostrada por los datos disponibles.", "inferred", ["content_depth"], "low", "Marcar como brecha de evidencia antes que como falla definitiva.")
+
+    if request.campaigns and campaign_performance and campaign_performance.data_quality != "sin_datos":
+        add_claim("performance_claim", "Hay datos mínimos para iniciar lectura de performance de campañas.", "supported", ["campaign_evidence", "tracking_quality"], "medium", "Afirmar solo sobre métricas recibidas y período analizado.")
+    else:
+        claims.append(AnalyticalClaim(
+            claim_id=_claim_id(len(claims) + len(blocked) + 1),
+            claim_type="missing_data",
+            statement="No se recibieron datos suficientes para afirmar performance real de campañas, ROAS, CPA, CPL efectivo o calidad de leads.",
+            support_status="supported",
+            evidence_ids=[item.evidence_id for item in ledger if item.source_type == "missing_input"],
+            signal_refs=["campaign_evidence", "tracking_quality", "lead_quality_evidence"],
+            confidence="high",
+            allowed_language="Usar como límite metodológico obligatorio.",
+        ))
+        blocked.append(AnalyticalClaim(
+            claim_id=_claim_id(len(claims) + len(blocked) + 1),
+            claim_type="performance_claim",
+            statement="La empresa convierte mal, tiene bajo ROAS, mala calidad de lead o bajo rendimiento comercial.",
+            support_status="blocked",
+            evidence_ids=[],
+            signal_refs=["campaign_evidence", "tracking_quality", "lead_quality_evidence"],
+            confidence="none",
+            allowed_language="No usar.",
+            blocked_reason="No hay datos de campañas/CRM suficientes para sostener claims de performance real.",
+        ))
 
     return claims, blocked
 
 
-def build_recommendations_from_claims(
-    vector: Dict[str, AnalyticalSignal],
+def _recommendation_id(index: int) -> str:
+    return f"rec_{index:03d}"
+
+
+def build_traceable_recommendations(
+    signal_vector: Dict[str, AnalyticalSignalScore],
     claims: List[AnalyticalClaim],
     blocked_claims: List[AnalyticalClaim],
-) -> (List[AnalyticalRecommendation], List[str]):
+    request: FullCommercialSystemRequest,
+) -> (List[AnalyticalRecommendation], List[AnalyticalRecommendation]):
     recs: List[AnalyticalRecommendation] = []
-    blocked_recs: List[str] = []
-    counter = 1
-    claims_by_text = {claim.statement: claim for claim in claims}
+    blocked_recs: List[AnalyticalRecommendation] = []
+    claims_by_type = {claim.claim_id: claim for claim in claims}
 
-    def claim_ids_for_type(types: List[str]) -> List[str]:
-        return [claim.claim_id for claim in claims if claim.claim_type in types]
+    def score(sig: str) -> int:
+        return signal_vector.get(sig, AnalyticalSignalScore(signal=sig, score_0_to_10=0, confidence="low", rationale="")).score_0_to_10
 
-    def evidence_for_claim_ids(ids: List[str]) -> List[str]:
-        out: List[str] = []
+    def supporting_claims(*keywords: str) -> List[AnalyticalClaim]:
+        out = []
         for claim in claims:
-            if claim.claim_id in ids:
-                out.extend(claim.evidence_ids)
-        return ac_unique(out)
+            joined = " ".join(claim.signal_refs + [claim.statement]).lower()
+            if any(k.lower() in joined for k in keywords):
+                out.append(claim)
+        return out
 
-    def add(text: str, priority: str, claim_ids: List[str], impact: str, validation: List[str], confidence: str, reason: str):
-        nonlocal counter
-        if not claim_ids:
-            blocked_recs.append(f"Bloqueada por falta de claim respaldado: {text}")
-            return
-        evidence_ids = evidence_for_claim_ids(claim_ids)
-        if not evidence_ids:
-            blocked_recs.append(f"Bloqueada por falta de evidence_id trazable: {text}")
+    def add_rec(text: str, priority: str, related_claims: List[AnalyticalClaim], rationale: str, confidence: str, required: List[str], level: str = "preliminary"):
+        evidence_ids = _unique_keep_order([eid for claim in related_claims for eid in claim.evidence_ids])
+        claim_ids = [claim.claim_id for claim in related_claims]
+        if not evidence_ids or not claim_ids:
+            blocked_recs.append(AnalyticalRecommendation(
+                recommendation_id=_recommendation_id(len(recs) + len(blocked_recs) + 1),
+                recommendation=text,
+                priority=priority,
+                derived_from_claim_ids=claim_ids,
+                evidence_ids=evidence_ids,
+                rationale=rationale,
+                confidence="none",
+                implementation_level=level,
+                required_data_to_validate=required,
+                blocked_reason="No hay cadena completa evidencia → claim → recomendación.",
+            ))
             return
         recs.append(AnalyticalRecommendation(
-            recommendation_id=f"rec_{counter:03d}",
+            recommendation_id=_recommendation_id(len(recs) + len(blocked_recs) + 1),
             recommendation=text,
             priority=priority,
-            triggered_by_claims=claim_ids,
+            derived_from_claim_ids=claim_ids,
             evidence_ids=evidence_ids,
-            expected_impact=impact,
-            validation_needed=ac_unique(validation),
+            rationale=rationale,
             confidence=confidence,
-            non_generic_reason=reason,
+            implementation_level=level,
+            required_data_to_validate=required,
         ))
-        counter += 1
 
-    def s(key: str) -> int:
-        return vector.get(key).score_0_to_100 or 0
-
-    # Regla: recomendaciones solo si hay claims safe y evidence_id.
-    if s("social_proof") < 45 and (s("offer_clarity") >= 45 or s("cta_strength") >= 45):
-        ids = [claim.claim_id for claim in claims if "prueba social" in claim.statement.lower()]
-        add(
-            "Reforzar prueba social verificable antes de escalar el diagnóstico comercial: agregar reseñas, casos, logos, testimonios con contexto o evidencia de clientes según el tipo de negocio.",
-            "alta" if s("cta_strength") >= 60 else "media",
-            ids,
-            "Aumenta confianza observable; no implica mejora comprobada de conversión hasta medir leads y contacto efectivo.",
-            ["Reseñas/casos actuales", "CTR a CTA", "tasa de consulta", "calidad de lead"],
-            "media" if ids else "baja-media",
-            "Se activa porque la señal social_proof es baja/limitada y existe al menos una señal de oferta o CTA que podría beneficiarse de confianza adicional.",
-        )
-
-    if s("cta_strength") < 45:
-        ids = [claim.claim_id for claim in claims if "contacto" in claim.statement.lower() or "consulta" in claim.statement.lower()]
-        add(
-            "Clarificar el CTA principal y el siguiente paso comercial: qué debe hacer el usuario, por qué hacerlo ahora y qué ocurre después del contacto.",
+    # Specific conditional rules. No generic recommendation without claims/evidence.
+    if score("offer_clarity") >= 5 and score("social_proof") <= 4:
+        add_rec(
+            "Antes de escalar pauta, reforzar la capa de confianza visible: reseñas, casos, logos de clientes, testimonios con contexto o evidencia verificable del resultado prometido.",
             "alta",
-            ids,
-            "Reduce fricción observable en el paso a consulta; requiere medición para validar efecto real.",
-            ["clicks a CTA", "formularios iniciados/enviados", "WhatsApp/calls", "tasa de respuesta comercial"],
-            "media" if ids else "baja-media",
-            "Se activa por debilidad en cta_strength, no por una plantilla de optimización genérica.",
+            supporting_claims("social_proof", "prueba social", "trust"),
+            "La oferta puede entenderse, pero la prueba social aparece débil o no suficientemente demostrada en la evidencia disponible.",
+            "medium" if score("offer_clarity") >= 6 else "low",
+            ["Capturas o links de reseñas", "casos/clientes verificables", "métricas de conversión antes/después"],
         )
-
-    if s("content_depth") < 45 and s("offer_clarity") >= 45:
-        ids = [claim.claim_id for claim in claims if "contenido" in claim.statement.lower() or "objeciones" in claim.statement.lower()]
-        add(
-            "Crear una capa de contenido de consideración: preguntas frecuentes, metodología, casos, comparativas, garantías o explicación del proceso según las objeciones reales del prospecto.",
+    if score("cta_strength") <= 4:
+        add_rec(
+            "Auditar y explicitar el recorrido de contacto: CTA principal, alternativa secundaria, formulario/WhatsApp, tiempo de respuesta y criterio de calificación del lead.",
+            "alta",
+            supporting_claims("cta", "contacto", "conversion_path"),
+            "El motor no encontró evidencia suficiente para afirmar un recorrido de conversión claro.",
+            "low",
+            ["Landing real", "captura del formulario/WhatsApp", "flujo de seguimiento comercial"],
+        )
+    if score("content_depth") <= 4 and score("authority") <= 5:
+        add_rec(
+            "Construir una pieza de consideración específica: metodología, proceso, preguntas frecuentes y criterios para elegir proveedor, sin convertirla todavía en propuesta gratuita completa.",
             "media",
-            ids,
-            "Mejora la capacidad del sitio/redes para sostener consideración; no debe presentarse como impacto de ventas sin datos.",
-            ["preguntas frecuentes de ventas", "scroll/engagement", "consultas calificadas", "objeciones respondidas"],
-            "media" if ids else "baja-media",
-            "Se activa por baja profundidad de contenido observable combinada con existencia de oferta legible.",
+            supporting_claims("content_depth", "authority", "profundidad", "autoridad"),
+            "La evidencia disponible no sostiene suficiente profundidad educativa/autoridad para una venta consultiva fuerte.",
+            "low",
+            ["Páginas de servicio", "FAQ", "metodología", "material educativo existente"],
+        )
+    if score("campaign_evidence") == 0:
+        add_rec(
+            "Pedir export de campañas antes de cualquier diagnóstico de performance: inversión, impresiones, clics, CTR, CPC, leads, CPL, conversiones, período, landing y objetivo por campaña.",
+            "alta",
+            supporting_claims("campaign", "performance", "campañas"),
+            "No hay datos de campañas; cualquier recomendación de performance sería inventada.",
+            "high",
+            ["Meta Ads/Google Ads export", "período analizado", "landing usada", "objetivo de campaña"],
+        )
+    if score("tracking_quality") <= 4:
+        add_rec(
+            "Separar análisis preliminar de presencia digital del análisis de performance: validar primero eventos, UTMs, Pixel/API, formularios, CRM y contacto efectivo.",
+            "alta",
+            supporting_claims("tracking", "campaign", "lead"),
+            "La evidencia no alcanza para atribuir resultados ni medir calidad post-click.",
+            "medium" if request.campaigns else "low",
+            ["Eventos configurados", "UTMs", "CRM", "estado de Pixel/API", "leads calificados"],
         )
 
-    if s("authority") < 45 and s("offer_clarity") >= 45:
-        ids = [claim.claim_id for claim in claims if "autoridad" in claim.statement.lower()]
-        add(
-            "Aumentar autoridad visible con activos verificables: metodología, experiencia, credenciales, equipo, procesos, entregables, casos o evidencia técnica según el mercado.",
-            "media",
-            ids,
-            "Mejora confianza preliminar y reduce incertidumbre antes de la consulta.",
-            ["nuevos activos de autoridad publicados", "interacción con secciones de confianza", "consultas calificadas"],
-            "baja-media" if ids else "baja",
-            "Se activa por señal authority limitada, no por categoría de rubro.",
-        )
-
-    if s("performance_data_quality") == 0:
-        blocked_recs.append("Bloqueada recomendación de optimización de campañas: no hay métricas reales de campañas.")
-        blocked_recs.append("Bloqueada recomendación de ROAS/CPA/CPL: faltan spend, conversiones, leads, ventas/revenue o tracking.")
-    elif s("tracking_reliability") < 50:
-        ids = [claim.claim_id for claim in claims if "tracking" in claim.statement.lower() or "cpl" in claim.statement.lower() or "cpa" in claim.statement.lower()]
-        add(
-            "Auditar medición antes de mover presupuesto: UTMs, eventos, Pixel/CAPI/GA4, evento de conversión y consistencia entre campaña, landing y CRM.",
-            "crítica",
-            ids,
-            "Evita decisiones de presupuesto basadas en datos incompletos o mal atribuidos.",
-            ["UTMs", "evento principal", "deduplicación", "CRM", "conversiones verificadas"],
-            "media",
-            "Se activa porque hay campañas, pero tracking_reliability no permite decisiones operativas fuertes.",
-        )
-
-    if s("lead_quality") < 50 and s("performance_data_quality") > 0:
-        ids = [claim.claim_id for claim in claims if "calidad de lead" in claim.statement.lower() or "lead" in claim.statement.lower()]
-        if ids:
-            add(
-                "Agregar capa de calidad de lead: calificados, no aptos, reuniones, oportunidades, etapa CRM, ventas y motivo de descarte antes de escalar inversión.",
-                "alta",
-                ids,
-                "Permite distinguir volumen barato de oportunidades reales.",
-                ["qualified_leads", "bad_leads", "meetings", "opportunities", "sales", "revenue"],
-                "media",
-                "Se activa por datos de campaña existentes sin datos suficientes de calidad comercial.",
-            )
-        else:
-            blocked_recs.append("Bloqueada recomendación de calidad de lead: no hay claim permitido ni evidencia suficiente.")
-
+    # Block known generic recommendations if unsupported.
+    generic_candidates = [
+        "Optimizar el funnel completo para aumentar conversiones.",
+        "Mejorar la propuesta de valor para vender más.",
+        "Escalar campañas con mayor presupuesto.",
+    ]
+    for candidate in generic_candidates:
+        blocked_recs.append(AnalyticalRecommendation(
+            recommendation_id=_recommendation_id(len(recs) + len(blocked_recs) + 1),
+            recommendation=candidate,
+            priority="bloqueada",
+            derived_from_claim_ids=[],
+            evidence_ids=[],
+            rationale="Recomendación genérica bloqueada por no tener cadena evidencia → señal → claim.",
+            confidence="none",
+            implementation_level="blocked",
+            required_data_to_validate=["Evidencia específica que justifique esta acción."],
+            blocked_reason="No se permite recomendación comodín.",
+        ))
     return recs, blocked_recs
 
 
-def determine_analytical_confidence(
-    vector: Dict[str, AnalyticalSignal],
-    ledger: List[AnalyticalEvidenceItem],
-    recommendations: List[AnalyticalRecommendation],
-    request: FullCommercialSystemRequest,
-) -> str:
-    observed_public = sum(1 for item in ledger if item.source_type == "public_observed" and item.usable_for_claims)
-    campaign_numeric = sum(1 for c in getattr(request, "campaigns", []) or [] if campaign_has_any_numeric_data(c))
-    tracking_quality = vector.get("tracking_reliability").score_0_to_100 if vector.get("tracking_reliability") else 0
-    lead_quality = vector.get("lead_quality").score_0_to_100 if vector.get("lead_quality") else 0
-    core_public_signals = ["offer_clarity", "authority", "social_proof", "cta_strength", "content_depth"]
-    usable_public_scores = [vector[k].score_0_to_100 or 0 for k in core_public_signals if vector.get(k)]
-    public_coverage = sum(1 for score in usable_public_scores if score >= 45)
-
-    if not ledger or (observed_public == 0 and not campaign_numeric and not getattr(request, "offer", None)):
-        return "not_safe"
-    if campaign_numeric and tracking_quality >= 60 and lead_quality >= 50:
-        return "complete"
-    if campaign_numeric:
-        return "campaign_ready"
-    if observed_public >= 2 and public_coverage >= 3 and recommendations:
-        return "comparable"
-    return "preliminary"
-
-
-def build_missing_data_for_complete_analysis(vector: Dict[str, AnalyticalSignal], request: FullCommercialSystemRequest) -> List[str]:
+def build_missing_data_for_complete_analysis(signal_vector: Dict[str, AnalyticalSignalScore], request: FullCommercialSystemRequest) -> List[str]:
     missing: List[str] = []
-    for key, sig in vector.items():
-        missing.extend(sig.missing_data)
-    if not getattr(request, "campaigns", None):
+    for sig, score in signal_vector.items():
+        if score.score_0_to_10 < 6:
+            missing.extend(score.missing_data)
+    if not request.campaigns:
         missing.extend([
-            "Export de Meta/Google Ads con spend, impresiones, alcance, frecuencia, clicks, CTR, CPC, CPM, leads, CPL y conversiones.",
-            "Landing principal usada en campañas y eventos configurados.",
-            "Registro CRM o planilla de leads con calificación, reuniones, oportunidades, ventas y motivos de descarte.",
+            "Export de campañas con spend, alcance, impresiones, CTR, CPC, leads, CPL, conversiones y período.",
+            "Landing usada por campaña y objetivo de cada campaña.",
+            "CRM o registro de leads con estado: contactado, calificado, venta, perdido.",
         ])
-    if not getattr(request, "social_content_samples", None):
-        missing.append("Últimos 10-15 contenidos por red con formato, hook, CTA y métricas de interacción/retención.")
-    return ac_unique(missing)[:18]
+    if not request.social_content_samples:
+        missing.append("Últimas 6 a 12 piezas por red social con formato, hook, CTA y métricas nativas si existen.")
+    return _unique_keep_order(missing)
 
 
-def run_analytical_core(
+def build_pre_report_factuality_check(
+    claims: List[AnalyticalClaim],
+    blocked_claims: List[AnalyticalClaim],
+    recommendations: List[AnalyticalRecommendation],
+    blocked_recommendations: List[AnalyticalRecommendation],
+    evidence_cross_check: EvidenceCrossCheckReport,
+) -> PreReportFactualityCheck:
+    unsupported_removed = len([c for c in blocked_claims if c.support_status in ["blocked", "unsupported"]])
+    perf_blocked = len([c for c in blocked_claims if c.claim_type == "performance_claim"])
+    degraded = len([c for c in claims if c.support_status in ["inferred", "partially_supported"]])
+    constraints = [
+        "No afirmar ROAS, CPA, CPL efectivo, tasa de conversión real ni calidad de lead sin datos de campañas/CRM.",
+        "Distinguir siempre hecho observado, dato declarado e inferencia diagnóstica.",
+        "Usar 'en la evidencia disponible' cuando la señal dependa de fuentes públicas parciales.",
+        "No presentar visuales como prueba de performance; son representación de señales disponibles.",
+    ]
+    if evidence_cross_check.status != "cross_checked":
+        constraints.append("Presentar el informe como preliminar; no usar tono concluyente.")
+    status = "passed"
+    if unsupported_removed or blocked_recommendations or evidence_cross_check.status != "cross_checked":
+        status = "passed_with_limitations"
+    safe = bool(claims or recommendations)
+    return PreReportFactualityCheck(
+        status=status if safe else "failed",
+        safe_to_write_report=safe,
+        unsupported_claims_removed=unsupported_removed,
+        claims_degraded_to_inference=degraded,
+        performance_claims_blocked=perf_blocked,
+        visual_claims_checked=bool(evidence_cross_check.visual_generation_allowed),
+        report_language_constraints=constraints,
+        blocked_claim_examples=[c.statement for c in blocked_claims[:6]],
+    )
+
+
+def build_analytical_core_result(
     request: FullCommercialSystemRequest,
     public_audit: ProspectWithResearchResponse,
     social_fit: Optional[SocialContentFitResponse],
     campaign_performance: Optional[CampaignPerformanceResponse],
-    analysis_trace: AnalysisTrace,
-) -> AnalyticalCoreReport:
+    evidence_cross_check: EvidenceCrossCheckReport,
+) -> AnalyticalCoreResult:
     ledger = build_analytical_evidence_ledger(request, public_audit, social_fit, campaign_performance)
-    vector = build_analytical_signal_vector(request, ledger)
-    claims, blocked_claims = build_claims_from_signals(vector, ledger, request)
-    recommendations, blocked_recommendations = build_recommendations_from_claims(vector, claims, blocked_claims)
-    confidence = determine_analytical_confidence(vector, ledger, recommendations, request)
-    missing = build_missing_data_for_complete_analysis(vector, request)
+    signal_vector = build_analytical_signal_vector(ledger, request, campaign_performance)
+    claims, blocked_claims = build_claim_registry(ledger, signal_vector, request, campaign_performance)
+    recommendations, blocked_recommendations = build_traceable_recommendations(signal_vector, claims, blocked_claims, request)
+    missing = build_missing_data_for_complete_analysis(signal_vector, request)
+    factuality = build_pre_report_factuality_check(claims, blocked_claims, recommendations, blocked_recommendations, evidence_cross_check)
+    has_campaigns = bool(request.campaigns)
+    public_evidence_count = len([item for item in ledger if item.source_type == "public_source" and item.can_support_claims])
+    high_scores = len([s for s in signal_vector.values() if s.score_0_to_10 >= 7])
+    if not factuality.safe_to_write_report:
+        confidence = "not_safe"
+    elif has_campaigns and signal_vector["campaign_evidence"].score_0_to_10 >= 6 and signal_vector["tracking_quality"].score_0_to_10 >= 6:
+        confidence = "campaign_ready"
+    elif public_evidence_count >= 3 and high_scores >= 3 and evidence_cross_check.status == "cross_checked":
+        confidence = "comparable"
+    else:
+        confidence = "preliminary"
 
-    # Visuales solo cuando existe cobertura mínima. Si no, se bloquean para evitar heatmaps genéricos.
-    public_observed = sum(1 for item in ledger if item.source_type == "public_observed" and item.usable_for_claims)
-    usable_signal_count = sum(1 for sig in vector.values() if sig.score_0_to_100 is not None and sig.score_0_to_100 >= 45 and sig.status in ["measured", "derived"])
-    safe_visuals = confidence in ["comparable", "campaign_ready", "complete"] and public_observed >= 2 and usable_signal_count >= 4
-    safe_recs = bool(recommendations) and confidence != "not_safe"
+    if confidence == "not_safe":
+        interpretation = "No hay evidencia suficiente para escribir un diagnóstico útil sin riesgo de invención."
+    elif confidence == "preliminary":
+        interpretation = "El motor produjo diagnóstico preliminar: separa evidencia observada/declarada de inferencias y bloquea claims de performance real."
+    elif confidence == "comparable":
+        interpretation = "Hay evidencia pública suficiente para comparar señales comerciales visibles, sin afirmar performance real."
+    else:
+        interpretation = "Hay datos de campaña suficientes para iniciar análisis de performance, manteniendo límites de atribución y calidad de datos."
 
-    not_allowed = [
-        "No afirmar ROAS, CPA, CPL, tasa de conversión, fatiga creativa o calidad de lead sin métricas reales suficientes.",
-        "No afirmar causalidad ni pérdida de ventas desde presencia digital pública.",
-        "No afirmar que algo no existe; usar 'no se detectó en la muestra revisada'.",
-        "No generar recomendaciones sin evidence_id, signal y claim respaldado.",
-    ]
-    constraints = [
-        "Separar hechos observados, datos declarados, inferencias y recomendaciones.",
-        "Usar lenguaje preliminar cuando la evidencia sea pública o parcial.",
-        "Cada recomendación debe citar la cadena evidence_id -> claim_id.",
-        "Si falta un módulo, explicar dato faltante y no completarlo con template.",
-    ]
-
-    evidence_summary_parts = []
-    observed_types = {}
-    for item in ledger:
-        observed_types[item.source_type] = observed_types.get(item.source_type, 0) + 1
-    evidence_summary_parts.append("Evidencia registrada: " + ", ".join([f"{k}={v}" for k, v in sorted(observed_types.items())]) if observed_types else "Sin evidencia registrable.")
-    evidence_summary_parts.append(f"Claims permitidos={len(claims)}; claims bloqueados={len(blocked_claims)}; recomendaciones permitidas={len(recommendations)}; recomendaciones bloqueadas={len(blocked_recommendations)}.")
-
-    reliability_summary = (
-        "El motor prioriza datos observados y métricas reales. Si solo hay web/fuentes públicas, el análisis queda en preliminary/comparable; "
-        "performance completa exige campañas, tracking y calidad de lead."
-    )
-
-    return AnalyticalCoreReport(
-        engine_version=ANALYTICAL_CORE_VERSION,
-        no_invention_policy_applied=True,
-        analysis_mode=analysis_trace.analysis_mode,
-        confidence_status=confidence,
-        evidence_first_summary=" ".join(evidence_summary_parts),
-        data_reliability_summary=reliability_summary,
+    next_data = missing[:8]
+    return AnalyticalCoreResult(
         evidence_ledger=ledger,
-        signal_vector=vector,
+        signal_vector=signal_vector,
         claims=claims,
         blocked_claims=blocked_claims,
         recommendations=recommendations,
         blocked_recommendations=blocked_recommendations,
         missing_data_for_complete_analysis=missing,
-        not_allowed_claims=not_allowed,
-        safe_to_generate_recommendations=safe_recs,
-        safe_to_generate_visuals=safe_visuals,
-        decision_rule="Toda recomendación requiere cadena evidence_id -> signal -> claim -> recommendation. Si falta la cadena, se bloquea.",
-        report_language_constraints=constraints,
+        not_allowed_claims=[c.statement for c in blocked_claims],
+        pre_report_factuality_check=factuality,
+        executive_interpretation=interpretation,
+        next_best_data_request=next_data,
+        confidence_status=confidence,
     )
-
-
-def build_strategic_measures_matrix_from_analytical_core(
-    request: FullCommercialSystemRequest,
-    analytical_core: AnalyticalCoreReport,
-    analysis_trace: AnalysisTrace,
-    fallback: StrategicMeasuresMatrix,
-) -> StrategicMeasuresMatrix:
-    if not analytical_core.recommendations:
-        return StrategicMeasuresMatrix(
-            summary="No se generaron medidas estratégicas porque el motor analítico no encontró cadenas evidencia -> señal -> claim -> recomendación suficientemente respaldadas.",
-            measures=[],
-            decision_logic="Regla aplicada: no recomendar sin evidencia trazable. Usar missing_data_for_complete_analysis para completar el análisis.",
-            data_limitations=analytical_core.missing_data_for_complete_analysis[:10],
-            next_measurement_layer=analytical_core.missing_data_for_complete_analysis[:8],
-        )
-
-    measures: List[StrategicMeasure] = []
-    evidence_by_id = {ev.evidence_id: ev for ev in analytical_core.evidence_ledger}
-    claim_by_id = {cl.claim_id: cl for cl in analytical_core.claims}
-    for rec in analytical_core.recommendations[:8]:
-        evidence_used = [evidence_by_id[eid].observed_fact for eid in rec.evidence_ids if eid in evidence_by_id][:4]
-        claim_statements = [claim_by_id[cid].statement for cid in rec.triggered_by_claims if cid in claim_by_id]
-        measures.append(
-            StrategicMeasure(
-                measure_name=rec.recommendation[:90],
-                area="Motor analítico / presencia digital" if "campaña" not in rec.recommendation.lower() else "Performance / tracking",
-                problem_addressed="; ".join(claim_statements[:3]) or "Claim respaldado por evidencia trazable.",
-                evidence_used=evidence_used or rec.evidence_ids,
-                data_considered=rec.evidence_ids,
-                decision_basis=rec.non_generic_reason,
-                affected_area=["presencia digital", "confianza", "conversión preliminar"],
-                expected_impact=rec.expected_impact,
-                priority=rec.priority,
-                confidence=rec.confidence,
-                validation_metrics=rec.validation_needed,
-                implementation_variants=[
-                    ImplementationVariant(
-                        variant_name="Implementación mínima verificable",
-                        description="Aplicar el cambio en una sección/canal y medir la señal de validación indicada antes de escalar.",
-                        score_1_to_10=8 if rec.priority in ["alta", "crítica"] else 6,
-                        why_this_score="Priorizada por cadena evidencia -> claim -> recomendación, no por plantilla genérica.",
-                        feasibility="media-alta",
-                        expected_impact=rec.expected_impact,
-                        risk_level="medio" if rec.confidence.startswith("media") else "alto",
-                        best_use_case="preventa, auditoría preliminar o preparación para campañas",
-                        test_metric=", ".join(rec.validation_needed[:3]) or "métrica de validación pendiente",
-                        can_be_tested_before_or_after="antes_y_despues",
-                    )
-                ],
-                recommended_testing_sequence=rec.validation_needed[:4] or ["Recolectar datos faltantes antes de testear."],
-                dependencies=rec.validation_needed[:3],
-                risks=["No presentar como impacto confirmado sin medición posterior."],
-                what_not_to_give_for_free="No diseñar la implementación completa ni optimizar campañas sin acceso a métricas, tracking y CRM.",
-            )
-        )
-
-    return StrategicMeasuresMatrix(
-        summary=f"Medidas generadas por motor analítico evidence-first. Confianza: {analytical_core.confidence_status}. Recomendaciones permitidas: {len(analytical_core.recommendations)}; bloqueadas: {len(analytical_core.blocked_recommendations)}.",
-        measures=measures,
-        decision_logic="Cada medida exige evidence_id, signal y claim respaldado. Si no existe cadena trazable, se bloquea.",
-        data_limitations=analytical_core.missing_data_for_complete_analysis[:12],
-        next_measurement_layer=analytical_core.missing_data_for_complete_analysis[:8],
-    )
-
-
-def build_analytical_next_step(analytical_core: AnalyticalCoreReport, campaign_performance: CampaignPerformanceResponse) -> str:
-    if analytical_core.recommendations:
-        top = analytical_core.recommendations[0]
-        return f"Prioridad analítica: {top.recommendation} Validar con: {', '.join(top.validation_needed[:3]) or 'métricas faltantes'}."
-    if analytical_core.missing_data_for_complete_analysis:
-        return f"No ejecutar recomendaciones tácticas todavía. Primero cargar: {analytical_core.missing_data_for_complete_analysis[0]}"
-    if campaign_performance.data_quality == "sin_datos":
-        return "Cargar datos reales de campañas, tracking y calidad comercial antes de pedir decisiones operativas."
-    return "Revisar claims bloqueados y completar la evidencia faltante antes de escalar decisiones."
-
-
-def build_analysis_focused_written_report_markdown(
-    request: FullCommercialSystemRequest,
-    analytical_core: AnalyticalCoreReport,
-    analysis_trace: AnalysisTrace,
-    stable_output: StableAuditOutput,
-    visual_report_url: Optional[str],
-    evidence_cross_check: Optional[EvidenceCrossCheckReport] = None,
-    deliverable_reliability: Optional[DeliverableReliabilityReport] = None,
-) -> str:
-    reliable_facts = "\n".join([
-        f"- [{ev.evidence_id}] {ev.source_type} | {ev.source_label}: {ev.observed_fact} (reliability={ev.reliability})"
-        for ev in analytical_core.evidence_ledger[:18]
-        if ev.usable_for_claims
-    ]) or "- No hay evidencia suficiente para claims presentables."
-
-    signals = "\n".join([
-        f"- {sig.label}: {sig.score_0_to_100 if sig.score_0_to_100 is not None else 'n/d'}/100 | status={sig.status} | evidencia={', '.join(sig.evidence_ids) or 'sin evidence_id'} | {sig.rationale}"
-        for sig in analytical_core.signal_vector.values()
-    ])
-
-    claims = "\n".join([
-        f"- [{cl.claim_id}] {cl.statement} | support={cl.support_status} | evidencia={', '.join(cl.evidence_ids) or 'n/d'} | lenguaje permitido: {cl.allowed_language}"
-        for cl in analytical_core.claims[:12]
-    ]) or "- Sin claims suficientes."
-
-    blocked = "\n".join([
-        f"- [{cl.claim_id}] {cl.statement} | motivo: {cl.forbidden_language or cl.support_status}"
-        for cl in analytical_core.blocked_claims[:10]
-    ]) or "- Sin claims bloqueados relevantes."
-
-    recs = "\n".join([
-        f"- [{rec.recommendation_id}] {rec.priority.upper()}: {rec.recommendation}\n  Evidencia: {', '.join(rec.evidence_ids)} | Claims: {', '.join(rec.triggered_by_claims)}\n  Validar con: {', '.join(rec.validation_needed)}"
-        for rec in analytical_core.recommendations[:8]
-    ]) or "- No se generaron recomendaciones porque faltó cadena evidencia -> señal -> claim."
-
-    missing = "\n".join([f"- {item}" for item in analytical_core.missing_data_for_complete_analysis[:14]]) or "- Sin faltantes registrados."
-    blocked_recs = "\n".join([f"- {item}" for item in analytical_core.blocked_recommendations[:10]]) or "- Sin recomendaciones bloqueadas."
-
-    reliability = ""
-    if deliverable_reliability:
-        reliability = f"- reliability_status: {deliverable_reliability.reliability_status}\n- safe_to_present: {deliverable_reliability.safe_to_present}\n- safe_to_execute_actions: {deliverable_reliability.safe_to_execute_actions}\n- resumen: {deliverable_reliability.file_confidence_summary}"
-
-    evidence_status = ""
-    if evidence_cross_check:
-        evidence_status = f"- evidence_cross_check: {evidence_cross_check.status}\n- generic_output_risk: {evidence_cross_check.generic_output_risk}\n- explanation: {evidence_cross_check.explanation}"
-
-    return f"""# Informe analítico preliminar — evidence-first
-
-## Empresa
-{request.company_name}
-
-## Regla aplicada
-No inventar nada. Cada conclusión debe salir de evidencia registrada. Si falta la cadena evidence_id -> signal -> claim -> recommendation, la recomendación se bloquea.
-
-## Estado del motor analítico
-- engine_version: {analytical_core.engine_version}
-- confidence_status: {analytical_core.confidence_status}
-- safe_to_generate_recommendations: {analytical_core.safe_to_generate_recommendations}
-- safe_to_generate_visuals: {analytical_core.safe_to_generate_visuals}
-- analysis_mode: {analytical_core.analysis_mode}
-- resumen: {analytical_core.evidence_first_summary}
-- confiabilidad de datos: {analytical_core.data_reliability_summary}
-
-## Datos fiables usados primero
-{reliable_facts}
-
-## Signal vector
-{signals}
-
-## Claims permitidos
-{claims}
-
-## Claims bloqueados / no afirmables
-{blocked}
-
-## Recomendaciones permitidas
-{recs}
-
-## Recomendaciones bloqueadas
-{blocked_recs}
-
-## Datos faltantes para análisis completo
-{missing}
-
-## Límites de lenguaje obligatorios
-{chr(10).join([f'- {item}' for item in analytical_core.report_language_constraints])}
-
-## Claims no permitidos
-{chr(10).join([f'- {item}' for item in analytical_core.not_allowed_claims])}
-
-## Cruce de evidencia
-{evidence_status or '- No disponible'}
-
-## Confiabilidad del entregable
-{reliability or '- No disponible'}
-
-## Stable output
-- stability_status: {stable_output.stability_status}
-- canonical_input_hash: {stable_output.canonical_input_hash}
-- sources_hash: {stable_output.sources_hash}
-- analysis_version: {stable_output.analysis_version}
-- ruleset_version: {stable_output.ruleset_version}
-
-## Reporte visual
-{visual_report_url or 'No generado o bloqueado por evidencia insuficiente.'}
-"""
-
 
 def adapt_blueprint_to_public_evidence(
     public_audit: ProspectWithResearchResponse,
@@ -9350,11 +9126,13 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
 
     if campaign_performance.data_quality == "sin_datos":
         system_summary = (
-            "Modo preliminar evidence-first: el sistema prioriza datos observados/declarados, bloquea performance real sin campañas y solo permite recomendaciones con evidencia trazable."
+            "El sistema comercial ya puede unir investigación pública, diagnóstico estratégico y estructura visual. "
+            "La capa de campañas está preparada, pero todavía necesita datos reales para activar decisiones de presupuesto, creatividad, landing, audiencia, retargeting y tracking."
         )
     else:
         system_summary = (
-            "Modo analítico con campañas: el sistema cruza presencia digital, métricas, tracking y calidad de lead; las acciones se habilitan solo si tienen evidencia_id, signal y claim."
+            "El sistema comercial combina señales públicas con datos de campaña. Las prioridades deben leerse como una secuencia: "
+            "primero corregir mensaje/CTA/confianza, luego presupuesto/tracking, y después escalar o pausar según evidencia."
         )
 
     commercial_readiness_score = build_commercial_readiness_score(public_audit, campaign_performance)
@@ -9382,34 +9160,24 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         campaign_performance=campaign_performance,
         analysis_trace=analysis_trace,
     )
-
-    analytical_core = run_analytical_core(
+    analytical_core = build_analytical_core_result(
         request=request,
         public_audit=public_audit,
         social_fit=social_content_fit,
         campaign_performance=campaign_performance,
-        analysis_trace=analysis_trace,
+        evidence_cross_check=evidence_cross_check,
     )
-
-    # El motor analítico gobierna visuales y recomendaciones.
-    # Si no hay cadena evidence_id -> signal -> claim suficiente, se bloquea visual para evitar outputs genéricos.
-    evidence_cross_check.visual_generation_allowed = bool(evidence_cross_check.visual_generation_allowed and analytical_core.safe_to_generate_visuals)
-    if not analytical_core.safe_to_generate_visuals:
-        evidence_cross_check.generic_output_risk = "alto" if evidence_cross_check.generic_output_risk in ["medio", "medio-alto"] else evidence_cross_check.generic_output_risk
-        evidence_cross_check.explanation = (
-            evidence_cross_check.explanation +
-            " Motor analítico: visuales bloqueados porque no hay cobertura suficiente de evidence_id -> signal -> claim para evitar heatmap/funnel/blueprint genérico."
-        )
-
-    strategic_measures_matrix = build_strategic_measures_matrix_from_analytical_core(
-        request=request,
-        analytical_core=analytical_core,
-        analysis_trace=analysis_trace,
-        fallback=strategic_measures_matrix,
+    analytical_visual_allowed = (
+        evidence_cross_check.visual_generation_allowed
+        and analytical_core.pre_report_factuality_check.safe_to_write_report
+        and analytical_core.confidence_status in ["comparable", "campaign_ready", "complete"]
     )
-
-    generation_gate_status = "allowed" if evidence_cross_check.visual_generation_allowed else "blocked"
-    generation_gate_reason = evidence_cross_check.explanation
+    generation_gate_status = "allowed" if analytical_visual_allowed else "blocked"
+    generation_gate_reason = (
+        evidence_cross_check.explanation
+        if analytical_visual_allowed
+        else f"Visuales bloqueados por analytical_core: confidence_status={analytical_core.confidence_status}. Se prioriza análisis trazable sobre gráficos potencialmente genéricos."
+    )
 
     visual_report_url = None
     visual_report_status = "not_generated"
@@ -9418,7 +9186,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
     stable_output: Optional[StableAuditOutput] = None
     deliverable_reliability: Optional[DeliverableReliabilityReport] = None
 
-    if evidence_cross_check.visual_generation_allowed:
+    if analytical_visual_allowed:
         try:
             awareness_svg = render_awareness_funnel_svg(public_audit.awareness_funnel_locator)
             temperature_svg = render_temperature_heatmap_svg(public_audit.temperature_heatmap)
@@ -9455,6 +9223,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
                 stable_output=stable_output,
                 evidence_cross_check=evidence_cross_check,
                 deliverable_reliability=deliverable_reliability,
+                analytical_core=analytical_core,
             )
             save_visual_report_html(report_id, report_html)
             visual_report_status = "generated"
@@ -9483,14 +9252,18 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
 
     if visual_report_status == "generated" and visual_report_url:
         try:
-            written_report_markdown = build_analysis_focused_written_report_markdown(
+            written_report_markdown = build_written_audit_report_markdown(
                 request=request,
-                analytical_core=analytical_core,
+                public_audit=public_audit,
+                social_fit=social_content_fit,
+                campaign_performance=campaign_performance,
                 analysis_trace=analysis_trace,
                 stable_output=stable_output,
+                strategic_measures_matrix=strategic_measures_matrix,
                 visual_report_url=visual_report_url,
                 evidence_cross_check=evidence_cross_check,
                 deliverable_reliability=deliverable_reliability,
+                analytical_core=analytical_core,
             )
             report_id_for_bundle = visual_report_url.rstrip("/").rsplit("/", 1)[-1]
             report_html_for_bundle = load_visual_report_html(report_id_for_bundle) or ""
@@ -9533,7 +9306,13 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         strategic_measures_matrix=strategic_measures_matrix,
         stable_output=stable_output,
         system_summary=system_summary,
-        recommended_next_step=build_analytical_next_step(analytical_core, campaign_performance),
+        recommended_next_step=(
+            analytical_core.next_best_data_request[0]
+            if analytical_core.next_best_data_request
+            else (
+                "Revisar primero claims permitidos, recomendaciones trazables y límites del pre_report_factuality_check."
+            )
+        ),
         visual_report_url=visual_report_url,
         visual_report_status=visual_report_status,
         visual_asset_urls=clean_visual_assets,
@@ -9573,7 +9352,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         proposal_guidance=campaign_performance.proposal_guidance,
         timed_action_plan=campaign_performance.timed_action_plan,
         response_note=(
-            "Respuesta compacta evidence-first. Para decisiones analíticas usar analytical_core: evidence_ledger, signal_vector, claims y recommendations. "
-            "Los campos visuales/reportes son presentación; el motor fiable es la cadena evidence_id -> signal -> claim -> recommendation."
+            "Respuesta compacta para evitar response_too_large en Custom GPT Actions. "
+            "Los visuales completos no viajan en JSON; usar visual_report_url o /deliverables/visual-report."
         ),
     )
