@@ -128,26 +128,50 @@ def _extract_anchors(raw_html: str, limit: int = 80) -> List[Dict[str, str]]:
     return anchors
 
 
+def _clean_extracted_snippet(value: str, max_chars: int = 280) -> str:
+    """Return a readable, claim-safe snippet from raw HTML/text/anchor context."""
+    value = html.unescape(str(value or ""))
+    value = re.sub(r"https?://\S+", " ", value, flags=re.I)
+    value = re.sub(r"\b(?:mailto|tel):\S+", " ", value, flags=re.I)
+    value = re.sub(r"[|]{2,}", " | ", value)
+    value = re.sub(r"\s+", " ", value).strip(" .;:-|\n\t")
+    repeated_nav = ["inicio", "nosotros", "servicios", "precios", "contacto", "preguntas", "frecuentes"]
+    tokens = value.lower().split()
+    if tokens and sum(tokens.count(t) for t in repeated_nav) >= max(7, len(tokens) // 2):
+        return ""
+    return value[:max_chars].strip()
+
+
 def _find_context_snippets(text: str, keywords: List[str], limit: int = 3) -> List[str]:
     if not text:
         return []
     clean = re.sub(r"\s+", " ", text)
-    lower = clean.lower()
+    chunks = [c.strip() for c in re.split(r"(?<=[.!?])\s+|\s+[•·]\s+|\s{2,}", clean) if c.strip()]
+    lower_chunks = [(chunk, chunk.lower()) for chunk in chunks]
     snippets: List[str] = []
     for kw in keywords:
         k = kw.lower()
-        start = lower.find(k)
-        if start == -1:
-            continue
-        left = max(0, start - 110)
-        right = min(len(clean), start + len(k) + 170)
-        snippet = clean[left:right].strip(" .;:-|\n\t")
-        if snippet and all(snippet.lower() not in existing.lower() for existing in snippets):
-            snippets.append(snippet[:360])
+        found = False
+        for chunk, low in lower_chunks:
+            if k not in low:
+                continue
+            snippet = _clean_extracted_snippet(chunk)
+            if snippet and all(snippet.lower() not in existing.lower() for existing in snippets):
+                snippets.append(snippet)
+                found = True
+                break
+        if not found:
+            lower = clean.lower()
+            pos = lower.find(k)
+            if pos != -1:
+                left = max(0, pos - 70)
+                right = min(len(clean), pos + len(k) + 140)
+                snippet = _clean_extracted_snippet(clean[left:right])
+                if snippet and all(snippet.lower() not in existing.lower() for existing in snippets):
+                    snippets.append(snippet)
         if len(snippets) >= limit:
             break
     return snippets
-
 
 def _summarize_list(values: List[str], max_items: int = 8, max_chars: int = 520) -> str:
     selected = [v for v in values if v][:max_items]
@@ -217,14 +241,15 @@ def fetch_website_evidence_snapshot(url: Optional[str]) -> Dict[str, Any]:
 
         facts: List[Dict[str, Any]] = []
         def fact(label: str, observed: str, supports: List[str], reliability: str = "medium"):
-            observed = re.sub(r"\s+", " ", str(observed or "")).strip()
+            observed = _clean_extracted_snippet(str(observed or ""), max_chars=520)
             if observed:
                 facts.append({
                     "label": label,
-                    "observed_fact": observed[:900],
+                    "observed_fact": observed,
                     "supports": _unique_keep_order(supports),
                     "reliability": reliability,
                 })
+
 
         if title or headings:
             fact(
@@ -4404,21 +4429,8 @@ def build_written_audit_report_markdown(
 - Commercial Readiness Score: {stable_output.commercial_score_overall if stable_output.commercial_score_overall is not None else "n/d"}
 - Fuente primaria de diagnóstico: {analysis_trace.primary_diagnosis_source}
 
-## Awareness Funnel
-- Etapa dominante: {public_audit.awareness_funnel_locator.dominant_stage}
-- Etapa bloqueada: {public_audit.awareness_funnel_locator.blocked_stage}
-- Explicación: {public_audit.awareness_funnel_locator.explanation}
-
-## Customer Intent Density Map
-- Zona dominante: {public_audit.customer_intent_density_map.dominant_zone.x} / {public_audit.customer_intent_density_map.dominant_zone.y}
-- Zona bloqueada: {public_audit.customer_intent_density_map.blocked_zone.x} / {public_audit.customer_intent_density_map.blocked_zone.y}
-- Interpretación: {public_audit.customer_intent_density_map.interpretation}
-
-## Commercial System Blueprint
-- Ruta actual: {" → ".join(public_audit.funnel_blueprint.current_flow)}
-- Rupturas: {"; ".join(public_audit.funnel_blueprint.breakpoints)}
-- Ruta recomendada: {" → ".join(public_audit.funnel_blueprint.recommended_flow)}
-- Resumen: {public_audit.funnel_blueprint.summary}
+## Visuales fuertes / mapas
+{("- Visuales fuertes no generados en esta corrida. Motivo: modo analysis_only o evidencia insuficiente para evitar heatmap/blueprint genéricos. Usar analytical_core como salida principal." if "analytical_core" in (stable_output.modules_used or []) and "heatmap" not in (stable_output.modules_used or []) else f"- Awareness dominante: {public_audit.awareness_funnel_locator.dominant_stage} / bloqueada: {public_audit.awareness_funnel_locator.blocked_stage}\n- Heatmap dominante: {public_audit.customer_intent_density_map.dominant_zone.x} / {public_audit.customer_intent_density_map.dominant_zone.y}\n- Blueprint ruta actual: {' → '.join(public_audit.funnel_blueprint.current_flow)}\n- Blueprint rupturas: {'; '.join(public_audit.funnel_blueprint.breakpoints)}")}
 
 ## Social Content Fit
 - Score: {social_fit.overall_social_content_fit_score}/100
@@ -4499,17 +4511,22 @@ def export_audit_bundle_to_drive(
             "use_case": asset.use_case,
         })
 
+    html_filename = safe_drive_filename(company_name, "visual_report", "html", hash_id=report_id)
+    report_html_b64 = base64.b64encode((report_html or "").encode("utf-8")).decode("ascii")
     payload = {
         "secret": GOOGLE_APPS_SCRIPT_SECRET,
         "action": "create_audit_bundle",
         "folder_id": GOOGLE_DRIVE_FOLDER_ID,
         "company_name": company_name,
         "report_id": report_id,
-        "html_filename": safe_drive_filename(company_name, "visual_report", "html", hash_id=report_id),
+        "filename": html_filename,
+        "mime_type": "text/html",
+        "base64": report_html_b64,
+        "html_filename": html_filename,
         "pdf_filename": safe_drive_filename(company_name, "visual_report", "pdf", hash_id=report_id),
         "docx_filename": safe_drive_filename(company_name, "informe_escrito_backend", "docx", hash_id=report_id),
         "json_filename": safe_drive_filename(company_name, "audit_metadata", "json", hash_id=report_id),
-        "report_html_base64": base64.b64encode(report_html.encode("utf-8")).decode("ascii"),
+        "report_html_base64": report_html_b64,
         "written_report_markdown": written_report_markdown,
         "assets": assets_payload,
         "metadata": {
@@ -4538,28 +4555,51 @@ def export_audit_bundle_to_drive(
             status="failed",
             storage_provider="render_temp",
             error=data.get("error", "Apps Script returned ok=false."),
-            note="Fallback: reporte/PNG temporales siguen disponibles en Render si se generaron.",
+            note="Fallback: reporte/PNG temporales siguen disponibles en Render si se generaron. Si el error es Missing base64, redeployar Apps Script drive_bundle_v2 o superior.",
         )
 
-    files = [
-        DriveBundleFile(
-            file_type=item.get("file_type", "file"),
-            name=item.get("name", ""),
-            url=item.get("url"),
-            file_id=item.get("file_id"),
-            mime_type=item.get("mime_type"),
-            asset_type=item.get("asset_type"),
+    if data.get("files"):
+        files = [
+            DriveBundleFile(
+                file_type=item.get("file_type", "file"),
+                name=item.get("name", ""),
+                url=item.get("url"),
+                file_id=item.get("file_id"),
+                mime_type=item.get("mime_type"),
+                asset_type=item.get("asset_type"),
+            )
+            for item in data.get("files", [])
+        ]
+        return DriveBundleExport(
+            status="uploaded_to_google_drive",
+            storage_provider="google_drive",
+            folder_id=data.get("folder_id"),
+            folder_url=data.get("folder_url"),
+            files=files,
+            note="Carpeta Drive creada con PDF, HTML, PNG transparentes y DOCX generado por backend.",
         )
-        for item in data.get("files", [])
-    ]
+
+    if data.get("file_id") or data.get("url"):
+        return DriveBundleExport(
+            status="partial_uploaded_legacy_single_file",
+            storage_provider="google_drive",
+            folder_id=data.get("folder_id"),
+            folder_url=data.get("folder_url") or data.get("url"),
+            files=[DriveBundleFile(
+                file_type="html_report_legacy_single_upload",
+                name=data.get("name") or html_filename,
+                url=data.get("url"),
+                file_id=data.get("file_id"),
+                mime_type="text/html",
+            )],
+            note="Apps Script respondió como uploader simple, no como bundle. Se subió al menos el HTML; para carpeta con PDF/DOCX/metadata, redeployar Apps Script drive_bundle_v2 o superior.",
+        )
 
     return DriveBundleExport(
-        status="uploaded_to_google_drive",
-        storage_provider="google_drive",
-        folder_id=data.get("folder_id"),
-        folder_url=data.get("folder_url"),
-        files=files,
-        note="Carpeta Drive creada con PDF, HTML, PNG transparentes y DOCX generado por backend.",
+        status="failed",
+        storage_provider="render_temp",
+        error="Apps Script returned ok=true but no bundle files or file URL.",
+        note="Fallback: reporte/PNG temporales siguen disponibles en Render.",
     )
 
 
@@ -8326,6 +8366,73 @@ def build_stable_audit_output(
 
 
 
+
+def sanitize_stable_output_for_analysis_only(
+    stable_output: StableAuditOutput,
+    analytical_core: AnalyticalCoreResult,
+    visual_report_status: str,
+) -> StableAuditOutput:
+    """Remove legacy visual claims from stable_output when strong visuals were not generated."""
+    if visual_report_status == "generated":
+        return stable_output
+    try:
+        data = stable_output.model_dump()
+    except AttributeError:
+        data = stable_output.dict()
+
+    if analytical_core.confidence_status in ["complete", "campaign_ready", "comparable"]:
+        stability_status = "comparable"
+        report_use = "usable_for_controlled_analytical_report_with_hashes"
+    elif analytical_core.confidence_status == "not_safe" or not analytical_core.pre_report_factuality_check.safe_to_write_report:
+        stability_status = "not_safe"
+        report_use = "not_safe_to_present"
+    else:
+        stability_status = "preliminary"
+        report_use = "usable_for_preliminary_website_observed_analysis_only"
+
+    data.update({
+        "modules_used": _unique_keep_order([
+            "website_observed_evidence",
+            "analytical_core",
+            "evidence_ledger",
+            "signal_vector",
+            "claim_registry",
+            "traceable_recommendation_engine",
+            "pre_report_factuality_check",
+        ]),
+        "primary_diagnosis_source": "analytical_core_website_observed",
+        "awareness_dominant_stage": "not_generated_analysis_only",
+        "awareness_blocked_stage": "not_generated_analysis_only",
+        "awareness_distribution": {},
+        "heatmap_dominant_zone": "not_generated_analysis_only",
+        "heatmap_blocked_zone": "not_generated_analysis_only",
+        "blueprint_current_flow": ["No generado: modo analysis_only; se prioriza analytical_core evidence-first."],
+        "blueprint_breakpoints": ["No generado: visual fuerte bloqueado para evitar genericidad o falsa precisión."],
+        "blueprint_recommended_flow": ["Usar analytical_core.claims y analytical_core.recommendations trazables."],
+        "primary_bottleneck": "not_generated_analysis_only",
+        "commercial_score_overall": None,
+        "stability_status": stability_status,
+        "needs_second_run": False,
+        "report_use": report_use,
+        "safe_to_present": bool(analytical_core.pre_report_factuality_check.safe_to_write_report and stability_status != "not_safe"),
+        "safe_to_execute_actions": False,
+        "instability_risks": _unique_keep_order([
+            *(data.get("instability_risks") or []),
+            "Visuales fuertes bloqueados: no usar heatmap/blueprint/awareness legacy como evidencia.",
+            "Análisis preliminar basado en evidencia observable del sitio; no equivale a performance real.",
+        ]),
+        "stability_reason": (
+            "Salida sanitizada en modo analysis_only: conserva hashes/versiones, pero elimina claims legacy "
+            "de heatmap/blueprint/awareness porque no se generaron visuales fuertes. "
+            f"confidence_status={analytical_core.confidence_status}; factuality_check={analytical_core.pre_report_factuality_check.status}."
+        ),
+        "stability_note": (
+            "Usar este bloque para trazabilidad del análisis preliminar. No interpretar campos visuales como módulos ejecutados "
+            "cuando visual_report_status no sea generated."
+        ),
+    })
+    return StableAuditOutput(**data)
+
 def get_request_declared_links(request: Any) -> List[str]:
     links: List[str] = []
     for attr in ["website", "instagram", "tiktok", "facebook", "youtube", "linkedin"]:
@@ -8546,8 +8653,19 @@ def build_deliverable_reliability_report(
     stable_output: StableAuditOutput,
     evidence_cross_check: EvidenceCrossCheckReport,
     drive_bundle: Optional[DriveBundleExport] = None,
+    analytical_core: Optional[AnalyticalCoreResult] = None,
+    visual_report_status: Optional[str] = None,
 ) -> DeliverableReliabilityReport:
-    if not stable_output.safe_to_present or evidence_cross_check.status == "insufficient":
+    if analytical_core is not None:
+        core_status = analytical_core.confidence_status
+        factuality_safe = analytical_core.pre_report_factuality_check.safe_to_write_report
+        if not stable_output.safe_to_present or not factuality_safe or evidence_cross_check.status == "insufficient" or core_status == "not_safe":
+            reliability = "not_safe"
+        elif core_status in ["complete", "campaign_ready", "comparable"]:
+            reliability = "comparable"
+        else:
+            reliability = "preliminary"
+    elif not stable_output.safe_to_present or evidence_cross_check.status == "insufficient":
         reliability = "not_safe"
     elif stable_output.stability_status in ["locked", "comparable"]:
         reliability = stable_output.stability_status
@@ -8559,7 +8677,11 @@ def build_deliverable_reliability_report(
     risks = list(stable_output.instability_risks or [])
     if evidence_cross_check.generic_output_risk in ["medio-alto", "alto"]:
         risks.append(f"Riesgo de salida genérica: {evidence_cross_check.generic_output_risk}.")
-    if drive_bundle and drive_bundle.status not in ["uploaded_to_google_drive", "not_requested"]:
+    if analytical_core is not None and visual_report_status and visual_report_status != "generated":
+        risks.append("Visuales fuertes no generados: se entregó análisis preliminar evidence-first para evitar gráficos genéricos.")
+    if analytical_core is not None and analytical_core.confidence_status == "preliminary":
+        risks.append("Confiabilidad limitada a análisis preliminar: no hay campañas/CRM/Analytics suficientes para performance real.")
+    if drive_bundle and drive_bundle.status not in ["uploaded_to_google_drive", "not_requested", "partial_uploaded_legacy_single_file"]:
         risks.append(f"Drive bundle no confirmado: {drive_bundle.status}.")
 
     required = list(evidence_cross_check.missing_data)
@@ -8573,7 +8695,7 @@ def build_deliverable_reliability_report(
     elif reliability == "comparable":
         summary = "Archivo comparable si se guardan hashes, versión, ruleset, analysis_mode y módulos usados. Puede cambiar si cambia búsqueda live o evidencia."
     elif reliability == "preliminary":
-        summary = "Archivo útil solo como exploración preliminar; requiere más evidencia antes de decisiones fuertes."
+        summary = "Archivo útil como análisis preliminar evidence-first: puede presentarse con límites claros, pero no como diagnóstico de performance ni como reporte completo."
     elif reliability == "variable":
         summary = "Archivo variable: no conviene compararlo ni presentarlo como estable sin repetir con payload fijo y fuentes controladas."
     else:
@@ -8681,18 +8803,30 @@ def build_analytical_evidence_ledger(
         website_snapshot = fetch_website_evidence_snapshot(request.website)
         if website_snapshot.get("status") == "observed":
             for fact in website_snapshot.get("facts") or []:
+                fact_label = fact.get("label") or "Evidencia observada en sitio"
+                fact_text = fact.get("observed_fact") or ""
+                fact_source_type = "website_observed"
+                fact_reliability = fact.get("reliability") or "medium"
+                fact_note = (
+                    f"Lectura directa del HTML público del sitio. status={website_snapshot.get('status_code')}; "
+                    f"word_count≈{website_snapshot.get('word_count')}. No equivale a Analytics/CRM."
+                )
+                if (
+                    fact_label.lower().startswith("prueba social")
+                    or re.search(r"\d+\s*(?:k|%|\+).*(?:clientes|satisfechos|premios|tasa|éxito|exito|reseñas|reviews)", fact_text, flags=re.I)
+                ):
+                    fact_source_type = "website_claim"
+                    fact_reliability = "medium"
+                    fact_note += " Señal clasificada como website_claim: es una afirmación visible del sitio y requiere verificación externa para tratarla como prueba social comprobada."
                 add(
-                    "website_observed",
-                    fact.get("label") or "Evidencia observada en sitio",
-                    fact.get("observed_fact") or "",
+                    fact_source_type,
+                    fact_label,
+                    fact_text,
                     fact.get("supports") or ["public_presence"],
-                    reliability=fact.get("reliability") or "medium",
+                    reliability=fact_reliability,
                     source_url=website_snapshot.get("final_url") or website_snapshot.get("url") or request.website,
                     can_support_claims=True,
-                    extraction_note=(
-                        f"Lectura directa del HTML público del sitio. status={website_snapshot.get('status_code')}; "
-                        f"word_count≈{website_snapshot.get('word_count')}. No equivale a Analytics/CRM."
-                    ),
+                    extraction_note=fact_note,
                 )
         else:
             add(
@@ -8826,14 +8960,14 @@ def build_analytical_signal_vector(
         "lead_quality_evidence": "Evidencia de calidad de lead o resultado posterior",
     }
     result: Dict[str, AnalyticalSignalScore] = {}
-    source_count = len([item for item in ledger if item.source_type in ["public_source", "website_observed"] and item.can_support_claims])
+    source_count = len([item for item in ledger if item.source_type in ["public_source", "website_observed", "website_claim"] and item.can_support_claims])
     declared_count = len([item for item in ledger if item.source_type == "declared_input"])
     campaign_items = _evidence_for_signal(ledger, "campaign_evidence")
     has_campaigns = bool(request.campaigns)
 
     for signal, label in signal_specs.items():
         ev = _evidence_for_signal(ledger, signal)
-        website_ev_count = len([item for item in ev if item.source_type == "website_observed"])
+        website_ev_count = len([item for item in ev if item.source_type in ["website_observed", "website_claim"]])
         evidence_ids = [item.evidence_id for item in ev]
         missing: List[str] = []
         base = 0
@@ -8864,12 +8998,22 @@ def build_analytical_signal_vector(
                 base += 2
             missing = [] if base >= 5 else ["Credenciales, trayectoria, casos, metodología o fuentes externas verificables."]
         elif signal == "social_proof":
-            base = min(9, len(ev) * 3)
-            if website_ev_count:
+            verified_proof_ev = [
+                item for item in ev
+                if item.source_type in ["public_source", "social_sample", "campaign_metric"]
+                or _contains_any(item.observed_fact + " " + item.extraction_note, ["trustindex", "google", "reseña", "review", "testimonio verificado"])
+            ]
+            website_claim_ev = [item for item in ev if item.source_type == "website_claim"]
+            base = min(8, len(verified_proof_ev) * 3 + len(website_claim_ev) * 2)
+            if verified_proof_ev:
                 base += 2
-            if _contains_any(" ".join(item.observed_fact for item in ev), ["121", "reseñas", "testimonios", "clientes", "trustindex", "google", "casos"]):
+            if _contains_any(" ".join(item.observed_fact for item in verified_proof_ev), ["121", "reseñas", "testimonios", "trustindex", "google", "casos"]):
                 base += 2
+            if website_claim_ev and not verified_proof_ev:
+                base = min(base, 5)
             missing = [] if base >= 5 else ["Reseñas, casos, testimonios, logos de clientes o resultados verificables."]
+            if website_claim_ev and not verified_proof_ev:
+                missing.append("Verificación externa de la prueba social declarada en el sitio.")
         elif signal == "cta_strength":
             text = " ".join(item.observed_fact for item in ev) + " " + " ".join([str(getattr(request, a, '') or '') for a in ["website", "instagram", "facebook", "linkedin"]])
             base = min(8, len(ev) * 3)
@@ -8906,9 +9050,13 @@ def build_analytical_signal_vector(
             auth_ev = _evidence_for_signal(ledger, "authority")
             proof_ev = _evidence_for_signal(ledger, "social_proof")
             base = min(8, len(auth_ev) * 2 + len(proof_ev) * 3)
-            if any(item.source_type == "website_observed" for item in auth_ev + proof_ev):
+            if any(item.source_type in ["website_observed", "website_claim"] for item in auth_ev + proof_ev):
                 base += 2
+            if auth_ev and proof_ev and all(item.source_type in ["website_observed", "website_claim", "declared_input"] for item in auth_ev + proof_ev):
+                base = min(base, 7)
             missing = [] if base >= 5 else ["Más señales verificables de confianza: reseñas, casos, clientes, prueba externa."]
+            if auth_ev and proof_ev and all(item.source_type in ["website_observed", "website_claim", "declared_input"] for item in auth_ev + proof_ev):
+                missing.append("Fuentes externas o datos propios para verificar señales de confianza declaradas en el sitio.")
         elif signal == "channel_consistency":
             declared_socials = len([getattr(request, a, None) for a in ["instagram", "facebook", "tiktok", "youtube", "linkedin"] if getattr(request, a, None)])
             base = min(5, declared_socials) + min(4, len(ev))
@@ -9300,15 +9448,30 @@ def build_analytical_core_result(
     missing = build_missing_data_for_complete_analysis(signal_vector, request)
     factuality = build_pre_report_factuality_check(claims, blocked_claims, recommendations, blocked_recommendations, evidence_cross_check)
     has_campaigns = bool(request.campaigns)
-    public_evidence_count = len([item for item in ledger if item.source_type in ["public_source", "website_observed"] and item.can_support_claims])
     high_scores = len([s for s in signal_vector.values() if s.score_0_to_10 >= 7])
+    website_observed_count = len([item for item in ledger if item.source_type in ["website_observed", "website_claim"] and item.can_support_claims])
+    external_public_evidence_count = len([
+        item for item in ledger
+        if item.source_type == "public_source"
+        and item.can_support_claims
+        and "declared_website" not in (item.observed_fact or "")
+        and (not request.website or (item.source_url or "").rstrip("/").lower() != request.website.rstrip("/").lower())
+    ])
+    has_social_samples = bool(request.social_content_samples)
     if not factuality.safe_to_write_report:
         confidence = "not_safe"
     elif has_campaigns and signal_vector["campaign_evidence"].score_0_to_10 >= 6 and signal_vector["tracking_quality"].score_0_to_10 >= 6:
         confidence = "campaign_ready"
-    elif public_evidence_count >= 3 and high_scores >= 3 and evidence_cross_check.status == "cross_checked":
+    elif (
+        external_public_evidence_count >= 2
+        and website_observed_count >= 2
+        and high_scores >= 3
+        and evidence_cross_check.status == "cross_checked"
+    ) or (has_social_samples and website_observed_count >= 2 and high_scores >= 3):
         confidence = "comparable"
     else:
+        # A single website read can produce useful preliminary analysis, but it is not enough
+        # to label the deliverable comparable without external sources, campaign data or samples.
         confidence = "preliminary"
 
     if confidence == "not_safe":
@@ -9684,6 +9847,8 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
                 stable_output=stable_output,
                 evidence_cross_check=evidence_cross_check,
                 drive_bundle=drive_bundle,
+                analytical_core=analytical_core,
+                visual_report_status="generated",
             )
             report_html = build_visual_report_html(
                 result=public_audit,
@@ -9720,6 +9885,7 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
                 request=request,
                 campaign_performance=campaign_performance,
             )
+            stable_output = sanitize_stable_output_for_analysis_only(stable_output, analytical_core, "analytical_report_generated_no_visual_assets")
             report_html = build_preliminary_analytical_report_html(
                 request=request,
                 analytical_core=analytical_core,
@@ -9750,12 +9916,16 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
             request=request,
             campaign_performance=campaign_performance,
         )
+        if visual_report_status != "generated":
+            stable_output = sanitize_stable_output_for_analysis_only(stable_output, analytical_core, visual_report_status)
 
     if deliverable_reliability is None:
         deliverable_reliability = build_deliverable_reliability_report(
             stable_output=stable_output,
             evidence_cross_check=evidence_cross_check,
             drive_bundle=drive_bundle,
+            analytical_core=analytical_core,
+            visual_report_status=visual_report_status,
         )
 
     if visual_report_url:
@@ -9790,6 +9960,8 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
                 stable_output=stable_output,
                 evidence_cross_check=evidence_cross_check,
                 drive_bundle=drive_bundle,
+                analytical_core=analytical_core,
+                visual_report_status=visual_report_status,
             )
         except Exception as exc:
             drive_bundle = DriveBundleExport(
@@ -9803,6 +9975,8 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         stable_output=stable_output,
         evidence_cross_check=evidence_cross_check,
         drive_bundle=drive_bundle,
+        analytical_core=analytical_core,
+        visual_report_status=visual_report_status,
     )
 
     return FullCommercialSystemResponse(
