@@ -56,8 +56,8 @@ ASSETS_DIR = os.getenv("ASSETS_DIR", "/tmp/marketing_audit_assets")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
-ANALYSIS_VERSION = "v1.29"
-RULESET_VERSION = "2026-05-05-cross-evidence-nongeneric-v1"
+ANALYSIS_VERSION = "v1.30"
+RULESET_VERSION = "2026-05-05-modular-pipeline-factuality-drive-v1"
 
 ALLOWED_COMPOSIO_TOOLS = {
     "SEARCH_API_SEARCH",
@@ -421,6 +421,40 @@ class DeliverableReliabilityReport(BaseModel):
     risks: List[str] = Field(default_factory=list)
     required_next_validation: List[str] = Field(default_factory=list)
     comparison_keys: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ModuleExecutionStatus(BaseModel):
+    module: str
+    status: str = Field(..., description="completed, skipped_missing_input, blocked_insufficient_evidence, failed_runtime o not_applicable")
+    reason: str
+    missing_data: List[str] = Field(default_factory=list)
+    output_available: bool = False
+    safe_to_present: bool = False
+    generated_files: List[str] = Field(default_factory=list)
+    impact_on_reliability: str = "none"
+    next_required_input: List[str] = Field(default_factory=list)
+
+
+class ModuleStatusReport(BaseModel):
+    overall_status: str = Field(..., description="completed, completed_with_limitations, blocked_for_reporting o failed")
+    completed_modules: List[str] = Field(default_factory=list)
+    skipped_modules: List[str] = Field(default_factory=list)
+    blocked_modules: List[str] = Field(default_factory=list)
+    failed_modules: List[str] = Field(default_factory=list)
+    modules: List[ModuleExecutionStatus] = Field(default_factory=list)
+    summary: str
+
+
+class PreReportFactualityCheck(BaseModel):
+    status: str = Field(..., description="passed, passed_with_limitations o failed")
+    safe_to_write_report: bool
+    unsupported_claims_removed: int = 0
+    claims_degraded_to_inference: int = 0
+    performance_claims_blocked: int = 0
+    visual_claims_checked: bool = False
+    report_language_constraints: List[str] = Field(default_factory=list)
+    blocked_claims: List[str] = Field(default_factory=list)
+    factuality_summary: str
 
 
 class VisualReportResponse(BaseModel):
@@ -981,8 +1015,13 @@ class FullCommercialSystemResponse(BaseModel):
     visual_report_status: str
     visual_asset_urls: List[VisualAssetLink] = Field(default_factory=list)
     drive_bundle: DriveBundleExport = Field(default_factory=DriveBundleExport)
+    primary_drive_link: Optional[str] = None
+    drive_folder_url: Optional[str] = None
+    persistent_links: Dict[str, Optional[str]] = Field(default_factory=dict)
     evidence_cross_check: EvidenceCrossCheckReport
     deliverable_reliability: DeliverableReliabilityReport
+    module_status_report: ModuleStatusReport
+    pre_report_factuality_check: PreReportFactualityCheck
     generation_gate_status: str
     generation_gate_reason: str
     research_confidence: str
@@ -3963,6 +4002,473 @@ def load_png_asset_from_visual_link(asset: VisualAssetLink) -> Optional[bytes]:
     return load_png_asset(asset_id)
 
 
+
+def pydantic_to_jsonable(value: Any) -> Any:
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if hasattr(value, "dict"):
+        return value.dict()
+    if isinstance(value, list):
+        return [pydantic_to_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {key: pydantic_to_jsonable(item) for key, item in value.items()}
+    return value
+
+
+def build_missing_asset_manifest(module_status_report: Optional[ModuleStatusReport]) -> List[Dict[str, Any]]:
+    if not module_status_report:
+        return []
+    missing_assets: List[Dict[str, Any]] = []
+    asset_map = {
+        "awareness_funnel_visual": "awareness_funnel_clean_transparent.png",
+        "customer_intent_density_map": "customer_intent_density_map_clean_transparent.png",
+        "commercial_system_blueprint": "commercial_system_blueprint_clean_transparent.png",
+    }
+    for module in module_status_report.modules:
+        if module.module in asset_map and module.status != "completed":
+            missing_assets.append({
+                "asset": asset_map[module.module],
+                "module": module.module,
+                "status": module.status,
+                "reason": module.reason,
+                "missing_data": module.missing_data,
+            })
+    return missing_assets
+
+
+def make_module_status(
+    module: str,
+    status: str,
+    reason: str,
+    missing_data: Optional[List[str]] = None,
+    output_available: bool = False,
+    safe_to_present: bool = False,
+    generated_files: Optional[List[str]] = None,
+    impact_on_reliability: str = "none",
+    next_required_input: Optional[List[str]] = None,
+) -> ModuleExecutionStatus:
+    return ModuleExecutionStatus(
+        module=module,
+        status=status,
+        reason=reason,
+        missing_data=list(dict.fromkeys(missing_data or [])),
+        output_available=output_available,
+        safe_to_present=safe_to_present,
+        generated_files=list(dict.fromkeys(generated_files or [])),
+        impact_on_reliability=impact_on_reliability,
+        next_required_input=list(dict.fromkeys(next_required_input or [])),
+    )
+
+
+def build_pre_report_factuality_check(
+    request: FullCommercialSystemRequest,
+    evidence_cross_check: EvidenceCrossCheckReport,
+    campaign_performance: Optional[CampaignPerformanceResponse],
+    social_fit: Optional[SocialContentFitResponse],
+    visual_report_status: str,
+) -> PreReportFactualityCheck:
+    constraints: List[str] = [
+        "No afirmar performance real sin métricas de campañas, CRM, Analytics o conversiones.",
+        "Distinguir hechos observados, datos declarados, inferencias y recomendaciones.",
+        "No presentar inferencias de contenido social como retención real si no hay métricas internas.",
+        "No usar visuales bloqueados como evidencia de diagnóstico.",
+    ]
+    blocked_claims: List[str] = []
+    unsupported_removed = 0
+    degraded = 0
+    performance_blocked = 0
+
+    has_campaign_data = bool(getattr(request, "campaigns", None)) and bool(campaign_performance) and campaign_performance.data_quality != "sin_datos"
+    has_social_metrics = has_internal_social_evidence(request)
+    has_visuals = visual_report_status == "generated" and evidence_cross_check.visual_generation_allowed
+
+    if not has_campaign_data:
+        blocked_claims.extend([
+            "La empresa tiene baja/alta tasa de conversión real.",
+            "El CPA, CPL, ROAS o costo por resultado es bueno o malo.",
+            "Conviene pausar, escalar o redistribuir presupuesto como decisión ejecutiva.",
+        ])
+        performance_blocked += 3
+        constraints.append("Las recomendaciones de pauta deben quedar como hipótesis o preparación, no como órdenes de optimización.")
+
+    if not has_social_metrics:
+        blocked_claims.append("La retención real, completion rate o calidad de hook están comprobados.")
+        degraded += 1
+        constraints.append("Social Content Fit debe escribirse como riesgo estructural si no hay samples con métricas.")
+
+    if evidence_cross_check.status != "cross_checked":
+        degraded += 2
+        constraints.append("El reporte debe declararse preliminar/limitado y explicar qué datos faltan.")
+
+    if not has_visuals:
+        blocked_claims.append("El heatmap/funnel/blueprint visual demuestra una realidad comercial completa.")
+        unsupported_removed += 1
+        constraints.append("Si los visuales están bloqueados, solo se permite explicar el bloqueo y los datos necesarios.")
+
+    if evidence_cross_check.status == "insufficient":
+        status = "passed_with_limitations"
+        summary = "El sistema solo puede escribir un informe de limitaciones y próximos datos; no puede presentar diagnóstico visual concluyente."
+    elif blocked_claims or degraded or performance_blocked:
+        status = "passed_with_limitations"
+        summary = "El reporte puede escribirse, pero con claims de performance bloqueados y varias inferencias degradadas por falta de datos duros."
+    else:
+        status = "passed"
+        summary = "Las afirmaciones principales tienen respaldo suficiente dentro del alcance de evidencia disponible."
+
+    return PreReportFactualityCheck(
+        status=status,
+        safe_to_write_report=True,
+        unsupported_claims_removed=unsupported_removed,
+        claims_degraded_to_inference=degraded,
+        performance_claims_blocked=performance_blocked,
+        visual_claims_checked=True,
+        report_language_constraints=list(dict.fromkeys(constraints)),
+        blocked_claims=list(dict.fromkeys(blocked_claims)),
+        factuality_summary=summary,
+    )
+
+
+def build_module_status_report(
+    request: FullCommercialSystemRequest,
+    analysis_trace: AnalysisTrace,
+    public_audit: ProspectWithResearchResponse,
+    social_fit: Optional[SocialContentFitResponse],
+    campaign_performance: CampaignPerformanceResponse,
+    evidence_cross_check: EvidenceCrossCheckReport,
+    visual_report_status: str,
+    visual_report_url: Optional[str],
+    clean_visual_assets: List[VisualAssetLink],
+    pre_report_factuality_check: Optional[PreReportFactualityCheck] = None,
+    drive_bundle: Optional[DriveBundleExport] = None,
+) -> ModuleStatusReport:
+    modules: List[ModuleExecutionStatus] = []
+    has_public_sources = bool(public_audit.public_sources_summary)
+    has_declared_context = bool(request.offer or request.industry or request.website or request.notes or get_request_declared_links(request))
+    has_campaign_data = bool(request.campaigns)
+    has_social_context = bool(request.social_content_samples or request.social_content_notes or request.instagram or getattr(request, "tiktok", None) or getattr(request, "facebook", None) or getattr(request, "youtube", None) or request.linkedin)
+    asset_types = {asset.asset_type for asset in clean_visual_assets}
+
+    modules.append(make_module_status(
+        "input_validation",
+        "completed",
+        "El payload fue aceptado y contiene company_name; los campos ausentes quedan registrados como faltantes, no se completan por inferencia.",
+        output_available=True,
+        safe_to_present=True,
+    ))
+    modules.append(make_module_status(
+        "canonicalization",
+        "completed" if analysis_trace.canonical_input_hash else "failed_runtime",
+        "Se generó canonical_input_hash para reproducibilidad." if analysis_trace.canonical_input_hash else "No se pudo generar canonical_input_hash.",
+        output_available=bool(analysis_trace.canonical_input_hash),
+        safe_to_present=bool(analysis_trace.canonical_input_hash),
+        impact_on_reliability="critical" if not analysis_trace.canonical_input_hash else "positive",
+    ))
+    modules.append(make_module_status(
+        "evidence_collection",
+        "completed" if (has_public_sources or has_declared_context) else "blocked_insufficient_evidence",
+        "Se recolectaron fuentes públicas/declaradas y contexto comercial disponible." if (has_public_sources or has_declared_context) else "No hay evidencia pública ni contexto declarado suficiente.",
+        missing_data=[] if (has_public_sources or has_declared_context) else ["website", "oferta", "industria", "fuentes públicas", "notas manuales"],
+        output_available=(has_public_sources or has_declared_context),
+        safe_to_present=(has_public_sources or has_declared_context),
+        next_required_input=[] if (has_public_sources or has_declared_context) else ["Agregar website, oferta, rubro o notas manuales verificables."],
+    ))
+    modules.append(make_module_status(
+        "evidence_cross_check",
+        "completed" if evidence_cross_check.status == "cross_checked" else ("blocked_insufficient_evidence" if evidence_cross_check.status == "insufficient" else "skipped_missing_input"),
+        evidence_cross_check.explanation,
+        missing_data=evidence_cross_check.missing_data,
+        output_available=True,
+        safe_to_present=evidence_cross_check.status != "insufficient",
+        impact_on_reliability="critical" if evidence_cross_check.status == "insufficient" else ("limited" if evidence_cross_check.status == "limited" else "positive"),
+        next_required_input=evidence_cross_check.missing_data,
+    ))
+    modules.append(make_module_status(
+        "commercial_signal_vector",
+        "completed" if public_audit.commercial_score else "blocked_insufficient_evidence",
+        "Se calculó score comercial desde la evidencia disponible; los valores no equivalen a performance real." if public_audit.commercial_score else "No se pudo calcular score comercial.",
+        output_available=bool(public_audit.commercial_score),
+        safe_to_present=evidence_cross_check.status != "insufficient",
+    ))
+    modules.append(make_module_status(
+        "social_content_fit",
+        "completed" if has_social_context else "skipped_missing_input",
+        "Se auditó contenido social con perfiles, notas o muestras disponibles." if has_social_context else "No se recibieron perfiles, notas ni muestras sociales; el módulo se omite para evitar inventar retención o formato nativo.",
+        missing_data=[] if has_social_context else ["perfiles sociales", "muestras de contenido", "métricas de retención"],
+        output_available=bool(social_fit and has_social_context),
+        safe_to_present=bool(social_fit and has_social_context),
+        next_required_input=[] if has_social_context else ["Cargar links sociales o 5-10 piezas recientes con métricas."],
+    ))
+    modules.append(make_module_status(
+        "campaign_performance",
+        "completed" if has_campaign_data and campaign_performance.data_quality != "sin_datos" else "skipped_missing_input",
+        "Se analizaron campañas con métricas cargadas." if has_campaign_data else "No se recibieron campañas; el módulo de performance se omite y no se afirman CPA/CPL/ROAS/conversión.",
+        missing_data=[] if has_campaign_data else ["campañas", "gasto", "impresiones", "clics", "leads", "conversiones", "calidad de lead"],
+        output_available=has_campaign_data,
+        safe_to_present=has_campaign_data and campaign_performance.data_quality != "sin_datos",
+        next_required_input=[] if has_campaign_data else ["Cargar export de campañas y datos de CRM/tracking."],
+    ))
+    modules.append(make_module_status(
+        "awareness_funnel_visual",
+        "completed" if "awareness_funnel_clean_transparent" in asset_types else "blocked_insufficient_evidence",
+        "Se generó funnel visual desde evidencia cruzada." if "awareness_funnel_clean_transparent" in asset_types else "No se generó funnel visual porque el gate de evidencia no habilitó visuales o falló la generación.",
+        missing_data=[] if "awareness_funnel_clean_transparent" in asset_types else evidence_cross_check.missing_data,
+        output_available="awareness_funnel_clean_transparent" in asset_types,
+        safe_to_present="awareness_funnel_clean_transparent" in asset_types,
+        generated_files=["awareness_funnel_clean_transparent.png"] if "awareness_funnel_clean_transparent" in asset_types else [],
+    ))
+    modules.append(make_module_status(
+        "customer_intent_density_map",
+        "completed" if "customer_intent_density_map_clean_transparent" in asset_types else "blocked_insufficient_evidence",
+        "Se generó heatmap desde matriz/score comercial y evidencia cruzada." if "customer_intent_density_map_clean_transparent" in asset_types else "No se generó heatmap para evitar un mapa genérico o no respaldado.",
+        missing_data=[] if "customer_intent_density_map_clean_transparent" in asset_types else evidence_cross_check.missing_data,
+        output_available="customer_intent_density_map_clean_transparent" in asset_types,
+        safe_to_present="customer_intent_density_map_clean_transparent" in asset_types,
+        generated_files=["customer_intent_density_map_clean_transparent.png"] if "customer_intent_density_map_clean_transparent" in asset_types else [],
+    ))
+    modules.append(make_module_status(
+        "commercial_system_blueprint",
+        "completed" if "commercial_system_blueprint_clean_transparent" in asset_types else "blocked_insufficient_evidence",
+        "Se generó blueprint visual desde ruta comercial y rupturas detectadas." if "commercial_system_blueprint_clean_transparent" in asset_types else "No se generó blueprint visual por falta de evidencia suficiente o fallo de generación.",
+        missing_data=[] if "commercial_system_blueprint_clean_transparent" in asset_types else evidence_cross_check.missing_data,
+        output_available="commercial_system_blueprint_clean_transparent" in asset_types,
+        safe_to_present="commercial_system_blueprint_clean_transparent" in asset_types,
+        generated_files=["commercial_system_blueprint_clean_transparent.png"] if "commercial_system_blueprint_clean_transparent" in asset_types else [],
+    ))
+    modules.append(make_module_status(
+        "visual_report_html",
+        "completed" if visual_report_url else "blocked_insufficient_evidence",
+        "Se generó HTML de reporte; si los visuales están bloqueados, el HTML explica limitaciones y módulos incompletos." if visual_report_url else "No se pudo generar HTML de reporte.",
+        output_available=bool(visual_report_url),
+        safe_to_present=bool(visual_report_url and evidence_cross_check.text_generation_allowed),
+        generated_files=["visual_report.html"] if visual_report_url else [],
+    ))
+    if pre_report_factuality_check:
+        modules.append(make_module_status(
+            "pre_report_factuality_check",
+            "completed" if pre_report_factuality_check.safe_to_write_report else "blocked_insufficient_evidence",
+            pre_report_factuality_check.factuality_summary,
+            missing_data=evidence_cross_check.missing_data,
+            output_available=True,
+            safe_to_present=pre_report_factuality_check.safe_to_write_report,
+            impact_on_reliability="critical" if not pre_report_factuality_check.safe_to_write_report else ("limited" if pre_report_factuality_check.status == "passed_with_limitations" else "positive"),
+            next_required_input=evidence_cross_check.missing_data,
+        ))
+    if drive_bundle is not None:
+        if drive_bundle.status == "uploaded_to_google_drive":
+            drive_status = "completed"
+            reason = "Se guardó en Drive el paquete disponible y los reportes de estado/factualidad."
+            safe = True
+            output = True
+            files = [file.name for file in drive_bundle.files if file.name]
+        elif drive_bundle.status in ["not_configured", "not_requested"]:
+            drive_status = "skipped_missing_input"
+            reason = drive_bundle.error or drive_bundle.note or "Drive no está configurado o no fue solicitado."
+            safe = False
+            output = False
+            files = []
+        else:
+            drive_status = "failed_runtime"
+            reason = drive_bundle.error or drive_bundle.note or "Falló la subida a Drive."
+            safe = False
+            output = False
+            files = []
+        modules.append(make_module_status(
+            "drive_bundle",
+            drive_status,
+            reason,
+            missing_data=[] if drive_status == "completed" else ["Apps Script configurado", "secret válido", "folder_id válido", "timeout sin errores"],
+            output_available=output,
+            safe_to_present=safe,
+            generated_files=files,
+            impact_on_reliability="positive" if safe else "limited",
+            next_required_input=[] if safe else ["Probar /debug/google-drive-storage y /debug/google-drive-upload-test."],
+        ))
+
+    completed = [m.module for m in modules if m.status == "completed"]
+    skipped = [m.module for m in modules if m.status in ["skipped_missing_input", "not_applicable"]]
+    blocked = [m.module for m in modules if m.status == "blocked_insufficient_evidence"]
+    failed = [m.module for m in modules if m.status == "failed_runtime"]
+    if failed:
+        overall = "failed"
+    elif blocked or skipped:
+        overall = "completed_with_limitations"
+    else:
+        overall = "completed"
+    summary = (
+        f"Pipeline ejecutado con regla anti-invención: {len(completed)} módulos completados, "
+        f"{len(skipped)} omitidos por falta de input, {len(blocked)} bloqueados por evidencia insuficiente y {len(failed)} fallidos. "
+        "Los módulos no completados quedan explicados y no se rellenan con contenido genérico."
+    )
+    return ModuleStatusReport(
+        overall_status=overall,
+        completed_modules=completed,
+        skipped_modules=skipped,
+        blocked_modules=blocked,
+        failed_modules=failed,
+        modules=modules,
+        summary=summary,
+    )
+
+
+def format_module_status_markdown(module_status_report: ModuleStatusReport) -> str:
+    lines = [f"- Estado general: {module_status_report.overall_status}", f"- Resumen: {module_status_report.summary}"]
+    for module in module_status_report.modules:
+        if module.status != "completed":
+            lines.append(f"- {module.module}: {module.status}. Motivo: {module.reason}")
+            if module.missing_data:
+                lines.append(f"  - Datos faltantes: {', '.join(module.missing_data[:8])}")
+            if module.next_required_input:
+                lines.append(f"  - Para completarlo: {', '.join(module.next_required_input[:5])}")
+    return "\n".join(lines)
+
+
+def format_factuality_markdown(pre_report_factuality_check: PreReportFactualityCheck) -> str:
+    lines = [
+        f"- Estado: {pre_report_factuality_check.status}",
+        f"- Seguro para escribir reporte: {pre_report_factuality_check.safe_to_write_report}",
+        f"- Resumen: {pre_report_factuality_check.factuality_summary}",
+        f"- Claims de performance bloqueados: {pre_report_factuality_check.performance_claims_blocked}",
+        f"- Claims degradados a inferencia: {pre_report_factuality_check.claims_degraded_to_inference}",
+        f"- Claims no respaldados removidos: {pre_report_factuality_check.unsupported_claims_removed}",
+    ]
+    for claim in pre_report_factuality_check.blocked_claims[:8]:
+        lines.append(f"- Claim bloqueado: {claim}")
+    for constraint in pre_report_factuality_check.report_language_constraints[:8]:
+        lines.append(f"- Restricción de redacción: {constraint}")
+    return "\n".join(lines)
+
+
+def append_pipeline_governance_to_markdown(
+    markdown: str,
+    module_status_report: ModuleStatusReport,
+    pre_report_factuality_check: PreReportFactualityCheck,
+    drive_bundle: Optional[DriveBundleExport] = None,
+) -> str:
+    drive_lines = ["## Link persistente de Drive"]
+    if drive_bundle and drive_bundle.folder_url:
+        drive_lines.append(f"- Carpeta Drive: {drive_bundle.folder_url}")
+    elif drive_bundle:
+        drive_lines.append(f"- Drive no confirmado: {drive_bundle.status}. {drive_bundle.error or drive_bundle.note or ''}")
+    else:
+        drive_lines.append("- Drive todavía no ejecutado al momento de componer esta sección.")
+    return markdown.rstrip() + "\n\n## Módulos no completados y motivo\n" + format_module_status_markdown(module_status_report) + "\n\n## Cotejo final anti-invención\n" + format_factuality_markdown(pre_report_factuality_check) + "\n\n" + "\n".join(drive_lines) + "\n"
+
+
+def html_escape(value: Any) -> str:
+    return html.escape(str(value or ""), quote=True)
+
+
+def build_pipeline_governance_html(
+    module_status_report: ModuleStatusReport,
+    pre_report_factuality_check: PreReportFactualityCheck,
+    drive_bundle: Optional[DriveBundleExport] = None,
+) -> str:
+    module_rows = "".join([
+        f"<tr><td>{html_escape(m.module)}</td><td><strong>{html_escape(m.status)}</strong></td><td>{html_escape(m.reason)}</td><td>{html_escape('; '.join(m.missing_data[:6]))}</td></tr>"
+        for m in module_status_report.modules
+    ])
+    constraints = "".join([f"<li>{html_escape(item)}</li>" for item in pre_report_factuality_check.report_language_constraints])
+    blocked = "".join([f"<li>{html_escape(item)}</li>" for item in pre_report_factuality_check.blocked_claims]) or "<li>No se bloquearon claims adicionales fuera de las restricciones generales.</li>"
+    drive_html = ""
+    if drive_bundle and drive_bundle.folder_url:
+        drive_html = f"<p><strong>Carpeta Drive:</strong> <a href=\"{html_escape(drive_bundle.folder_url)}\">{html_escape(drive_bundle.folder_url)}</a></p>"
+    elif drive_bundle:
+        drive_html = f"<p><strong>Drive:</strong> {html_escape(drive_bundle.status)} — {html_escape(drive_bundle.error or drive_bundle.note)}</p>"
+    return f"""
+<section class=\"card\">
+  <h2>Gobernanza del pipeline y regla anti-invención</h2>
+  <p><strong>Estado general:</strong> {html_escape(module_status_report.overall_status)}</p>
+  <p>{html_escape(module_status_report.summary)}</p>
+  <table>
+    <thead><tr><th>Módulo</th><th>Estado</th><th>Motivo</th><th>Datos faltantes</th></tr></thead>
+    <tbody>{module_rows}</tbody>
+  </table>
+</section>
+<section class=\"card\">
+  <h2>Cotejo final anti-invención</h2>
+  <p><strong>Estado:</strong> {html_escape(pre_report_factuality_check.status)}</p>
+  <p>{html_escape(pre_report_factuality_check.factuality_summary)}</p>
+  <h3>Claims bloqueados</h3>
+  <ul>{blocked}</ul>
+  <h3>Restricciones de redacción</h3>
+  <ul>{constraints}</ul>
+  {drive_html}
+</section>
+"""
+
+
+def append_pipeline_governance_to_html(
+    report_html: str,
+    module_status_report: ModuleStatusReport,
+    pre_report_factuality_check: PreReportFactualityCheck,
+    drive_bundle: Optional[DriveBundleExport] = None,
+) -> str:
+    section = build_pipeline_governance_html(module_status_report, pre_report_factuality_check, drive_bundle)
+    if "</body>" in report_html:
+        return report_html.replace("</body>", section + "\n</body>")
+    return report_html + section
+
+
+def build_limited_audit_report_html(
+    request: FullCommercialSystemRequest,
+    public_audit: ProspectWithResearchResponse,
+    analysis_trace: AnalysisTrace,
+    stable_output: StableAuditOutput,
+    evidence_cross_check: EvidenceCrossCheckReport,
+    deliverable_reliability: DeliverableReliabilityReport,
+    module_status_report: ModuleStatusReport,
+    pre_report_factuality_check: PreReportFactualityCheck,
+) -> str:
+    missing = "".join([f"<li>{html_escape(item)}</li>" for item in evidence_cross_check.missing_data]) or "<li>No especificado.</li>"
+    sources = "".join([
+        f"<li>{html_escape(source.category)} — {html_escape(source.title)} — {html_escape(source.url)}<br><em>{html_escape(source.signal)}</em></li>"
+        for source in public_audit.public_sources_summary[:8]
+    ]) or "<li>Sin fuentes suficientes.</li>"
+    html_doc = f"""<!doctype html>
+<html lang=\"es\">
+<head>
+<meta charset=\"utf-8\">
+<title>Auditoría comercial - {html_escape(request.company_name)}</title>
+<style>
+body {{ font-family: Arial, sans-serif; color:#102033; background:#f6f8fb; margin:0; padding:32px; }}
+.card {{ background:#fff; border:1px solid #dbe3ef; border-radius:16px; padding:22px; margin:0 0 20px 0; box-shadow:0 4px 18px rgba(15,32,64,.06); }}
+h1,h2,h3 {{ color:#0b2f5b; }}
+table {{ width:100%; border-collapse: collapse; font-size:13px; }}
+th,td {{ border:1px solid #dbe3ef; padding:8px; vertical-align:top; }}
+th {{ background:#eef4fb; text-align:left; }}
+.badge {{ display:inline-block; padding:6px 10px; border-radius:999px; background:#eef4fb; color:#0b2f5b; font-weight:bold; }}
+</style>
+</head>
+<body>
+<section class=\"card\">
+  <h1>Auditoría comercial con limitaciones</h1>
+  <p><strong>Empresa:</strong> {html_escape(request.company_name)}</p>
+  <p><span class=\"badge\">visual_report_status: blocked_by_evidence_gate</span></p>
+  <p>Este reporte no completa visuales cuando la evidencia disponible no alcanza. No se generaron módulos con relleno genérico.</p>
+</section>
+<section class=\"card\">
+  <h2>Estado de confiabilidad</h2>
+  <p><strong>stability_status:</strong> {html_escape(stable_output.stability_status)}</p>
+  <p><strong>reliability_status:</strong> {html_escape(deliverable_reliability.reliability_status)}</p>
+  <p><strong>safe_to_present:</strong> {html_escape(deliverable_reliability.safe_to_present)}</p>
+  <p>{html_escape(deliverable_reliability.file_confidence_summary)}</p>
+</section>
+<section class=\"card\">
+  <h2>Cruce de evidencia</h2>
+  <p><strong>Estado:</strong> {html_escape(evidence_cross_check.status)}</p>
+  <p><strong>Riesgo genérico:</strong> {html_escape(evidence_cross_check.generic_output_risk)}</p>
+  <p>{html_escape(evidence_cross_check.explanation)}</p>
+  <h3>Datos faltantes</h3><ul>{missing}</ul>
+  <h3>Fuentes usadas</h3><ul>{sources}</ul>
+</section>
+"""
+    html_doc += build_pipeline_governance_html(module_status_report, pre_report_factuality_check)
+    html_doc += "</body></html>"
+    return html_doc
+
+
 def build_written_audit_report_markdown(
     request: FullCommercialSystemRequest,
     public_audit: ProspectWithResearchResponse,
@@ -4096,6 +4602,8 @@ def export_audit_bundle_to_drive(
     stable_output: Optional[StableAuditOutput] = None,
     evidence_cross_check: Optional[EvidenceCrossCheckReport] = None,
     deliverable_reliability: Optional[DeliverableReliabilityReport] = None,
+    module_status_report: Optional[ModuleStatusReport] = None,
+    pre_report_factuality_check: Optional[PreReportFactualityCheck] = None,
 ) -> DriveBundleExport:
     if not google_apps_script_configured():
         return DriveBundleExport(
@@ -4149,10 +4657,13 @@ def export_audit_bundle_to_drive(
             "visual_generation_allowed": getattr(evidence_cross_check, "visual_generation_allowed", None),
             "deliverable_reliability_status": getattr(deliverable_reliability, "reliability_status", None),
             "file_confidence_summary": getattr(deliverable_reliability, "file_confidence_summary", None),
+            "module_status_report": pydantic_to_jsonable(module_status_report),
+            "pre_report_factuality_check": pydantic_to_jsonable(pre_report_factuality_check),
+            "missing_assets": build_missing_asset_manifest(module_status_report),
         },
     }
 
-    data = post_to_apps_script(payload, timeout=90)
+    data = post_to_apps_script(payload, timeout=45)
     if not data.get("ok"):
         return DriveBundleExport(
             status="failed",
@@ -4173,13 +4684,41 @@ def export_audit_bundle_to_drive(
         for item in data.get("files", [])
     ]
 
+    folder_id = data.get("folder_id")
+    if folder_id:
+        extra_json_files = [
+            ("module_status_report", module_status_report),
+            ("pre_report_factuality_check", pre_report_factuality_check),
+        ]
+        for label, obj in extra_json_files:
+            if obj is None:
+                continue
+            extra_payload = {
+                "secret": GOOGLE_APPS_SCRIPT_SECRET,
+                "action": "upload_file",
+                "folder_id": folder_id,
+                "filename": safe_drive_filename(company_name, label, "json", hash_id=report_id),
+                "mime_type": "application/json",
+                "base64": base64.b64encode(json.dumps(pydantic_to_jsonable(obj), ensure_ascii=False, indent=2).encode("utf-8")).decode("ascii"),
+            }
+            extra_data = post_to_apps_script(extra_payload, timeout=25)
+            if extra_data.get("ok"):
+                files.append(DriveBundleFile(
+                    file_type=f"{label}_json",
+                    name=extra_data.get("name") or extra_payload["filename"],
+                    url=extra_data.get("url"),
+                    file_id=extra_data.get("file_id"),
+                    mime_type="application/json",
+                    asset_type=label,
+                ))
+
     return DriveBundleExport(
         status="uploaded_to_google_drive",
         storage_provider="google_drive",
-        folder_id=data.get("folder_id"),
+        folder_id=folder_id,
         folder_url=data.get("folder_url"),
         files=files,
-        note="Carpeta Drive creada con PDF, HTML, PNG transparentes y DOCX generado por backend.",
+        note="Carpeta Drive creada con el paquete disponible: HTML/PDF/DOCX/metadata, PNG si fueron generados, y reportes de módulos/factualidad.",
     )
 
 
@@ -7997,15 +8536,32 @@ def build_evidence_cross_check_report(
             "media" if len(declared_profile_parts) >= 3 else "baja-media",
         )
 
+    verified_public_source_count = 0
+    declared_asset_count = 0
     for source in public_audit.public_sources_summary[:10]:
-        add(
-            "public_sources",
-            source.category or "public_source",
-            source.title or source.url or "Fuente pública",
-            source.signal or "Fuente pública encontrada/declarada.",
-            ["validación externa", "presencia pública", "confianza", "diferenciación"],
-            "media-alta" if source.url else "media",
-        )
+        source_category = source.category or "public_source"
+        source_signal = source.signal or "Fuente pública encontrada/declarada."
+        is_declared_source = source_category.startswith("declared_") or "declarada por el usuario" in source_signal.casefold()
+        if is_declared_source:
+            declared_asset_count += 1
+            add(
+                "declared_assets",
+                source_category,
+                source.title or source.url or "Activo declarado",
+                source_signal,
+                ["contexto declarado", "punto de partida", "no prueba externa"],
+                "baja-media",
+            )
+        else:
+            verified_public_source_count += 1
+            add(
+                "verified_public_sources",
+                source_category,
+                source.title or source.url or "Fuente pública verificada",
+                source_signal,
+                ["validación externa", "presencia pública", "confianza", "diferenciación"],
+                "media-alta" if source.url else "media",
+            )
 
     has_social_declared_context = bool(
         getattr(request, "social_content_samples", None)
@@ -8063,24 +8619,19 @@ def build_evidence_cross_check_report(
             "media-alta" if campaign_performance.data_completeness.score >= 70 and not tracking_critical else "media",
         )
 
-    add(
-        "generated_maps",
-        "cross_module_output",
-        "Mapas generados después del cruce",
-        (
-            f"awareness={public_audit.awareness_funnel_locator.dominant_stage}->{public_audit.awareness_funnel_locator.blocked_stage}; "
-            f"heatmap={public_audit.temperature_heatmap.average_temperature}; "
-            f"density={public_audit.customer_intent_density_map.dominant_zone.x}/{public_audit.customer_intent_density_map.dominant_zone.y}; "
-            f"blueprint_breaks={'; '.join(public_audit.funnel_blueprint.breakpoints[:3])}"
-        ),
-        ["visuales", "análisis escrito", "stability output"],
-        "media",
+    # Regla anti-invención: los mapas generados NO cuentan como evidencia.
+    # Se registran solo como señales derivadas/coherencia, no como fuente para habilitar otros módulos.
+    generated_map_signal = (
+        f"awareness={public_audit.awareness_funnel_locator.dominant_stage}->{public_audit.awareness_funnel_locator.blocked_stage}; "
+        f"heatmap={public_audit.temperature_heatmap.average_temperature}; "
+        f"density={public_audit.customer_intent_density_map.dominant_zone.x}/{public_audit.customer_intent_density_map.dominant_zone.y}; "
+        f"blueprint_breaks={'; '.join(public_audit.funnel_blueprint.breakpoints[:3])}"
     )
 
-    groups = sorted(set(item.evidence_group for item in items if item.evidence_group != "generated_maps"))
+    groups = sorted(set(item.evidence_group for item in items))
     missing: List[str] = []
-    if not public_audit.public_sources_summary:
-        missing.append("No hay fuentes públicas suficientes para validar externamente el diagnóstico.")
+    if verified_public_source_count < 2:
+        missing.append("Faltan al menos dos fuentes públicas verificadas/no declaradas para validar externamente el diagnóstico visual.")
     if not request.offer:
         missing.append("Falta oferta principal explícita; la propuesta de valor se infiere con menor precisión.")
     if not request.campaigns:
@@ -8090,8 +8641,8 @@ def build_evidence_cross_check_report(
 
     crossed_signals = [
         f"Diagnóstico final construido desde {analysis_trace.primary_diagnosis_source} con modo {analysis_trace.analysis_mode}.",
-        f"Awareness y heatmap cruzan score comercial, fuentes, oferta, CTA, confianza y activos declarados.",
-        f"Blueprint usa ruptura principal + señales de score + overlays sociales/performance si existen.",
+        f"Fuentes públicas verificadas/no declaradas: {verified_public_source_count}; activos declarados: {declared_asset_count}.",
+        f"Awareness, heatmap y blueprint son salidas derivadas: no cuentan como evidencia para habilitar otros módulos. Señal derivada: {generated_map_signal}",
     ]
     if request.campaigns:
         crossed_signals.append("Campañas cruzadas contra tracking, lead quality, data completeness y mapa comercial.")
@@ -8113,22 +8664,30 @@ def build_evidence_cross_check_report(
         or getattr(request, "social_content_notes", None)
     )
 
-    if not items or (not has_minimum_business_context and not public_audit.public_sources_summary):
+    has_campaign_evidence = bool(getattr(request, "campaigns", None)) and bool(campaign_performance and campaign_performance.data_quality != "sin_datos")
+    has_social_evidence = bool(getattr(request, "social_content_samples", None) or (getattr(request, "social_content_notes", None) and len(request.social_content_notes or "") >= 80))
+    has_substantive_manual_notes = bool((request.notes and len(request.notes) >= 120) or (request.offer and len(request.offer) >= 80))
+
+    if not items or (not has_minimum_business_context and verified_public_source_count == 0):
         status = "insufficient"
-    elif len(groups) >= 2:
+    elif verified_public_source_count >= 2:
+        status = "cross_checked"
+    elif verified_public_source_count >= 1 and (has_campaign_evidence or has_social_evidence or has_substantive_manual_notes):
+        status = "cross_checked"
+    elif has_campaign_evidence and (has_social_evidence or has_substantive_manual_notes):
         status = "cross_checked"
     else:
         status = "limited"
 
     if status == "cross_checked":
-        generic_risk = "bajo" if len(items) >= 5 else "medio"
-        explanation = "Se cruzaron múltiples grupos de evidencia antes de generar análisis y visuales."
+        generic_risk = "bajo" if (verified_public_source_count >= 2 or has_campaign_evidence) else "medio"
+        explanation = "Se cruzaron fuentes verificadas y/o datos sustantivos antes de habilitar análisis visual."
     elif status == "limited":
         generic_risk = "medio-alto"
-        explanation = "Hay evidencia mínima utilizable, pero el análisis debe presentarse como preliminar y no como verdad operativa."
+        explanation = "Hay evidencia mínima utilizable para un reporte limitado, pero no alcanza para generar visuales fiables sin riesgo de genericidad."
     else:
         generic_risk = "alto"
-        explanation = "La evidencia disponible no alcanza para generar visuales o análisis presentables sin riesgo alto de genericidad."
+        explanation = "La evidencia disponible no alcanza para generar análisis presentable; solo se permite explicar limitaciones y datos necesarios."
 
     return EvidenceCrossCheckReport(
         status=status,
@@ -8136,7 +8695,7 @@ def build_evidence_cross_check_report(
         evidence_items=items,
         crossed_signals=crossed_signals,
         missing_data=list(dict.fromkeys(missing)),
-        visual_generation_allowed=status != "insufficient",
+        visual_generation_allowed=status == "cross_checked",
         text_generation_allowed=status != "insufficient",
         generic_output_risk=generic_risk,
         explanation=explanation,
@@ -8418,12 +8977,26 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
     generation_gate_status = "allowed" if evidence_cross_check.visual_generation_allowed else "blocked"
     generation_gate_reason = evidence_cross_check.explanation
 
-    visual_report_url = None
+    report_id = uuid.uuid4().hex
+    visual_report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
     visual_report_status = "not_generated"
     clean_visual_assets: List[VisualAssetLink] = []
     drive_bundle = DriveBundleExport()
-    stable_output: Optional[StableAuditOutput] = None
-    deliverable_reliability: Optional[DeliverableReliabilityReport] = None
+    report_html = ""
+
+    stable_output = build_stable_audit_output(
+        public_audit=public_audit,
+        social_fit=social_content_fit,
+        analysis_trace=analysis_trace,
+        visual_report_url=visual_report_url,
+        request=request,
+        campaign_performance=campaign_performance,
+    )
+    deliverable_reliability = build_deliverable_reliability_report(
+        stable_output=stable_output,
+        evidence_cross_check=evidence_cross_check,
+        drive_bundle=drive_bundle,
+    )
 
     if evidence_cross_check.visual_generation_allowed:
         try:
@@ -8432,22 +9005,39 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
             density_svg = render_customer_intent_density_svg(public_audit.customer_intent_density_map)
             blueprint_svg = render_funnel_blueprint_svg(public_audit.funnel_blueprint)
             score_svg = render_score_chart_svg(public_audit.commercial_score)
-            report_id = uuid.uuid4().hex
-            visual_report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
             clean_visual_assets = build_clean_visual_asset_links(public_audit, report_id=report_id)
-            stable_output = build_stable_audit_output(
-                public_audit=public_audit,
-                social_fit=social_content_fit,
-                analysis_trace=analysis_trace,
-                visual_report_url=visual_report_url,
-                request=request,
-                campaign_performance=campaign_performance,
-            )
-            deliverable_reliability = build_deliverable_reliability_report(
-                stable_output=stable_output,
-                evidence_cross_check=evidence_cross_check,
-                drive_bundle=drive_bundle,
-            )
+            visual_report_status = "generated"
+        except Exception as exc:
+            awareness_svg = temperature_svg = density_svg = blueprint_svg = score_svg = ""
+            clean_visual_assets = []
+            visual_report_status = f"visual_report_generation_failed: {str(exc)}"
+    else:
+        awareness_svg = temperature_svg = density_svg = blueprint_svg = score_svg = ""
+        visual_report_status = "blocked_by_evidence_gate"
+
+    pre_report_factuality_check = build_pre_report_factuality_check(
+        request=request,
+        evidence_cross_check=evidence_cross_check,
+        campaign_performance=campaign_performance,
+        social_fit=social_content_fit,
+        visual_report_status=visual_report_status,
+    )
+    module_status_report = build_module_status_report(
+        request=request,
+        analysis_trace=analysis_trace,
+        public_audit=public_audit,
+        social_fit=social_content_fit,
+        campaign_performance=campaign_performance,
+        evidence_cross_check=evidence_cross_check,
+        visual_report_status=visual_report_status,
+        visual_report_url=visual_report_url,
+        clean_visual_assets=clean_visual_assets,
+        pre_report_factuality_check=pre_report_factuality_check,
+        drive_bundle=None,
+    )
+
+    if visual_report_status == "generated":
+        try:
             report_html = build_visual_report_html(
                 result=public_audit,
                 awareness_svg=awareness_svg,
@@ -8463,76 +9053,129 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
                 evidence_cross_check=evidence_cross_check,
                 deliverable_reliability=deliverable_reliability,
             )
-            save_visual_report_html(report_id, report_html)
-            visual_report_status = "generated"
+            report_html = append_pipeline_governance_to_html(
+                report_html,
+                module_status_report=module_status_report,
+                pre_report_factuality_check=pre_report_factuality_check,
+                drive_bundle=None,
+            )
         except Exception as exc:
-            visual_report_url = None
             visual_report_status = f"visual_report_generation_failed: {str(exc)}"
-    else:
-        visual_report_status = "blocked_by_evidence_gate"
-
-    if stable_output is None:
-        stable_output = build_stable_audit_output(
-            public_audit=public_audit,
-            social_fit=social_content_fit,
-            analysis_trace=analysis_trace,
-            visual_report_url=visual_report_url,
-            request=request,
-            campaign_performance=campaign_performance,
-        )
-
-    if deliverable_reliability is None:
-        deliverable_reliability = build_deliverable_reliability_report(
-            stable_output=stable_output,
-            evidence_cross_check=evidence_cross_check,
-            drive_bundle=drive_bundle,
-        )
-
-    if visual_report_status == "generated" and visual_report_url:
-        try:
-            written_report_markdown = build_written_audit_report_markdown(
+            clean_visual_assets = []
+            module_status_report = build_module_status_report(
                 request=request,
+                analysis_trace=analysis_trace,
                 public_audit=public_audit,
                 social_fit=social_content_fit,
                 campaign_performance=campaign_performance,
+                evidence_cross_check=evidence_cross_check,
+                visual_report_status=visual_report_status,
+                visual_report_url=visual_report_url,
+                clean_visual_assets=clean_visual_assets,
+                pre_report_factuality_check=pre_report_factuality_check,
+                drive_bundle=None,
+            )
+            report_html = build_limited_audit_report_html(
+                request=request,
+                public_audit=public_audit,
                 analysis_trace=analysis_trace,
                 stable_output=stable_output,
-                strategic_measures_matrix=strategic_measures_matrix,
-                visual_report_url=visual_report_url,
                 evidence_cross_check=evidence_cross_check,
                 deliverable_reliability=deliverable_reliability,
+                module_status_report=module_status_report,
+                pre_report_factuality_check=pre_report_factuality_check,
             )
-            report_id_for_bundle = visual_report_url.rstrip("/").rsplit("/", 1)[-1]
-            report_html_for_bundle = load_visual_report_html(report_id_for_bundle) or ""
-            drive_bundle = export_audit_bundle_to_drive(
-                company_name=request.company_name,
-                report_id=report_id_for_bundle,
-                report_html=report_html_for_bundle,
-                clean_visual_assets=clean_visual_assets,
-                written_report_markdown=written_report_markdown,
-                stable_output=stable_output,
-                evidence_cross_check=evidence_cross_check,
-                deliverable_reliability=deliverable_reliability,
-            )
-            clean_visual_assets = update_visual_asset_links_from_drive_bundle(clean_visual_assets, drive_bundle)
-            deliverable_reliability = build_deliverable_reliability_report(
-                stable_output=stable_output,
-                evidence_cross_check=evidence_cross_check,
-                drive_bundle=drive_bundle,
-            )
-        except Exception as exc:
-            drive_bundle = DriveBundleExport(
-                status="failed",
-                storage_provider="render_temp",
-                error=f"drive_bundle_generation_failed: {str(exc)}",
-                note="El reporte visual se generó, pero el bundle de Drive falló.",
-            )
+    else:
+        report_html = build_limited_audit_report_html(
+            request=request,
+            public_audit=public_audit,
+            analysis_trace=analysis_trace,
+            stable_output=stable_output,
+            evidence_cross_check=evidence_cross_check,
+            deliverable_reliability=deliverable_reliability,
+            module_status_report=module_status_report,
+            pre_report_factuality_check=pre_report_factuality_check,
+        )
+
+    save_visual_report_html(report_id, report_html)
+
+    try:
+        written_report_markdown = build_written_audit_report_markdown(
+            request=request,
+            public_audit=public_audit,
+            social_fit=social_content_fit,
+            campaign_performance=campaign_performance,
+            analysis_trace=analysis_trace,
+            stable_output=stable_output,
+            strategic_measures_matrix=strategic_measures_matrix,
+            visual_report_url=visual_report_url,
+            evidence_cross_check=evidence_cross_check,
+            deliverable_reliability=deliverable_reliability,
+        )
+        written_report_markdown = append_pipeline_governance_to_markdown(
+            written_report_markdown,
+            module_status_report=module_status_report,
+            pre_report_factuality_check=pre_report_factuality_check,
+            drive_bundle=None,
+        )
+    except Exception as exc:
+        written_report_markdown = (
+            f"# Auditoría comercial con limitaciones\n\n"
+            f"Empresa: {request.company_name}\n\n"
+            f"No se pudo componer el informe escrito completo sin riesgo de error: {str(exc)}\n\n"
+            f"## Módulos no completados y motivo\n{format_module_status_markdown(module_status_report)}\n\n"
+            f"## Cotejo final anti-invención\n{format_factuality_markdown(pre_report_factuality_check)}\n"
+        )
+
+    try:
+        drive_bundle = export_audit_bundle_to_drive(
+            company_name=request.company_name,
+            report_id=report_id,
+            report_html=report_html,
+            clean_visual_assets=clean_visual_assets,
+            written_report_markdown=written_report_markdown,
+            stable_output=stable_output,
+            evidence_cross_check=evidence_cross_check,
+            deliverable_reliability=deliverable_reliability,
+            module_status_report=module_status_report,
+            pre_report_factuality_check=pre_report_factuality_check,
+        )
+        clean_visual_assets = update_visual_asset_links_from_drive_bundle(clean_visual_assets, drive_bundle)
+    except Exception as exc:
+        drive_bundle = DriveBundleExport(
+            status="failed",
+            storage_provider="render_temp",
+            error=f"drive_bundle_generation_failed: {str(exc)}",
+            note="El pipeline continuó, pero no se confirmó carpeta Drive.",
+        )
 
     deliverable_reliability = build_deliverable_reliability_report(
         stable_output=stable_output,
         evidence_cross_check=evidence_cross_check,
         drive_bundle=drive_bundle,
     )
+    module_status_report = build_module_status_report(
+        request=request,
+        analysis_trace=analysis_trace,
+        public_audit=public_audit,
+        social_fit=social_content_fit,
+        campaign_performance=campaign_performance,
+        evidence_cross_check=evidence_cross_check,
+        visual_report_status=visual_report_status,
+        visual_report_url=visual_report_url,
+        clean_visual_assets=clean_visual_assets,
+        pre_report_factuality_check=pre_report_factuality_check,
+        drive_bundle=drive_bundle,
+    )
+    primary_drive_link = drive_bundle.folder_url if drive_bundle and drive_bundle.folder_url else None
+    persistent_links = {
+        "primary_drive_link": primary_drive_link,
+        "drive_folder_url": drive_bundle.folder_url if drive_bundle else None,
+        "visual_report_url": visual_report_url,
+        "metadata_json_url": next((file.url for file in drive_bundle.files if file.file_type == "metadata_json"), None) if drive_bundle else None,
+        "module_status_report_url": next((file.url for file in drive_bundle.files if file.file_type == "module_status_report_json"), None) if drive_bundle else None,
+        "pre_report_factuality_check_url": next((file.url for file in drive_bundle.files if file.file_type == "pre_report_factuality_check_json"), None) if drive_bundle else None,
+    }
 
     return FullCommercialSystemResponse(
         company_name=request.company_name,
@@ -8552,8 +9195,13 @@ def audit_full_commercial_system(request: FullCommercialSystemRequest):
         visual_report_status=visual_report_status,
         visual_asset_urls=clean_visual_assets,
         drive_bundle=drive_bundle,
+        primary_drive_link=primary_drive_link,
+        drive_folder_url=drive_bundle.folder_url if drive_bundle else None,
+        persistent_links=persistent_links,
         evidence_cross_check=evidence_cross_check,
         deliverable_reliability=deliverable_reliability,
+        module_status_report=module_status_report,
+        pre_report_factuality_check=pre_report_factuality_check,
         generation_gate_status=generation_gate_status,
         generation_gate_reason=generation_gate_reason,
         research_confidence=public_audit.research_confidence,
