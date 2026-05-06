@@ -1,82 +1,308 @@
-import os
-import html
-import math
-import uuid
-import json
-import hashlib
-import struct
-import zlib
-import re
-import base64
-from typing import Any, Dict, List, Optional
+from __future__ import annotations
 
-import requests
-from fastapi import FastAPI, HTTPException, Security
-from fastapi.responses import HTMLResponse, Response
-from fastapi.security import APIKeyHeader
+import asyncio
+import hashlib
+import html
+import json
+import os
+import re
+import time
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urljoin, urlparse
+from urllib import robotparser
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+try:
+    import httpx  # type: ignore
+except Exception:  # pragma: no cover
+    httpx = None
+
+try:
+    from bs4 import BeautifulSoup  # type: ignore
+except Exception:  # pragma: no cover
+    BeautifulSoup = None
+
+try:
+    import trafilatura  # type: ignore
+except Exception:  # pragma: no cover
+    trafilatura = None
+
+try:
+    import extruct  # type: ignore
+except Exception:  # pragma: no cover
+    extruct = None
+
+try:
+    import feedparser  # type: ignore
+except Exception:  # pragma: no cover
+    feedparser = None
+
+try:
+    import phonenumbers  # type: ignore
+except Exception:  # pragma: no cover
+    phonenumbers = None
+
+try:
+    import tldextract  # type: ignore
+except Exception:  # pragma: no cover
+    tldextract = None
+
+
+APP_VERSION = "public-presence-collector-mvp-0.1"
+API_KEY = os.getenv("API_KEY", "").strip()
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
+BROWSERBASE_API_KEY = os.getenv("BROWSERBASE_API_KEY", "").strip()
+COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY", "").strip()
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
+
+TEXT_REPORTS: Dict[str, Dict[str, Any]] = {}
+
+USER_AGENT = (
+    "Mozilla/5.0 (compatible; MarketingAuditorPublicCollector/0.1; "
+    "+https://marketing-audit-api.onrender.com)"
+)
+
+SOCIAL_PLATFORMS = ["instagram", "facebook", "linkedin", "youtube", "tiktok", "x"]
+
+EXPECTED_FIELDS: Dict[str, List[str]] = {
+    "website": [
+        "http_status",
+        "final_url",
+        "title",
+        "meta_description",
+        "headings",
+        "visible_text",
+        "internal_links",
+        "external_links",
+        "social_links",
+        "cta",
+        "phones",
+        "emails",
+        "whatsapp",
+        "forms",
+        "services_or_products",
+        "pricing",
+        "faq",
+        "blog_or_news",
+        "testimonials_or_clients",
+        "website_claims",
+        "tracking_scripts",
+        "structured_data",
+        "robots_txt",
+        "sitemap_xml",
+    ],
+    "instagram": [
+        "profile_title",
+        "profile_description",
+        "external_link",
+        "followers_count",
+        "following_count",
+        "posts_count",
+        "latest_posts",
+        "post_dates",
+        "likes_comments_views",
+    ],
+    "facebook": [
+        "page_title",
+        "page_description",
+        "external_link",
+        "followers_or_likes",
+        "recent_posts",
+        "post_dates",
+        "reactions_comments_shares",
+        "contact_or_hours",
+    ],
+    "linkedin": [
+        "company_title",
+        "company_description",
+        "industry_location_size",
+        "followers_count",
+        "employees_visible",
+        "recent_posts",
+        "post_dates",
+        "reactions_comments",
+    ],
+    "youtube": [
+        "channel_id",
+        "channel_title",
+        "channel_description",
+        "published_at",
+        "subscriber_count",
+        "video_count",
+        "view_count",
+        "latest_videos",
+        "video_dates",
+        "video_views",
+        "posting_frequency_estimate",
+    ],
+    "tiktok": [
+        "profile_title",
+        "profile_description",
+        "external_link",
+        "followers_count",
+        "following_count",
+        "likes_total",
+        "latest_videos",
+        "video_dates",
+        "views_likes_comments",
+    ],
+    "x": [
+        "profile_title",
+        "profile_description",
+        "external_link",
+        "followers_count",
+        "following_count",
+        "posts_count",
+        "recent_posts",
+        "post_dates",
+        "likes_reposts_replies_views",
+        "account_created_at",
+    ],
+}
+
+REASON_MESSAGES_ES = {
+    "missing_input": "No se recibió un link para esta fuente.",
+    "missing_api_key": "La herramienta necesaria no está configurada en el backend mediante variable de entorno.",
+    "blocked_by_platform": "La plataforma limitó la lectura pública, requirió login o bloqueó el acceso automatizado.",
+    "not_publicly_available": "El dato no está disponible públicamente de forma confiable.",
+    "requires_owner_access": "Este dato requiere autorización del propietario de la cuenta o acceso del cliente.",
+    "robots_disallowed": "El archivo robots.txt no permite recolectar esta URL con el user-agent actual.",
+    "http_error": "La URL respondió con error HTTP.",
+    "timeout": "La solicitud agotó el tiempo de espera.",
+    "parse_error": "Se pudo descargar contenido, pero no se pudo interpretar de forma confiable.",
+    "js_render_required": "El contenido parece depender de JavaScript/renderizado dinámico.",
+    "rate_limited": "La plataforma o API limitó la cantidad de solicitudes.",
+    "unsupported_platform": "La plataforma no está soportada por este MVP.",
+    "collector_not_implemented": "El collector está reconocido, pero todavía no está implementado en esta versión mínima.",
+    "insufficient_public_data": "La fuente pública entregó información insuficiente para ese campo.",
+    "private_metric": "Es una métrica privada de performance; no puede obtenerse desde links públicos.",
+}
+
+HOW_TO_COLLECT_ES = {
+    "website": {
+        "generic": [
+            "Verificar que la URL sea pública y correcta.",
+            "Probar lectura con Firecrawl si el HTML público viene pobre.",
+            "Usar Browserbase/Playwright si el contenido depende de JavaScript.",
+            "Pedir al cliente la landing exacta si la página pública no contiene la información comercial.",
+        ]
+    },
+    "instagram": {
+        "generic": [
+            "Solicitar link correcto del perfil público.",
+            "Si se requieren métricas reales, conectar cuenta profesional mediante Meta/Instagram API con autorización del cliente.",
+            "Como alternativa operativa, pedir captura o export manual desde Meta Business Suite con fecha de captura.",
+        ]
+    },
+    "facebook": {
+        "generic": [
+            "Solicitar link correcto de la página pública.",
+            "Para insights reales, el cliente debe autorizar Meta/Facebook Page mediante permisos de página.",
+            "Como alternativa, pedir capturas o export manual desde Meta Business Suite.",
+        ]
+    },
+    "linkedin": {
+        "generic": [
+            "Solicitar URL correcta de página de empresa o perfil.",
+            "Para estadísticas reales, el cliente debe autorizar LinkedIn API/OAuth o entregar export/capturas.",
+            "LinkedIn limita mucha información pública sin login; registrar la limitación si no expone posts o métricas.",
+        ]
+    },
+    "youtube": {
+        "generic": [
+            "Verificar que el link corresponda a un canal, handle o video público.",
+            "Configurar YOUTUBE_API_KEY si falta la clave.",
+            "Si el conteo de suscriptores está oculto por el canal, marcarlo como no público.",
+        ]
+    },
+    "tiktok": {
+        "generic": [
+            "Solicitar link correcto del perfil público.",
+            "Si la plataforma oculta métricas, pedir captura manual del perfil y contenidos recientes.",
+            "Para métricas internas reales, se requiere acceso del cliente o export de la plataforma.",
+        ]
+    },
+    "x": {
+        "generic": [
+            "Solicitar link correcto del perfil público.",
+            "Si las métricas no son visibles, marcar como no disponible públicamente.",
+            "Para datos estructurados, usar API de X si existe acceso y condiciones habilitadas.",
+        ]
+    },
+}
 
 app = FastAPI(
-    title="Marketing Audit API",
-    description="API para auditar prospectos, investigar presencia pública y devolver información estructurada a un Custom GPT.",
-    version="1.9.0",
-    servers=[
-        {
-            "url": "https://marketing-audit-api.onrender.com",
-            "description": "Render production server",
-        }
-    ],
+    title="Marketing Auditor - Public Presence Collector MVP",
+    version=APP_VERSION,
+    description=(
+        "MVP de recolección pasiva/semi-pasiva de presencia pública. "
+        "No diagnostica performance, no genera recomendaciones comerciales y no inventa datos."
+    ),
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
-API_KEY = os.getenv("API_KEY", "dev-key")
-COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
-COMPOSIO_BASE_URL = "https://backend.composio.dev/api/v3.1"
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com")
-def clean_env_value(name: str, default: Optional[str] = None) -> Optional[str]:
-    value = os.getenv(name, default)
-    if value is None:
-        return None
-    value = value.strip()
-    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
-        value = value[1:-1].strip()
-    return value or None
+class AssetsInput(BaseModel):
+    website: Optional[str] = None
+    instagram: Optional[str] = None
+    facebook: Optional[str] = None
+    linkedin: Optional[str] = None
+    youtube: Optional[str] = None
+    tiktok: Optional[str] = None
+    x: Optional[str] = None
 
 
-GOOGLE_APPS_SCRIPT_ENABLED = (clean_env_value("GOOGLE_APPS_SCRIPT_ENABLED", "false") or "false").lower() == "true"
-GOOGLE_APPS_SCRIPT_UPLOAD_URL = clean_env_value("GOOGLE_APPS_SCRIPT_UPLOAD_URL")
-GOOGLE_APPS_SCRIPT_SECRET = clean_env_value("GOOGLE_APPS_SCRIPT_SECRET")
-GOOGLE_DRIVE_FOLDER_ID = clean_env_value("GOOGLE_DRIVE_FOLDER_ID")
-GOOGLE_DRIVE_INDIVIDUAL_ASSET_UPLOAD_ENABLED = (clean_env_value("GOOGLE_DRIVE_INDIVIDUAL_ASSET_UPLOAD_ENABLED", "false") or "false").lower() == "true"
-GOOGLE_APPS_SCRIPT_TIMEOUT_SECONDS = int(clean_env_value("GOOGLE_APPS_SCRIPT_TIMEOUT_SECONDS", "30") or "30")
-VISUAL_REPORT_STORE: Dict[str, str] = {}
-PNG_ASSET_STORE: Dict[str, bytes] = {}
-REPORTS_DIR = os.getenv("REPORTS_DIR", "/tmp/marketing_audit_reports")
-ASSETS_DIR = os.getenv("ASSETS_DIR", "/tmp/marketing_audit_assets")
-os.makedirs(REPORTS_DIR, exist_ok=True)
-os.makedirs(ASSETS_DIR, exist_ok=True)
-
-ANALYSIS_VERSION = "v1.31"
-RULESET_VERSION = "2026-05-05-website-observed-evidence-core-v1"
-
-ALLOWED_COMPOSIO_TOOLS = {
-    "SEARCH_API_SEARCH",
-    "SEARCH_API_LOCATIONS",
-    "COMPOSIO_SEARCH_DUCK_DUCK_GO_SEARCH",
-}
+class PublicPresenceCollectRequest(BaseModel):
+    company_name: Optional[str] = None
+    website: Optional[str] = None
+    website_url: Optional[str] = None
+    instagram: Optional[str] = None
+    facebook: Optional[str] = None
+    linkedin: Optional[str] = None
+    youtube: Optional[str] = None
+    tiktok: Optional[str] = None
+    x: Optional[str] = None
+    assets: Optional[AssetsInput] = None
+    collection_depth: str = Field(default="basic", description="basic | standard")
+    max_website_pages: int = Field(default=5, ge=1, le=10)
 
 
-WEBSITE_FETCH_TIMEOUT_SECONDS = float(os.getenv("WEBSITE_FETCH_TIMEOUT_SECONDS", "8"))
-WEBSITE_FETCH_MAX_BYTES = int(os.getenv("WEBSITE_FETCH_MAX_BYTES", "220000"))
-WEBSITE_EVIDENCE_CACHE: Dict[str, Dict[str, Any]] = {}
-ANALYTICAL_STRONG_VISUALS_ENABLED = (os.getenv("ANALYTICAL_STRONG_VISUALS_ENABLED", "false").lower() == "true")
+async def verify_api_key(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+) -> None:
+    if not API_KEY:
+        return
+    provided = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        provided = authorization.split(" ", 1)[1].strip()
+    elif x_api_key:
+        provided = x_api_key.strip()
+    if provided != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
-def normalize_website_url(url: Optional[str]) -> Optional[str]:
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_url(url: Optional[str]) -> Optional[str]:
     if not url:
         return None
-    value = str(url).strip()
+    value = url.strip()
     if not value:
         return None
     if not re.match(r"^https?://", value, flags=re.I):
@@ -84,10314 +310,1287 @@ def normalize_website_url(url: Optional[str]) -> Optional[str]:
     return value
 
 
-def _html_to_visible_text(raw_html: str) -> str:
-    if not raw_html:
+def safe_domain(url: str) -> str:
+    parsed = urlparse(url)
+    return parsed.netloc.lower().replace("www.", "")
+
+
+def root_url(url: str) -> str:
+    p = urlparse(url)
+    return f"{p.scheme}://{p.netloc}"
+
+
+def hash_payload(payload: Any) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def collapse_ws(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def truncate(text: str, limit: int = 600) -> str:
+    text = collapse_ws(text)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def make_evidence(
+    evidence_id: str,
+    platform: str,
+    source_url: Optional[str],
+    collector: str,
+    data_type: str,
+    value: Any,
+    confidence: str = "medium",
+    raw_excerpt: Optional[str] = None,
+    limitations: Optional[List[str]] = None,
+    evidence_type: str = "public_observed",
+) -> Dict[str, Any]:
+    return {
+        "evidence_id": evidence_id,
+        "platform": platform,
+        "source_url": source_url,
+        "collector": collector,
+        "data_type": data_type,
+        "value": value,
+        "raw_excerpt": truncate(raw_excerpt or "", 900) if raw_excerpt else None,
+        "confidence": confidence,
+        "retrieved_at": now_iso(),
+        "limitations": limitations or [],
+        "evidence_type": evidence_type,
+    }
+
+
+class EvidenceBuilder:
+    def __init__(self) -> None:
+        self.items: List[Dict[str, Any]] = []
+        self._counter = 1
+
+    def add(
+        self,
+        platform: str,
+        source_url: Optional[str],
+        collector: str,
+        data_type: str,
+        value: Any,
+        confidence: str = "medium",
+        raw_excerpt: Optional[str] = None,
+        limitations: Optional[List[str]] = None,
+        evidence_type: str = "public_observed",
+    ) -> str:
+        eid = f"ev_{self._counter:03d}"
+        self._counter += 1
+        self.items.append(
+            make_evidence(
+                eid,
+                platform,
+                source_url,
+                collector,
+                data_type,
+                value,
+                confidence,
+                raw_excerpt,
+                limitations,
+                evidence_type,
+            )
+        )
+        return eid
+
+
+async def fetch_url(url: str, timeout: int = 15) -> Dict[str, Any]:
+    headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+    started = time.time()
+    if httpx is not None:
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=timeout, headers=headers) as client:
+                resp = await client.get(url)
+            return {
+                "ok": 200 <= resp.status_code < 400,
+                "status_code": resp.status_code,
+                "final_url": str(resp.url),
+                "content_type": resp.headers.get("content-type", ""),
+                "text": resp.text or "",
+                "elapsed_ms": int((time.time() - started) * 1000),
+                "error": None,
+            }
+        except Exception as exc:
+            return {"ok": False, "status_code": None, "final_url": url, "content_type": "", "text": "", "elapsed_ms": int((time.time() - started) * 1000), "error": str(exc)}
+
+    def _urllib_fetch() -> Dict[str, Any]:
+        import urllib.request
+
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as response:  # nosec - controlled URL input for public collector
+            raw = response.read(2_500_000)
+            charset = response.headers.get_content_charset() or "utf-8"
+            return {
+                "ok": 200 <= response.status < 400,
+                "status_code": response.status,
+                "final_url": response.url,
+                "content_type": response.headers.get("content-type", ""),
+                "text": raw.decode(charset, errors="replace"),
+                "elapsed_ms": int((time.time() - started) * 1000),
+                "error": None,
+            }
+
+    try:
+        return await asyncio.to_thread(_urllib_fetch)
+    except Exception as exc:
+        return {"ok": False, "status_code": None, "final_url": url, "content_type": "", "text": "", "elapsed_ms": int((time.time() - started) * 1000), "error": str(exc)}
+
+
+def soup_from_html(doc: str) -> Any:
+    if BeautifulSoup is None:
+        return None
+    try:
+        return BeautifulSoup(doc or "", "html.parser")
+    except Exception:
+        return None
+
+
+def extract_visible_text(doc: str) -> str:
+    if not doc:
         return ""
-    text = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", raw_html)
-    text = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", text)
-    text = re.sub(r"(?is)<noscript[^>]*>.*?</noscript>", " ", text)
-    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
-    text = re.sub(r"(?i)</(p|div|li|h1|h2|h3|section|article|header|footer|nav|tr)>", "\n", text)
-    text = re.sub(r"(?s)<[^>]+>", " ", text)
-    text = html.unescape(text)
-    text = re.sub(r"[\t\r\f\v]+", " ", text)
-    text = re.sub(r"\n\s*\n+", "\n", text)
-    text = re.sub(r"[ ]{2,}", " ", text)
-    return text.strip()
+    if trafilatura is not None:
+        try:
+            extracted = trafilatura.extract(doc, include_comments=False, include_tables=False, favor_precision=True)
+            if extracted and len(extracted.strip()) > 120:
+                return collapse_ws(html.unescape(extracted))
+        except Exception:
+            pass
+    soup = soup_from_html(doc)
+    if soup is not None:
+        for tag in soup(["script", "style", "noscript", "svg", "canvas"]):
+            tag.decompose()
+        return collapse_ws(html.unescape(soup.get_text(" ")))
+    cleaned = re.sub(r"(?is)<script.*?>.*?</script>", " ", doc)
+    cleaned = re.sub(r"(?is)<style.*?>.*?</style>", " ", cleaned)
+    cleaned = re.sub(r"(?s)<[^>]+>", " ", cleaned)
+    return collapse_ws(html.unescape(cleaned))
 
 
-def _extract_tag_texts(raw_html: str, tag_pattern: str, limit: int = 16) -> List[str]:
-    out: List[str] = []
-    for match in re.finditer(tag_pattern, raw_html or "", flags=re.I | re.S):
-        value = _html_to_visible_text(match.group(1))
-        value = re.sub(r"\s+", " ", value).strip()
-        if value and len(value) >= 2 and value.lower() not in [item.lower() for item in out]:
-            out.append(value[:180])
-        if len(out) >= limit:
-            break
+def extract_meta_and_links(doc: str, base_url: str) -> Dict[str, Any]:
+    soup = soup_from_html(doc)
+    out: Dict[str, Any] = {
+        "title": None,
+        "meta_description": None,
+        "headings": [],
+        "links": [],
+        "forms_count": 0,
+        "buttons": [],
+        "open_graph": {},
+        "structured_data_count": 0,
+        "scripts_src": [],
+        "images_alt": [],
+    }
+    if soup is None:
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", doc, flags=re.I | re.S)
+        if title_match:
+            out["title"] = collapse_ws(html.unescape(title_match.group(1)))
+        return out
+
+    title = soup.find("title")
+    if title:
+        out["title"] = collapse_ws(title.get_text(" "))
+
+    meta_desc = soup.find("meta", attrs={"name": re.compile("^description$", re.I)})
+    if meta_desc and meta_desc.get("content"):
+        out["meta_description"] = collapse_ws(meta_desc.get("content"))
+
+    for tag in soup.find_all(["h1", "h2", "h3"]):
+        txt = collapse_ws(tag.get_text(" "))
+        if txt and len(txt) >= 2:
+            out["headings"].append(txt)
+    out["headings"] = list(dict.fromkeys(out["headings"]))[:30]
+
+    links = []
+    for a in soup.find_all("a", href=True):
+        href = urljoin(base_url, a.get("href"))
+        text = collapse_ws(a.get_text(" "))
+        links.append({"url": href, "text": text})
+    out["links"] = links
+
+    out["forms_count"] = len(soup.find_all("form"))
+
+    buttons = []
+    for tag in soup.find_all(["button", "a"]):
+        txt = collapse_ws(tag.get_text(" "))
+        if txt and any(k in txt.lower() for k in ["contact", "contacto", "consult", "cotiz", "compr", "agenda", "reserv", "llamar", "whatsapp", "empez", "demo", "presupuesto"]):
+            buttons.append(txt)
+    out["buttons"] = list(dict.fromkeys(buttons))[:25]
+
+    og = {}
+    for meta in soup.find_all("meta"):
+        prop = meta.get("property") or meta.get("name")
+        content = meta.get("content")
+        if prop and content and (str(prop).startswith("og:") or str(prop).startswith("twitter:")):
+            og[str(prop)] = collapse_ws(str(content))
+    out["open_graph"] = og
+
+    out["structured_data_count"] = len(soup.find_all("script", attrs={"type": re.compile("ld\+json", re.I)}))
+
+    scripts = []
+    for s in soup.find_all("script", src=True):
+        scripts.append(urljoin(base_url, s.get("src")))
+    out["scripts_src"] = scripts[:100]
+
+    img_alts = []
+    for img in soup.find_all("img"):
+        alt = collapse_ws(img.get("alt") or "")
+        if alt:
+            img_alts.append(alt)
+    out["images_alt"] = list(dict.fromkeys(img_alts))[:50]
+
     return out
 
 
-def _extract_anchors(raw_html: str, limit: int = 80) -> List[Dict[str, str]]:
-    anchors: List[Dict[str, str]] = []
-    for match in re.finditer(r"(?is)<a\b([^>]*)>(.*?)</a>", raw_html or ""):
-        attrs = match.group(1) or ""
-        body = match.group(2) or ""
-        href_match = re.search(r"href\s*=\s*['\"]([^'\"]+)['\"]", attrs, flags=re.I)
-        href = html.unescape(href_match.group(1).strip()) if href_match else ""
-        label = _html_to_visible_text(body)
-        label = re.sub(r"\s+", " ", label).strip()
-        if href or label:
-            anchors.append({"href": href[:400], "label": label[:220]})
-        if len(anchors) >= limit:
-            break
-    return anchors
-
-
-def _clean_extracted_snippet(value: str, max_chars: int = 280) -> str:
-    """Return a readable, claim-safe snippet from raw HTML/text/anchor context."""
-    value = html.unescape(str(value or ""))
-    value = re.sub(r"https?://\S+", " ", value, flags=re.I)
-    value = re.sub(r"\b(?:mailto|tel):\S+", " ", value, flags=re.I)
-    value = re.sub(r"[|]{2,}", " | ", value)
-    value = re.sub(r"\s+", " ", value).strip(" .;:-|\n\t")
-    repeated_nav = ["inicio", "nosotros", "servicios", "precios", "contacto", "preguntas", "frecuentes"]
-    tokens = value.lower().split()
-    if tokens and sum(tokens.count(t) for t in repeated_nav) >= max(7, len(tokens) // 2):
-        return ""
-    return value[:max_chars].strip()
-
-
-def _find_context_snippets(text: str, keywords: List[str], limit: int = 3) -> List[str]:
-    if not text:
-        return []
-    clean = re.sub(r"\s+", " ", text)
-    chunks = [c.strip() for c in re.split(r"(?<=[.!?])\s+|\s+[•·]\s+|\s{2,}", clean) if c.strip()]
-    lower_chunks = [(chunk, chunk.lower()) for chunk in chunks]
-    snippets: List[str] = []
-    for kw in keywords:
-        k = kw.lower()
-        found = False
-        for chunk, low in lower_chunks:
-            if k not in low:
-                continue
-            snippet = _clean_extracted_snippet(chunk)
-            if snippet and all(snippet.lower() not in existing.lower() for existing in snippets):
-                snippets.append(snippet)
-                found = True
-                break
-        if not found:
-            lower = clean.lower()
-            pos = lower.find(k)
-            if pos != -1:
-                left = max(0, pos - 70)
-                right = min(len(clean), pos + len(k) + 140)
-                snippet = _clean_extracted_snippet(clean[left:right])
-                if snippet and all(snippet.lower() not in existing.lower() for existing in snippets):
-                    snippets.append(snippet)
-        if len(snippets) >= limit:
-            break
-    return snippets
-
-def _summarize_list(values: List[str], max_items: int = 8, max_chars: int = 520) -> str:
-    selected = [v for v in values if v][:max_items]
-    text = "; ".join(selected)
-    return text[:max_chars]
-
-
-def fetch_website_evidence_snapshot(url: Optional[str]) -> Dict[str, Any]:
-    normalized = normalize_website_url(url)
-    if not normalized:
-        return {"status": "not_provided", "url": None, "facts": [], "error": "No website URL provided."}
-    cache_key = normalized.rstrip("/").lower()
-    if cache_key in WEBSITE_EVIDENCE_CACHE:
-        return WEBSITE_EVIDENCE_CACHE[cache_key]
-
-    snapshot: Dict[str, Any] = {
-        "status": "failed",
-        "url": normalized,
-        "final_url": None,
-        "status_code": None,
-        "title": None,
-        "headings": [],
-        "anchors": [],
-        "facts": [],
-        "word_count": 0,
-        "error": None,
-    }
-    try:
-        response = requests.get(
-            normalized,
-            headers={
-                "User-Agent": "Mozilla/5.0 (compatible; MarketingAuditor/1.0; +https://marketing-audit-api.onrender.com)",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            },
-            timeout=WEBSITE_FETCH_TIMEOUT_SECONDS,
-            allow_redirects=True,
-        )
-        snapshot["status_code"] = response.status_code
-        snapshot["final_url"] = response.url
-        content_type = (response.headers.get("content-type") or "").lower()
-        raw_bytes = response.content[:WEBSITE_FETCH_MAX_BYTES]
-        raw_html = raw_bytes.decode(response.encoding or "utf-8", errors="ignore")
-        if response.status_code >= 400:
-            snapshot["error"] = f"HTTP {response.status_code} al leer el sitio."
-            WEBSITE_EVIDENCE_CACHE[cache_key] = snapshot
-            return snapshot
-        if "text/html" not in content_type and "html" not in raw_html[:500].lower():
-            snapshot["error"] = f"Contenido no HTML o no legible como landing pública: {content_type or 'content-type desconocido'}."
-            WEBSITE_EVIDENCE_CACHE[cache_key] = snapshot
-            return snapshot
-
-        title_match = re.search(r"(?is)<title[^>]*>(.*?)</title>", raw_html)
-        title = _html_to_visible_text(title_match.group(1)) if title_match else ""
-        headings = _extract_tag_texts(raw_html, r"<h[1-3][^>]*>(.*?)</h[1-3]>", limit=14)
-        anchors = _extract_anchors(raw_html, limit=120)
-        visible_text = _html_to_visible_text(raw_html)
-        lower_text = visible_text.lower()
-        word_count = len(re.findall(r"\w+", visible_text))
-        snapshot.update({
-            "status": "observed",
-            "title": title[:220] if title else None,
-            "headings": headings,
-            "anchors": anchors[:80],
-            "word_count": word_count,
-            "text_sample": visible_text[:1200],
-        })
-
-        facts: List[Dict[str, Any]] = []
-        def fact(label: str, observed: str, supports: List[str], reliability: str = "medium"):
-            observed = _clean_extracted_snippet(str(observed or ""), max_chars=520)
-            if observed:
-                facts.append({
-                    "label": label,
-                    "observed_fact": observed,
-                    "supports": _unique_keep_order(supports),
-                    "reliability": reliability,
-                })
-
-
-        if title or headings:
-            fact(
-                "Encabezados y propuesta visible del sitio",
-                f"Title: {title or 'n/d'}; encabezados visibles: {_summarize_list(headings, 10)}",
-                ["offer_clarity", "content_depth", "audience_specificity"],
-                "medium-high" if headings else "medium",
-            )
-
-        anchor_labels = [a.get("label", "") for a in anchors if a.get("label")]
-        nav_candidates = [x for x in anchor_labels if len(x) <= 55]
-        if nav_candidates:
-            fact(
-                "Navegación visible",
-                f"Navegación/enlaces detectados: {_summarize_list(nav_candidates, 14)}",
-                ["content_depth", "objection_handling", "conversion_path"],
-                "medium",
-            )
-
-        joined_anchors = " ".join([f"{a.get('label','')} {a.get('href','')}" for a in anchors]).lower()
-        cta_keywords = ["whatsapp", "wa.me", "contacto", "consultar", "consulta", "llamar", "tel:", "mailto:", "formulario", "cotizar", "quiero saber", "empez", "más información", "cargar cv", "enviar"]
-        cta_snippets = _find_context_snippets(visible_text + " " + joined_anchors, cta_keywords, limit=4)
-        if cta_snippets or re.search(r"(?is)<form\b", raw_html):
-            form_count = len(re.findall(r"(?is)<form\b", raw_html))
-            fact(
-                "CTA/contacto observable",
-                f"Señales de contacto/CTA: {' | '.join(cta_snippets) or 'formulario detectado'}; formularios HTML detectados={form_count}",
-                ["cta_strength", "conversion_path"],
-                "medium-high",
-            )
-
-        emails = sorted(set(re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", visible_text)))[:4]
-        phones = sorted(set(re.findall(r"(?:\+?\d[\d\s().-]{7,}\d)", visible_text)))[:5]
-        if emails or phones:
-            fact(
-                "Datos de contacto visibles",
-                f"Emails detectados: {', '.join(emails) or 'n/d'}; teléfonos detectados: {', '.join(phones) or 'n/d'}",
-                ["cta_strength", "conversion_path", "trust_density"],
-                "medium-high",
-            )
-
-        offer_keywords = ["servicios", "soluciones", "automatización", "inteligencia artificial", "roi", "lote", "loteos", "propiedad", "propiedades", "construcciones", "búsqueda y selección", "talentos", "capacitación", "coaching", "procesos", "pyme", "rr.hh", "recursos humanos"]
-        offer_snippets = _find_context_snippets(visible_text, offer_keywords, limit=4)
-        if offer_snippets:
-            fact(
-                "Servicios/oferta observada en el contenido",
-                " | ".join(offer_snippets),
-                ["offer_clarity", "audience_specificity", "content_depth"],
-                "medium-high",
-            )
-
-        authority_keywords = ["años de experiencia", "experiencia", "miembro", "association", "certificación", "ingenieros", "profesional", "metodología", "trayectoria", "especialistas", "equipo", "reconocimiento"]
-        authority_snippets = _find_context_snippets(visible_text, authority_keywords, limit=4)
-        if authority_snippets:
-            fact(
-                "Autoridad/metodología/credenciales visibles",
-                " | ".join(authority_snippets),
-                ["authority", "trust_density", "content_depth", "objection_handling"],
-                "medium-high",
-            )
-
-        social_keywords = ["testimonio", "testimonios", "reseñas", "reviews", "clientes", "nuestros clientes", "casos", "trustindex", "google", "excelente", "a base de", "logos"]
-        social_snippets = _find_context_snippets(visible_text, social_keywords, limit=5)
-        if social_snippets:
-            fact(
-                "Prueba social visible",
-                " | ".join(social_snippets),
-                ["social_proof", "trust_density", "authority"],
-                "medium-high",
-            )
-
-        depth_keywords = ["blog", "noticias", "podcast", "newsletter", "faq", "preguntas frecuentes", "metodología", "guía", "artículo", "leer más", "incluye", "proceso", "3 pasos", "servicios para elegir"]
-        depth_snippets = _find_context_snippets(visible_text, depth_keywords, limit=5)
-        if depth_snippets:
-            fact(
-                "Profundidad de contenido / educación / objeciones",
-                " | ".join(depth_snippets),
-                ["content_depth", "objection_handling", "authority"],
-                "medium-high",
-            )
-
-        social_links = []
-        for a in anchors:
-            href = (a.get("href") or "").lower()
-            if any(domain in href for domain in ["instagram.com", "facebook.com", "linkedin.com", "youtube.com", "tiktok.com", "twitter.com", "x.com"]):
-                social_links.append(a.get("href") or href)
-        if social_links:
-            fact(
-                "Redes sociales enlazadas desde el sitio",
-                f"Links sociales detectados: {_summarize_list(social_links, 8)}",
-                ["channel_consistency", "public_presence"],
-                "medium",
-            )
-
-        if not facts:
-            fact(
-                "Sitio leído sin señales comerciales suficientes",
-                f"El HTML público fue leído, pero no se detectaron señales comerciales fuertes en los primeros {WEBSITE_FETCH_MAX_BYTES} bytes. Palabras visibles aprox={word_count}.",
-                ["public_presence"],
-                "low",
-            )
-        snapshot["facts"] = facts
-    except requests.exceptions.Timeout:
-        snapshot["error"] = f"Timeout al leer sitio después de {WEBSITE_FETCH_TIMEOUT_SECONDS} segundos."
-    except requests.exceptions.RequestException as exc:
-        snapshot["error"] = f"Error de red al leer sitio: {str(exc)[:220]}"
-    except Exception as exc:
-        snapshot["error"] = f"Error inesperado al extraer evidencia web: {str(exc)[:220]}"
-
-    WEBSITE_EVIDENCE_CACHE[cache_key] = snapshot
-    return snapshot
-
-
-api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
-
-
-def verify_api_key(api_key: str = Security(api_key_header)):
-    if api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="API key inválida o ausente")
-    return api_key
-
-
-class ProspectAuditRequest(BaseModel):
-    company_name: str = Field(..., description="Nombre de la empresa o prospecto")
-    website: Optional[str] = Field(None, description="Sitio web de la empresa")
-    instagram: Optional[str] = Field(None, description="Perfil de Instagram")
-    linkedin: Optional[str] = Field(None, description="Perfil de LinkedIn")
-    industry: Optional[str] = Field(None, description="Rubro o industria del prospecto")
-    offer: Optional[str] = Field(None, description="Oferta principal del prospecto")
-    notes: Optional[str] = Field(None, description="Notas adicionales sobre el prospecto")
-
-
-class ProspectAuditResponse(BaseModel):
-    company_name: str
-    audit_type: str
-    awareness_level: str
-    primary_bottleneck: str
-    detected_focus_areas: List[str]
-    commercial_risk: str
-    recommended_angle: str
-    next_step: str
-    do_not_give_for_free: List[str]
-    confidence: str
-
-
-class ReportBriefRequest(BaseModel):
-    company_name: str = Field(..., description="Nombre de la empresa o prospecto")
-    awareness_level: Optional[str] = Field(None, description="Nivel de awareness detectado")
-    primary_bottleneck: Optional[str] = Field(None, description="Principal cuello de botella")
-    audit_findings: List[str] = Field(..., description="Hallazgos principales de la auditoría")
-
-
-class ReportBriefResponse(BaseModel):
-    company_name: str
-    report_type: str
-    report_sections: List[str]
-    opening_angle: str
-    recommended_close: str
-    do_not_include: List[str]
-
-
-class ToolInfo(BaseModel):
-    slug: str
-    name: Optional[str] = None
-    toolkit: Optional[str] = None
-    description: Optional[str] = None
-
-
-class ToolkitStatus(BaseModel):
-    toolkit: str
-    available: bool
-    tool_count: int
-    sample_tools: List[str]
-    error: Optional[str] = None
-
-
-class ToolsStatusResponse(BaseModel):
-    composio_configured: bool
-    checked_toolkits: List[ToolkitStatus]
-    recommendation: str
-
-
-class ToolsSearchRequest(BaseModel):
-    query: str = Field(..., description="Texto para buscar herramientas")
-    toolkit_slug: Optional[str] = Field(None, description="Toolkit específico")
-    limit: int = Field(10, description="Cantidad máxima de herramientas a devolver")
-
-
-class ToolsSearchResponse(BaseModel):
-    query: str
-    toolkit_slug: Optional[str]
-    results: List[ToolInfo]
-
-
-class ToolDetailsResponse(BaseModel):
-    tool_slug: str
-    raw_response: Dict[str, Any]
-
-
-class ToolExecuteRequest(BaseModel):
-    tool_slug: str = Field(..., description="Slug exacto de la herramienta de Composio")
-    arguments: Optional[Dict[str, Any]] = Field(None, description="Argumentos estructurados")
-    text: Optional[str] = Field(None, description="Instrucción en lenguaje natural")
-    user_id: str = Field("default", description="Identificador del usuario en Composio")
-
-
-class ToolExecuteResponse(BaseModel):
-    tool_slug: str
-    successful: Optional[bool] = None
-    data: Optional[Any] = None
-    error: Optional[Any] = None
-    raw_response: Dict[str, Any]
-
-
-class PublicPresenceRequest(BaseModel):
-    company_name: str = Field(..., description="Nombre de la empresa a investigar")
-    industry: Optional[str] = Field(None, description="Rubro o industria")
-    city: Optional[str] = Field(None, description="Ciudad o zona principal")
-    country: Optional[str] = Field("Argentina", description="País de referencia")
-    website: Optional[str] = Field(None, description="Sitio web conocido")
-    instagram: Optional[str] = Field(None, description="Perfil de Instagram conocido")
-    tiktok: Optional[str] = Field(None, description="Perfil de TikTok conocido")
-    facebook: Optional[str] = Field(None, description="Perfil de Facebook conocido")
-    youtube: Optional[str] = Field(None, description="Canal de YouTube conocido")
-    linkedin: Optional[str] = Field(None, description="Perfil de LinkedIn conocido")
-    num_results_per_query: int = Field(5, description="Cantidad de resultados por búsqueda")
-    research_mode: str = Field("live_public_search", description="Modo de investigación: live_public_search o declared_only")
-    research_mode: str = Field("live_public_search", description="Modo de investigación: live_public_search o declared_only")
-    research_mode: str = Field("live_public_search", description="Modo de investigación: live_public_search o declared_only")
-
-
-class PublicSourceResult(BaseModel):
-    category: str
-    query: str
-    title: Optional[str] = None
-    url: Optional[str] = None
-    displayed_url: Optional[str] = None
-    snippet: Optional[str] = None
-    source: str = "search_api"
-
-
-class PublicPresenceResponse(BaseModel):
-    company_name: str
-    research_type: str
-    queries_used: List[str]
-    sources_found: List[PublicSourceResult]
-    presence_summary: str
-    research_confidence: str
-    next_step: str
-    raw_result_count: int
-
-
-class ReviewedPublicSource(BaseModel):
-    category: str
-    title: Optional[str] = None
-    url: Optional[str] = None
-    signal: str
-
-
-class ProspectWithResearchRequest(BaseModel):
-    company_name: str = Field(..., description="Nombre de la empresa o prospecto")
-    industry: Optional[str] = Field(None, description="Rubro o industria")
-    city: Optional[str] = Field(None, description="Ciudad o zona principal")
-    country: Optional[str] = Field("Argentina", description="País de referencia")
-    website: Optional[str] = Field(None, description="Sitio web conocido")
-    instagram: Optional[str] = Field(None, description="Perfil de Instagram conocido")
-    tiktok: Optional[str] = Field(None, description="Perfil de TikTok conocido")
-    facebook: Optional[str] = Field(None, description="Perfil de Facebook conocido")
-    youtube: Optional[str] = Field(None, description="Canal de YouTube conocido")
-    linkedin: Optional[str] = Field(None, description="Perfil de LinkedIn conocido")
-    offer: Optional[str] = Field(None, description="Oferta principal del prospecto")
-    notes: Optional[str] = Field(None, description="Notas adicionales del usuario")
-    num_results_per_query: int = Field(5, description="Cantidad de resultados por búsqueda")
-
-
-class IntegratedAuditBlock(BaseModel):
-    awareness_level: str
-    primary_bottleneck: str
-    detected_focus_areas: List[str]
-    commercial_risk: str
-    recommended_angle: str
-    confidence: str
-
-
-class AwarenessStage(BaseModel):
-    stage: str
-    weight: int
-    state: str
-
-
-class AwarenessFunnelLocator(BaseModel):
-    dominant_stage: str
-    blocked_stage: str
-    stage_distribution: List[AwarenessStage]
-    explanation: str
-
-
-class TemperatureHeatmapValues(BaseModel):
-    attention: int
-    interest: int
-    intent: int
-    trust: int
-    action: int
-    average: int
-
-
-class TemperatureHeatmapRow(BaseModel):
-    temperature: str
-    values: TemperatureHeatmapValues
-
-
-class TemperatureHeatmap(BaseModel):
-    average_temperature: str
-    rows: List[TemperatureHeatmapRow]
-    summary: str
-
-
-class DensityPoint(BaseModel):
-    x: str
-    y: str
-    value: int
-
-
-class DensityZone(BaseModel):
-    x: str
-    y: str
-    label: str
-
-
-class CustomerIntentDensityMap(BaseModel):
-    x_axis: List[str]
-    y_axis: List[str]
-    density_points: List[DensityPoint]
-    dominant_zone: DensityZone
-    blocked_zone: DensityZone
-    interpretation: str
-
-
-class CommercialScore(BaseModel):
-    overall: float
-    value_proposition: int
-    public_presence: int
-    differentiation: int
-    cta_strength: int
-    trust_signals: int
-    competitive_pressure: int
-
-
-class ScoreInterpretation(BaseModel):
-    level: str
-    summary: str
-    main_leverage: str
-    main_risk: str
-
-
-class FunnelBlueprint(BaseModel):
-    current_flow: List[str]
-    missing_links: List[str]
-    breakpoints: List[str]
-    recommended_flow: List[str]
-    summary: str
-
-
-class CorrectiveActionItem(BaseModel):
-    issue: str
-    evidence: str
-    recommended_action: str
-    priority: str
-    effort: str
-    expected_impact: str
-    verification_metric: str
-    do_not_give_for_free: str
-
-
-class ReportPage(BaseModel):
-    page: int
-    title: str
-    content: str
-    visual_element: Optional[str] = None
-
-
-class ProspectWithResearchResponse(BaseModel):
-    company_name: str
-    audit_type: str
-    research_confidence: str
-    public_sources_summary: List[ReviewedPublicSource]
-    diagnosis_initial: str
-    audit: IntegratedAuditBlock
-    commercial_score: CommercialScore
-    score_interpretation: ScoreInterpretation
-    awareness_funnel_locator: AwarenessFunnelLocator
-    temperature_heatmap: TemperatureHeatmap
-    customer_intent_density_map: CustomerIntentDensityMap
-    visual_diagram_mermaid: str
-    funnel_blueprint: FunnelBlueprint
-    corrective_action_plan: List[CorrectiveActionItem]
-    report_pages: List[ReportPage]
-    report_sections: List[str]
-    report_ready_markdown: str
-    do_not_give_for_free: List[str]
-    next_step: str
-    raw_sources_count: int
-
-
-class VisualAssetLink(BaseModel):
-    asset_type: str
-    format: str = "png"
-    url: str
-    transparent_background: bool = True
-    no_text: bool = True
-    use_case: str
-    storage_provider: str = "render_temp"
-    local_url: Optional[str] = None
-    drive_file_id: Optional[str] = None
-    drive_url: Optional[str] = None
-    upload_status: str = "local_only"
-
-
-class DriveBundleFile(BaseModel):
-    file_type: str
-    name: str
-    url: Optional[str] = None
-    file_id: Optional[str] = None
-    mime_type: Optional[str] = None
-    asset_type: Optional[str] = None
-
-
-class DriveBundleExport(BaseModel):
-    status: str = "not_requested"
-    storage_provider: str = "none"
-    folder_id: Optional[str] = None
-    folder_url: Optional[str] = None
-    files: List[DriveBundleFile] = Field(default_factory=list)
-    error: Optional[str] = None
-    note: Optional[str] = None
-
-
-class EvidenceCrossCheckItem(BaseModel):
-    evidence_group: str
-    evidence_type: str
-    source_label: str
-    signal: str
-    used_for: List[str] = Field(default_factory=list)
-    confidence: str = "media"
-
-
-class EvidenceCrossCheckReport(BaseModel):
-    status: str = Field(..., description="cross_checked, limited, insufficient")
-    evidence_groups: List[str] = Field(default_factory=list)
-    evidence_items: List[EvidenceCrossCheckItem] = Field(default_factory=list)
-    crossed_signals: List[str] = Field(default_factory=list)
-    missing_data: List[str] = Field(default_factory=list)
-    visual_generation_allowed: bool = True
-    text_generation_allowed: bool = True
-    generic_output_risk: str = "medio"
-    rule_applied: str = "No generar análisis ni gráficos finales sin cruzar primero la evidencia disponible."
-    explanation: str
-
-
-class DeliverableReliabilityReport(BaseModel):
-    reliability_status: str = Field(..., description="locked, comparable, preliminary, variable o not_safe")
-    safe_to_present: bool
-    safe_to_execute_actions: bool
-    file_confidence_summary: str
-    evidence_cross_check_status: str
-    evidence_basis: List[str] = Field(default_factory=list)
-    risks: List[str] = Field(default_factory=list)
-    required_next_validation: List[str] = Field(default_factory=list)
-    comparison_keys: Dict[str, Any] = Field(default_factory=dict)
-
-
-
-
-class AnalyticalEvidenceItem(BaseModel):
-    evidence_id: str
-    source_type: str = Field(..., description="declared_input, public_source, social_sample, campaign_metric, missing_input, module_observation")
-    source_label: str
-    source_url: Optional[str] = None
-    observed_fact: str
-    supports_signals: List[str] = Field(default_factory=list)
-    reliability: str = Field("medium", description="low, medium, high")
-    can_support_claims: bool = True
-    extraction_note: str = ""
-
-
-class AnalyticalSignalScore(BaseModel):
-    signal: str
-    score_0_to_10: int
-    confidence: str
-    evidence_ids: List[str] = Field(default_factory=list)
-    rationale: str
-    missing_data: List[str] = Field(default_factory=list)
-
-
-class AnalyticalClaim(BaseModel):
-    claim_id: str
-    claim_type: str = Field(..., description="fact, diagnostic_inference, risk, missing_data, performance_claim")
-    statement: str
-    support_status: str = Field(..., description="supported, partially_supported, inferred, unsupported, blocked")
-    evidence_ids: List[str] = Field(default_factory=list)
-    signal_refs: List[str] = Field(default_factory=list)
-    confidence: str = "low"
-    allowed_language: str = ""
-    blocked_reason: Optional[str] = None
-
-
-class AnalyticalRecommendation(BaseModel):
-    recommendation_id: str
-    recommendation: str
-    priority: str
-    derived_from_claim_ids: List[str] = Field(default_factory=list)
-    evidence_ids: List[str] = Field(default_factory=list)
-    rationale: str
-    confidence: str
-    implementation_level: str = Field("preliminary", description="preliminary, campaign_ready, complete")
-    required_data_to_validate: List[str] = Field(default_factory=list)
-    blocked_reason: Optional[str] = None
-
-
-class PreReportFactualityCheck(BaseModel):
-    status: str = Field(..., description="passed, passed_with_limitations, failed")
-    safe_to_write_report: bool
-    unsupported_claims_removed: int = 0
-    claims_degraded_to_inference: int = 0
-    performance_claims_blocked: int = 0
-    visual_claims_checked: bool = False
-    report_language_constraints: List[str] = Field(default_factory=list)
-    blocked_claim_examples: List[str] = Field(default_factory=list)
-
-
-class AnalyticalCoreResult(BaseModel):
-    analysis_type: str = "evidence_first_commercial_diagnostic"
-    analysis_version: str = ANALYSIS_VERSION
-    evidence_ledger: List[AnalyticalEvidenceItem] = Field(default_factory=list)
-    signal_vector: Dict[str, AnalyticalSignalScore] = Field(default_factory=dict)
-    claims: List[AnalyticalClaim] = Field(default_factory=list)
-    blocked_claims: List[AnalyticalClaim] = Field(default_factory=list)
-    recommendations: List[AnalyticalRecommendation] = Field(default_factory=list)
-    blocked_recommendations: List[AnalyticalRecommendation] = Field(default_factory=list)
-    missing_data_for_complete_analysis: List[str] = Field(default_factory=list)
-    not_allowed_claims: List[str] = Field(default_factory=list)
-    pre_report_factuality_check: PreReportFactualityCheck
-    executive_interpretation: str
-    next_best_data_request: List[str] = Field(default_factory=list)
-    confidence_status: str = Field(..., description="not_safe, preliminary, comparable, campaign_ready, complete")
-    no_invention_rule_applied: bool = True
-
-class VisualReportResponse(BaseModel):
-    company_name: str
-    report_id: str
-    report_url: str
-    response_mode: str = "compact"
-    visual_assets: List[str]
-    visual_asset_urls: List[VisualAssetLink] = Field(default_factory=list)
-    drive_bundle: DriveBundleExport = Field(default_factory=DriveBundleExport)
-    evidence_cross_check: Optional[EvidenceCrossCheckReport] = None
-    deliverable_reliability: Optional[DeliverableReliabilityReport] = None
-    report_summary: str
-    how_to_use: str
-    note: str
-
-
-class CampaignMetric(BaseModel):
-    channel: Optional[str] = Field(None, description="Canal: Meta Ads, Google Ads, TikTok Ads, etc.")
-    campaign_name: str = Field(..., description="Nombre de campaña")
-    adset_name: Optional[str] = Field(None, description="Ad set, grupo de anuncios o conjunto")
-    ad_name: Optional[str] = Field(None, description="Anuncio o creativo")
-    funnel_stage: Optional[str] = Field(None, description="Awareness, interest, consideration, conversion o retargeting")
-    temperature: Optional[str] = Field(None, description="Frío, tibio, templado, caliente")
-    objective: Optional[str] = Field(None, description="Objetivo declarado de campaña")
-    spend: Optional[float] = Field(None, description="Gasto")
-    impressions: Optional[int] = None
-    reach: Optional[int] = None
-    frequency: Optional[float] = None
-    clicks: Optional[int] = None
-    ctr_percent: Optional[float] = Field(None, description="CTR en porcentaje. Ej: 1.5 para 1.5%")
-    cpc: Optional[float] = None
-    cpm: Optional[float] = None
-    landing_visits: Optional[int] = None
-    form_starts: Optional[int] = None
-    form_submits: Optional[int] = None
-    whatsapp_clicks: Optional[int] = None
-    calls: Optional[int] = None
-    key_events: Optional[int] = None
-    leads: Optional[int] = None
-    qualified_leads: Optional[int] = None
-    bad_leads: Optional[int] = None
-    conversions: Optional[int] = None
-    sales: Optional[int] = None
-    revenue: Optional[float] = None
-    cpl: Optional[float] = None
-    cpa: Optional[float] = None
-    lead_quality_score: Optional[float] = Field(None, description="Score 0-100 si existe")
-
-    # Enrichment fields for deeper analysis. All optional to keep backward compatibility.
-    previous_spend: Optional[float] = Field(None, description="Gasto del período anterior comparable")
-    previous_impressions: Optional[int] = Field(None, description="Impresiones del período anterior comparable")
-    previous_clicks: Optional[int] = Field(None, description="Clicks del período anterior comparable")
-    previous_ctr_percent: Optional[float] = Field(None, description="CTR anterior en porcentaje")
-    previous_cpc: Optional[float] = Field(None, description="CPC anterior")
-    previous_cpm: Optional[float] = Field(None, description="CPM anterior")
-    previous_leads: Optional[int] = Field(None, description="Leads del período anterior comparable")
-    previous_conversions: Optional[int] = Field(None, description="Conversiones del período anterior comparable")
-    previous_cpl: Optional[float] = Field(None, description="CPL anterior")
-    previous_cpa: Optional[float] = Field(None, description="CPA anterior")
-    previous_frequency: Optional[float] = Field(None, description="Frecuencia anterior")
-    previous_lead_quality_score: Optional[float] = Field(None, description="Score de calidad anterior")
-
-    hook: Optional[str] = Field(None, description="Hook o ángulo principal del anuncio")
-    angle: Optional[str] = Field(None, description="Ángulo creativo: inversión, financiación, seguridad, amenities, etc.")
-    creative_format: Optional[str] = Field(None, description="Formato creativo: video, carrusel, imagen, search, etc.")
-    ad_promise: Optional[str] = Field(None, description="Promesa principal del anuncio")
-    landing_url: Optional[str] = None
-    landing_message: Optional[str] = Field(None, description="Mensaje principal de la landing")
-    audience: Optional[str] = Field(None, description="Audiencia o segmento")
-    utms_present: Optional[bool] = Field(None, description="Si la campaña tiene UTMs consistentes")
-    events_configured: Optional[bool] = Field(None, description="Si hay eventos configurados en GA4/Pixel/CAPI")
-    conversion_event_name: Optional[str] = None
-    crm_stage: Optional[str] = None
-    meetings: Optional[int] = None
-    opportunities: Optional[int] = None
-    close_rate_percent: Optional[float] = None
-    mobile_share_percent: Optional[float] = None
-    notes: Optional[str] = None
-
-
-class CampaignPerformanceRequest(BaseModel):
-    company_name: str = Field(..., description="Nombre de la empresa")
-    currency: str = Field("ARS", description="Moneda")
-    campaigns: List[CampaignMetric] = Field(default_factory=list)
-    notes: Optional[str] = Field(None, description="Notas del analista sobre campañas, tracking o calidad comercial")
-    target_cpl: Optional[float] = Field(None, description="CPL objetivo o aceptable")
-    target_cpa: Optional[float] = Field(None, description="CPA objetivo o aceptable")
-    target_ctr_percent: float = Field(1.0, description="CTR mínimo esperado en porcentaje")
-    target_landing_conversion_rate_percent: float = Field(2.0, description="Conversión mínima esperada de landing a lead")
-    min_lead_quality_rate_percent: float = Field(50.0, description="Porcentaje mínimo esperado de leads calificados")
-
-
-class PerformanceFinding(BaseModel):
-    title: str
-    evidence: str
-    interpretation: str
-    severity: str
-    affected_campaigns: List[str]
-
-
-class PerformanceAction(BaseModel):
-    category: str
-    action: str
-    trigger: str
-    evidence: str
-    priority: str
-    effort: str
-    expected_impact: str
-    verification_metric: str
-    related_campaign: Optional[str] = None
-    funnel_stage: Optional[str] = None
-    confidence: str
-    data_required: bool = False
-
-
-class DerivedCampaignMetrics(BaseModel):
-    campaign_name: str
-    channel: Optional[str] = None
-    spend: Optional[float] = None
-    impressions: Optional[int] = None
-    clicks: Optional[int] = None
-    leads: Optional[int] = None
-    conversions: Optional[int] = None
-    ctr_percent: Optional[float] = None
-    cpc: Optional[float] = None
-    cpm: Optional[float] = None
-    cpl: Optional[float] = None
-    cpa: Optional[float] = None
-    cvr_percent: Optional[float] = None
-    lead_quality_rate_percent: Optional[float] = None
-    frequency: Optional[float] = None
-    sample_status: str
-    tracking_reliability: str
-
-
-class PerformanceMetricDelta(BaseModel):
-    campaign_name: str
-    delta_spend_percent: Optional[float] = None
-    delta_impressions_percent: Optional[float] = None
-    delta_clicks_percent: Optional[float] = None
-    delta_ctr_percent: Optional[float] = None
-    delta_cpc_percent: Optional[float] = None
-    delta_cpm_percent: Optional[float] = None
-    delta_leads_percent: Optional[float] = None
-    delta_cpl_percent: Optional[float] = None
-    delta_cpa_percent: Optional[float] = None
-    delta_frequency_percent: Optional[float] = None
-    delta_lead_quality_percent: Optional[float] = None
-    interpretation: str
-
-
-class CrossMetricFinding(BaseModel):
-    pattern: str
-    evidence: str
-    interpretation: str
-    affected_campaigns: List[str]
-    severity: str
-    confidence: str
-    recommended_action: str
-
-
-class TrackingHealthFinding(BaseModel):
-    campaign_name: Optional[str] = None
-    issue: str
-    severity: str
-    evidence: str
-    business_risk: str
-    recommended_fix: str
-    validation_metric: str
-
-
-class LeadQualityAssessment(BaseModel):
-    campaign_name: str
-    lead_quality_score: Optional[float] = None
-    quality_level: str
-    evidence: str
-    recommendation: str
-
-
-class CostQualityQuadrant(BaseModel):
-    campaign_name: str
-    quadrant: str
-    cpl: Optional[float] = None
-    quality_score: Optional[float] = None
-    recommendation: str
-    confidence: str
-
-
-class BudgetReallocationRecommendation(BaseModel):
-    campaign_name: str
-    action: str
-    recommended_change_percent: Optional[float] = None
-    reason: str
-    risk: str
-    confidence: str
-
-
-class CreativeHookInsight(BaseModel):
-    hook: str
-    affected_campaigns: List[str]
-    signal: str
-    interpretation: str
-    recommended_next_test: str
-
-
-class LandingFrictionAssessment(BaseModel):
-    campaign_name: str
-    friction_score: int
-    evidence: str
-    likely_issue: str
-    recommended_fix: str
-
-
-class MessageMatchAssessment(BaseModel):
-    campaign_name: str
-    message_match_score: int
-    mismatch_detected: bool
-    evidence: str
-    recommended_fix: str
-
-
-class FunnelLeakFinding(BaseModel):
-    campaign_name: str
-    leak_stage: str
-    evidence: str
-    probable_cause: str
-    recommended_action: str
-    metric_to_validate: str
-
-
-class ExperimentRecommendation(BaseModel):
-    title: str
-    hypothesis: str
-    change: str
-    primary_metric: str
-    secondary_metric: str
-    success_criteria: str
-    minimum_duration: str
-    risk: str
-    do_not_touch: str
-
-
-class DataCompletenessScore(BaseModel):
-    score: int
-    missing_fields: List[str]
-    impact_on_analysis: str
-    next_data_to_collect: List[str]
-
-
-class CommercialReadinessScore(BaseModel):
-    overall: int
-    tracking_readiness: int
-    offer_clarity: int
-    message_match: int
-    funnel_continuity: int
-    lead_quality: int
-    creative_relevance: int
-    landing_strength: int
-    cta_clarity: int
-    sales_follow_up: int
-    budget_efficiency: int
-    strongest_area: str
-    weakest_area: str
-    recommended_focus: str
-
-
-class MapCoherenceCheck(BaseModel):
-    score: int
-    alignment_detected: List[str]
-    inconsistencies: List[str]
-    correction_needed: List[str]
-
-
-class ProposalGuidance(BaseModel):
-    what_to_sell: List[str]
-    what_not_to_sell_yet: List[str]
-    what_to_show_in_meeting: List[str]
-    what_data_to_request: List[str]
-    what_to_promise: List[str]
-    what_not_to_promise: List[str]
-    closing_angle: str
-
-
-class TimedActionPlan(BaseModel):
-    today_48h: List[str]
-    next_7_days: List[str]
-    next_14_30_days: List[str]
-    next_60_90_days: List[str]
-
-
-class CampaignPerformanceResponse(BaseModel):
-    company_name: str
-    audit_type: str
-    data_quality: str
-    campaigns_analyzed: int
-    findings: List[PerformanceFinding]
-    strategic_actions: List[PerformanceAction]
-    performance_actions: List[PerformanceAction]
-    budget_actions: List[PerformanceAction]
-    tracking_actions: List[PerformanceAction]
-    prioritized_actions: List[PerformanceAction]
-    derived_metrics: List[DerivedCampaignMetrics]
-    metric_deltas: List[PerformanceMetricDelta]
-    internal_benchmarks: Dict[str, Optional[float]]
-    cross_metric_findings: List[CrossMetricFinding]
-    tracking_health: List[TrackingHealthFinding]
-    lead_quality_assessment: List[LeadQualityAssessment]
-    cost_quality_matrix: List[CostQualityQuadrant]
-    budget_reallocation: List[BudgetReallocationRecommendation]
-    creative_hook_insights: List[CreativeHookInsight]
-    landing_friction: List[LandingFrictionAssessment]
-    message_match: List[MessageMatchAssessment]
-    funnel_leaks: List[FunnelLeakFinding]
-    experiment_recommendations: List[ExperimentRecommendation]
-    data_completeness: DataCompletenessScore
-    sample_size_warnings: List[str]
-    confidence_by_finding: List[str]
-    timed_action_plan: TimedActionPlan
-    discovery_questions: List[str]
-    proposal_guidance: ProposalGuidance
-    next_data_needed: List[str]
-    summary: str
-
-class CampaignPerformanceCompactResponse(BaseModel):
-    company_name: str
-    audit_type: str
-    data_quality: str
-    campaigns_analyzed: int
-    summary: str
-    prioritized_actions: List[PerformanceAction]
-    top_findings: List[PerformanceFinding]
-    top_cross_metric_findings: List[CrossMetricFinding]
-    tracking_health: List[TrackingHealthFinding]
-    lead_quality_assessment: List[LeadQualityAssessment]
-    cost_quality_matrix: List[CostQualityQuadrant]
-    budget_reallocation: List[BudgetReallocationRecommendation]
-    experiment_recommendations: List[ExperimentRecommendation]
-    data_completeness: DataCompletenessScore
-    sample_size_warnings: List[str]
-    discovery_questions: List[str]
-    proposal_guidance: ProposalGuidance
-    timed_action_plan: TimedActionPlan
-    next_data_needed: List[str]
-
-
-class CampaignFixtureDefinition(BaseModel):
-    fixture_id: str
-    description: str
-    expected_primary_issue: str
-    expected_diagnosis_keywords: List[str] = Field(default_factory=list)
-    expected_action_keywords: List[str] = Field(default_factory=list)
-    forbidden_recommendation_keywords: List[str] = Field(default_factory=list)
-    campaigns: List[CampaignMetric] = Field(default_factory=list)
-    target_cpl: Optional[float] = None
-    target_cpa: Optional[float] = None
-    target_ctr_percent: float = 1.0
-    target_landing_conversion_rate_percent: float = 2.0
-    min_lead_quality_rate_percent: float = 50.0
-
-
-class CampaignFixtureActualSnapshot(BaseModel):
-    data_quality: str
-    campaigns_analyzed: int
-    summary: str
-    findings: List[str] = Field(default_factory=list)
-    cross_metric_findings: List[str] = Field(default_factory=list)
-    tracking_health: List[str] = Field(default_factory=list)
-    lead_quality_assessment: List[str] = Field(default_factory=list)
-    prioritized_actions: List[str] = Field(default_factory=list)
-    next_data_needed: List[str] = Field(default_factory=list)
-
-
-class CampaignFixtureEvaluation(BaseModel):
-    fixture_id: str
-    description: str
-    expected_primary_issue: str
-    pass_status: str = Field(..., description="passed, partial, failed")
-    qa_score_0_to_7: int
-    checks: Dict[str, bool] = Field(default_factory=dict)
-    expected_keyword_hits: List[str] = Field(default_factory=list)
-    missing_expected_keywords: List[str] = Field(default_factory=list)
-    expected_action_hits: List[str] = Field(default_factory=list)
-    missing_expected_action_keywords: List[str] = Field(default_factory=list)
-    forbidden_hits: List[str] = Field(default_factory=list)
-    diagnostic_notes: List[str] = Field(default_factory=list)
-    actual_snapshot: CampaignFixtureActualSnapshot
-
-
-class CampaignFixtureTestResponse(BaseModel):
-    audit_type: str = "campaign_fixture_tests"
-    purpose: str = "QA interno: audita si el módulo de campañas diagnostica escenarios conocidos sin recomendaciones genéricas."
-    total_fixtures: int
-    passed: int
-    partial: int
-    failed: int
-    overall_status: str
-    evaluations: List[CampaignFixtureEvaluation]
-    recommended_next_fix: List[str] = Field(default_factory=list)
-    note: str = "Este endpoint no analiza clientes reales. Evalúa el motor del auditor contra casos sintéticos con diagnóstico esperado."
-
-
-
-class SocialContentSample(BaseModel):
-    platform: str = Field(..., description="TikTok, Instagram, Reels, YouTube Shorts, etc.")
-    url: Optional[str] = None
-    content_type: Optional[str] = Field(None, description="reel, tiktok, carrusel, post, short, story")
-    caption: Optional[str] = None
-    opening_seconds_description: Optional[str] = Field(None, description="Qué pasa en los primeros 0-3 segundos")
-    visual_style: Optional[str] = Field(None, description="estático, talking head, institucional, UGC, educativo, testimonial, etc.")
-    duration_seconds: Optional[float] = None
-    views: Optional[int] = None
-    likes: Optional[int] = None
-    comments: Optional[int] = None
-    shares: Optional[int] = None
-    saves: Optional[int] = None
-    average_watch_time_seconds: Optional[float] = None
-    retention_3s_percent: Optional[float] = Field(None, description="Retención a 3 segundos si existe")
-    completion_rate_percent: Optional[float] = Field(None, description="Porcentaje de reproducción completa si existe")
-    profile_clicks: Optional[int] = None
-    cta_clicks: Optional[int] = None
-    notes: Optional[str] = None
-
-
-class SocialContentAction(BaseModel):
-    platform: str
-    issue: str
-    evidence: str
-    interpretation: str
-    recommended_action: str
-    priority: str
-    effort: str
-    validation_metric: str
-    confidence: str
-    do_not_give_for_free: str
-
-
-class SocialPlatformAudit(BaseModel):
-    platform: str
-    profile_url: Optional[str] = None
-    platform_fit_score: int
-    native_format_score: int
-    hook_quality_score: int
-    retention_risk_score: int
-    message_clarity_score: int
-    cta_score: int
-    proof_score: int
-    content_to_offer_match_score: int
-    detected_issues: List[str]
-    recommended_improvements: List[str]
-    evidence: List[str]
-    confidence: str
-    limitation: str
-
-
-class SocialContentFitRequest(BaseModel):
-    company_name: str
-    industry: Optional[str] = None
-    city: Optional[str] = None
-    country: Optional[str] = "Argentina"
-    website: Optional[str] = None
-    instagram: Optional[str] = None
-    tiktok: Optional[str] = None
-    facebook: Optional[str] = None
-    youtube: Optional[str] = None
-    linkedin: Optional[str] = None
-    offer: Optional[str] = None
-    target_audience: Optional[str] = None
-    notes: Optional[str] = Field(None, description="Observaciones sobre contenido, red social y retención")
-    recent_content_samples: List[SocialContentSample] = Field(default_factory=list)
-    num_results_per_query: int = Field(5, description="Cantidad de resultados públicos por búsqueda")
-    research_mode: str = Field("live_public_search", description="Modo de investigación pública para social content fit")
-
-
-class SocialContentFitResponse(BaseModel):
-    company_name: str
-    audit_type: str
-    overall_social_content_fit_score: int
-    primary_content_gap: str
-    platforms_analyzed: List[str]
-    platform_audits: List[SocialPlatformAudit]
-    strategic_summary: str
-    public_sources_used: List[ReviewedPublicSource]
-    recommended_actions: List[SocialContentAction]
-    next_data_needed: List[str]
-    response_note: str
-
-
-class FullCommercialSystemRequest(ProspectWithResearchRequest):
-    campaigns: List[CampaignMetric] = Field(default_factory=list)
-    campaign_notes: Optional[str] = Field(None, description="Notas específicas de performance/campañas")
-    target_cpl: Optional[float] = None
-    target_cpa: Optional[float] = None
-    target_ctr_percent: float = 1.0
-    target_landing_conversion_rate_percent: float = 2.0
-    min_lead_quality_rate_percent: float = 50.0
-    social_content_notes: Optional[str] = Field(None, description="Notas específicas sobre contenido orgánico, TikTok, Reels o piezas recientes")
-    social_content_samples: List[SocialContentSample] = Field(default_factory=list, description="Muestras recientes de contenido orgánico para auditar adaptación por plataforma")
-    research_mode: str = Field("live_public_search", description="Modo de investigación: live_public_search o declared_only")
-
-
-class AnalysisTrace(BaseModel):
-    analysis_version: str
-    ruleset_version: str
-    analysis_mode: str
-    research_mode: str
-    input_hash: str
-    sources_hash: str
-    modules_used: List[str]
-    primary_diagnosis_source: str
-    base_diagnosis: str
-    social_overlay: Optional[str] = None
-    performance_overlay: Optional[str] = None
-    final_diagnosis: str
-    diagnosis_change_reason: str
-    confidence_level: str
-    evidence_level: str
-    comparability_note: str
-    score_breakdown: Dict[str, Any] = Field(default_factory=dict)
-
-    raw_input_hash: Optional[str] = None
-    canonical_input_hash: Optional[str] = None
-    received_input_keys: List[str] = Field(default_factory=list)
-    request_snapshot: Dict[str, Any] = Field(default_factory=dict)
-    stability_mode: str = "canonical_locked"
-    diagnostic_gates: Dict[str, Any] = Field(default_factory=dict)
-
-
-class StableAuditOutput(BaseModel):
-    canonical_input_hash: str
-    raw_input_hash: str
-    sources_hash: str
-    analysis_version: str
-    ruleset_version: str
-    analysis_mode: str
-    modules_used: List[str]
-    primary_diagnosis_source: str
-    awareness_dominant_stage: str
-    awareness_blocked_stage: str
-    awareness_distribution: Dict[str, int]
-    heatmap_dominant_zone: str
-    heatmap_blocked_zone: str
-    blueprint_current_flow: List[str]
-    blueprint_breakpoints: List[str]
-    blueprint_recommended_flow: List[str]
-    primary_bottleneck: str
-    commercial_score_overall: Optional[float] = None
-    social_content_fit_score: Optional[int] = None
-    visual_report_url: Optional[str] = None
-
-    # Stability Verdict fields
-    stability_status: str
-    needs_second_run: bool
-    report_use: str
-    safe_to_present: bool
-    safe_to_execute_actions: bool
-    instability_risks: List[str] = Field(default_factory=list)
-    stability_reason: str
-    comparison_rule: str
-    stability_note: str
-
-
-class ImplementationVariant(BaseModel):
-    variant_name: str
-    description: str
-    score_1_to_10: int
-    why_this_score: str
-    feasibility: str
-    expected_impact: str
-    risk_level: str
-    best_use_case: str
-    test_metric: str
-    can_be_tested_before_or_after: str
-
-
-class StrategicMeasure(BaseModel):
-    measure_name: str
-    area: str
-    problem_addressed: str
-    evidence_used: List[str]
-    data_considered: List[str]
-    decision_basis: str
-    affected_area: List[str]
-    expected_impact: str
-    priority: str
-    confidence: str
-    validation_metrics: List[str]
-    implementation_variants: List[ImplementationVariant]
-    recommended_testing_sequence: List[str]
-    dependencies: List[str]
-    risks: List[str]
-    what_not_to_give_for_free: str
-
-
-class StrategicMeasuresMatrix(BaseModel):
-    summary: str
-    measures: List[StrategicMeasure]
-    decision_logic: str
-    data_limitations: List[str]
-    next_measurement_layer: List[str]
-
-
-class FullCommercialSystemResponse(BaseModel):
-    company_name: str
-    audit_type: str
-    response_mode: str = "compact"
-    analysis_trace: AnalysisTrace
-    diagnostic_integration_summary: str
-    strategic_measures_matrix: StrategicMeasuresMatrix
-    stable_output: StableAuditOutput
-    system_summary: str
-    recommended_next_step: str
-    visual_report_url: Optional[str] = None
-    visual_report_status: str
-    visual_asset_urls: List[VisualAssetLink] = Field(default_factory=list)
-    drive_bundle: DriveBundleExport = Field(default_factory=DriveBundleExport)
-    evidence_cross_check: EvidenceCrossCheckReport
-    deliverable_reliability: DeliverableReliabilityReport
-    analytical_core: AnalyticalCoreResult
-    generation_gate_status: str
-    generation_gate_reason: str
-    research_confidence: str
-    diagnosis_initial: str
-    public_sources_summary: List[ReviewedPublicSource]
-    awareness_funnel_locator: AwarenessFunnelLocator
-    customer_intent_density_map: CustomerIntentDensityMap
-    funnel_blueprint: FunnelBlueprint
-    corrective_action_plan: List[CorrectiveActionItem]
-    campaign_data_quality: str
-    campaigns_analyzed: int
-    campaign_summary: str
-    social_content_fit_summary: str
-    social_content_fit_score: Optional[int] = None
-    social_content_primary_gap: Optional[str] = None
-    platform_content_fit: List[SocialPlatformAudit] = Field(default_factory=list)
-    social_content_actions: List[SocialContentAction] = Field(default_factory=list)
-    top_campaign_findings: List[PerformanceFinding]
-    top_cross_metric_findings: List[CrossMetricFinding]
-    tracking_health: List[TrackingHealthFinding]
-    lead_quality_assessment: List[LeadQualityAssessment]
-    cost_quality_matrix: List[CostQualityQuadrant]
-    budget_reallocation: List[BudgetReallocationRecommendation]
-    experiment_recommendations: List[ExperimentRecommendation]
-    unified_priorities: List[PerformanceAction]
-    commercial_readiness_score: CommercialReadinessScore
-    data_completeness_score: DataCompletenessScore
-    map_coherence_check: MapCoherenceCheck
-    discovery_questions: List[str]
-    proposal_guidance: ProposalGuidance
-    timed_action_plan: TimedActionPlan
-    response_note: str
-
-
-
-
-
-class SaveGptWrittenReportRequest(BaseModel):
-    company_name: str
-    report_markdown: str = Field(..., description="Informe escrito generado por el GPT en markdown o texto plano")
-    drive_folder_id: Optional[str] = Field(None, description="ID de carpeta Drive ya creada por drive_bundle. Si falta, crea carpeta nueva en carpeta destino.")
-    filename: str = Field("informe_gpt.docx", description="Nombre del DOCX a crear")
-    report_id: Optional[str] = None
-
-
-class SaveGptWrittenReportResponse(BaseModel):
-    status: str
-    storage_provider: str = "google_drive"
-    folder_id: Optional[str] = None
-    folder_url: Optional[str] = None
-    file_id: Optional[str] = None
-    file_url: Optional[str] = None
-    file_name: Optional[str] = None
-    error: Optional[str] = None
-    note: Optional[str] = None
-
-
-def get_composio_headers() -> Dict[str, str]:
-    if not COMPOSIO_API_KEY:
-        raise HTTPException(status_code=500, detail="COMPOSIO_API_KEY no está configurada en el servidor")
-    return {"x-api-key": COMPOSIO_API_KEY, "accept": "application/json"}
-
-
-def composio_get(path: str, params: Optional[dict] = None):
-    try:
-        response = requests.get(
-            f"{COMPOSIO_BASE_URL}{path}",
-            headers=get_composio_headers(),
-            params=params or {},
-            timeout=20,
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"No se pudo conectar con Composio: {str(exc)}")
-
-    if response.status_code == 401:
-        raise HTTPException(status_code=401, detail="Composio rechazó la API key. Revisá COMPOSIO_API_KEY.")
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
-    return response.json()
-
-
-def composio_post(path: str, payload: Optional[dict] = None):
-    try:
-        response = requests.post(
-            f"{COMPOSIO_BASE_URL}{path}",
-            headers={**get_composio_headers(), "Content-Type": "application/json"},
-            json=payload or {},
-            timeout=60,
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"No se pudo conectar con Composio: {str(exc)}")
-
-    if response.status_code == 401:
-        raise HTTPException(status_code=401, detail="Composio rechazó la API key. Revisá COMPOSIO_API_KEY.")
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
-    return response.json()
-
-
-def extract_tools_list(composio_response):
-    if isinstance(composio_response, list):
-        return composio_response
-    if isinstance(composio_response, dict):
-        for key in ["items", "tools", "data"]:
-            if isinstance(composio_response.get(key), list):
-                return composio_response[key]
-    return []
-
-
-def normalize_tool(tool: dict) -> ToolInfo:
-    slug = tool.get("slug") or tool.get("name") or tool.get("tool_slug") or tool.get("id") or "unknown"
-    name = tool.get("name") or tool.get("display_name") or slug
-    toolkit = tool.get("toolkit_slug") or tool.get("toolkit") or tool.get("app")
-    description = tool.get("description") or tool.get("summary") or tool.get("display_description")
-    return ToolInfo(
-        slug=str(slug),
-        name=str(name) if name else None,
-        toolkit=str(toolkit) if toolkit else None,
-        description=str(description) if description else None,
-    )
-
-
-def tool_matches_query(tool: dict, query: str) -> bool:
-    text = " ".join([
-        str(tool.get("slug", "")),
-        str(tool.get("name", "")),
-        str(tool.get("display_name", "")),
-        str(tool.get("description", "")),
-        str(tool.get("toolkit_slug", "")),
-        str(tool.get("toolkit", "")),
-    ]).casefold()
-    return query.casefold() in text
-
-
-def find_organic_results(obj: Any) -> List[dict]:
-    if isinstance(obj, dict):
-        for key in ["organic_results", "organic"]:
-            value = obj.get(key)
-            if isinstance(value, list):
-                return value
-        for value in obj.values():
-            found = find_organic_results(value)
-            if found:
-                return found
-
-    if isinstance(obj, list):
-        for item in obj:
-            found = find_organic_results(item)
-            if found:
-                return found
-
-    return []
-
-
-def execute_search_api_query(query: str, num_results: int = 5, user_id: str = "default") -> Dict[str, Any]:
-    payload = {
-        "user_id": user_id,
-        "version": "latest",
-        "arguments": {
-            "engine": "google",
-            "q": query,
-            "num": num_results,
-        },
-    }
-    return composio_post("/tools/execute/SEARCH_API_SEARCH", payload=payload)
-
-
-def normalize_search_result(item: dict, category: str, query: str) -> PublicSourceResult:
-    return PublicSourceResult(
-        category=category,
-        query=query,
-        title=item.get("title"),
-        url=item.get("link") or item.get("url"),
-        displayed_url=item.get("displayed_link") or item.get("displayed_url"),
-        snippet=item.get("snippet") or item.get("description"),
-        source="search_api",
-    )
-
-
-def clean_public_url(url: Optional[str]) -> Optional[str]:
-    if not url:
-        return None
-    cleaned = url.strip()
-    return cleaned or None
-
-
-def build_declared_public_sources(request: PublicPresenceRequest) -> List[PublicSourceResult]:
-    declared: List[PublicSourceResult] = []
-    declared_map = [
-        ("declared_website", "Sitio web provisto por el usuario", clean_public_url(request.website)),
-        ("declared_instagram", "Instagram provisto por el usuario", clean_public_url(request.instagram)),
-        ("declared_tiktok", "TikTok provisto por el usuario", clean_public_url(getattr(request, "tiktok", None))),
-        ("declared_facebook", "Facebook provisto por el usuario", clean_public_url(getattr(request, "facebook", None))),
-        ("declared_youtube", "YouTube provisto por el usuario", clean_public_url(getattr(request, "youtube", None))),
-        ("declared_linkedin", "LinkedIn provisto por el usuario", clean_public_url(request.linkedin)),
-    ]
-    for category, title, url in declared_map:
-        if not url:
+def split_links(base_url: str, links: List[Dict[str, str]]) -> Tuple[List[Dict[str, str]], List[Dict[str, str]], Dict[str, List[str]]]:
+    base_domain = safe_domain(base_url)
+    internal: List[Dict[str, str]] = []
+    external: List[Dict[str, str]] = []
+    socials: Dict[str, List[str]] = {p: [] for p in SOCIAL_PLATFORMS}
+    socials.update({"whatsapp": [], "google_maps": []})
+    for link in links:
+        u = link.get("url") or ""
+        if not u or u.startswith("mailto:") or u.startswith("tel:"):
             continue
-        declared.append(PublicSourceResult(
-            category=category,
-            query=url,
-            title=title,
-            url=url,
-            displayed_url=url,
-            snippet="Fuente pública declarada por el usuario. La búsqueda externa puede enriquecerla, pero no debe reemplazarla ni negar su existencia.",
-            source="provided_url",
-        ))
-    return declared
+        domain = safe_domain(u) if re.match(r"^https?://", u) else ""
+        low = u.lower()
+        if "instagram.com" in low:
+            socials["instagram"].append(u)
+        elif "facebook.com" in low or "fb.com" in low:
+            socials["facebook"].append(u)
+        elif "linkedin.com" in low:
+            socials["linkedin"].append(u)
+        elif "youtube.com" in low or "youtu.be" in low:
+            socials["youtube"].append(u)
+        elif "tiktok.com" in low:
+            socials["tiktok"].append(u)
+        elif "twitter.com" in low or "x.com" in low:
+            socials["x"].append(u)
+        elif "wa.me" in low or "api.whatsapp.com" in low:
+            socials["whatsapp"].append(u)
+        elif "google.com/maps" in low or "maps.app.goo.gl" in low:
+            socials["google_maps"].append(u)
+        if domain and domain == base_domain:
+            internal.append(link)
+        elif domain:
+            external.append(link)
+    for k in socials:
+        socials[k] = list(dict.fromkeys(socials[k]))[:10]
+    return internal, external, socials
 
 
-def dedupe_public_sources(sources: List[PublicSourceResult]) -> List[PublicSourceResult]:
-    deduped: List[PublicSourceResult] = []
+def extract_contacts(text: str, links: List[Dict[str, str]]) -> Dict[str, List[str]]:
+    emails = sorted(set(re.findall(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", text)))[:20]
+    whatsapp = []
+    tel_links = []
+    for link in links:
+        u = link.get("url") or ""
+        low = u.lower()
+        if "wa.me" in low or "api.whatsapp.com" in low:
+            whatsapp.append(u)
+        if low.startswith("tel:"):
+            tel_links.append(u.replace("tel:", ""))
+    phones: List[str] = []
+    if phonenumbers is not None:
+        try:
+            for match in phonenumbers.PhoneNumberMatcher(text[:120_000], None):
+                phones.append(phonenumbers.format_number(match.number, phonenumbers.PhoneNumberFormat.INTERNATIONAL))
+        except Exception:
+            pass
+    if not phones:
+        rough = re.findall(r"(?:\+?\d[\d\s().\-]{7,}\d)", text)
+        phones.extend([collapse_ws(x) for x in rough])
+    phones.extend([collapse_ws(x) for x in tel_links])
+    return {
+        "emails": list(dict.fromkeys(emails))[:20],
+        "phones": list(dict.fromkeys(phones))[:20],
+        "whatsapp": list(dict.fromkeys(whatsapp))[:20],
+    }
+
+
+def detect_content_features(text: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+    low = text.lower()
+    headings = " ".join(meta.get("headings", [])).lower()
+    both = low + " " + headings
+    features = {
+        "pricing": any(k in both for k in ["precio", "precios", "pricing", "$", "usd", "ars", "mensual", "/mes", "month"]),
+        "faq": any(k in both for k in ["faq", "preguntas frecuentes", "frequently asked"]),
+        "blog_or_news": any(k in both for k in ["blog", "noticias", "news", "artículo", "articulos", "podcast", "newsletter"]),
+        "testimonials_or_clients": any(k in both for k in ["testimonio", "testimonios", "clientes", "casos", "reseñas", "reviews", "logos", "empresas que confían", "confían en"]),
+        "services_or_products": any(k in both for k in ["servicio", "servicios", "producto", "productos", "soluciones", "plans", "planes", "consultoría", "consultoria"]),
+        "website_claims": any(k in both for k in ["años de experiencia", "clientes satisfechos", "tasa de éxito", "premios", "líder", "lider", "garantía", "garantia", "%", "casos de éxito"]),
+    }
+    tracking_keywords = {
+        "google_tag_manager": ["googletagmanager", "gtm.js"],
+        "google_analytics": ["google-analytics", "gtag/js", "gtag("],
+        "meta_pixel": ["fbq(", "connect.facebook.net"],
+        "tiktok_pixel": ["analytics.tiktok.com", "ttq."],
+        "linkedin_insight": ["snap.licdn.com", "linkedin_partner_id"],
+        "hotjar": ["hotjar"],
+        "clarity": ["clarity.ms", "clarity("],
+        "hubspot": ["hubspot", "hs-scripts"],
+    }
+    html_blob = low
+    tracking = [name for name, keys in tracking_keywords.items() if any(k in html_blob for k in keys)]
+    features["tracking_scripts"] = tracking
+    return features
+
+
+def choose_internal_pages(home_url: str, internal_links: List[Dict[str, str]], max_pages: int) -> List[str]:
+    priority = ["contact", "contacto", "servicio", "services", "precio", "pricing", "faq", "preguntas", "blog", "noticia", "news", "nosotros", "about", "caso", "testimonio"]
+    candidates: List[Tuple[int, str]] = []
     seen = set()
-    for source in sources:
-        key = (source.url or source.displayed_url or source.title or source.query or "").strip().casefold()
-        if not key:
-            key = f"{source.category}:{source.title}:{source.snippet}".casefold()
-        if key in seen:
+    for link in internal_links:
+        u = (link.get("url") or "").split("#")[0]
+        if not u or u in seen:
             continue
-        seen.add(key)
-        deduped.append(source)
-    return deduped
-
-
-def execute_duckduckgo_query(query: str, num_results: int = 5, user_id: str = "default") -> Dict[str, Any]:
-    payload = {"user_id": user_id, "version": "latest", "arguments": {"query": query, "num_results": num_results}}
-    return composio_post("/tools/execute/COMPOSIO_SEARCH_DUCK_DUCK_GO_SEARCH", payload=payload)
-
-
-def find_duckduckgo_results(raw_response: Dict[str, Any]) -> List[dict]:
-    candidates: List[Any] = []
-    data = raw_response.get("data") if isinstance(raw_response, dict) else None
-    if isinstance(data, dict):
-        for key in ["results", "organic_results", "items"]:
-            if isinstance(data.get(key), list):
-                candidates = data.get(key)
-                break
-        if not candidates and isinstance(data.get("response"), dict):
-            response = data.get("response")
-            for key in ["results", "organic_results", "items"]:
-                if isinstance(response.get(key), list):
-                    candidates = response.get(key)
-                    break
-    elif isinstance(data, list):
-        candidates = data
-    return [item for item in candidates if isinstance(item, dict)]
-
-
-def normalize_duckduckgo_result(item: dict, category: str, query: str) -> PublicSourceResult:
-    return PublicSourceResult(
-        category=f"{category}_fallback",
-        query=query,
-        title=item.get("title") or item.get("name"),
-        url=item.get("url") or item.get("link") or item.get("href"),
-        displayed_url=item.get("displayed_url") or item.get("displayed_link") or item.get("url"),
-        snippet=item.get("snippet") or item.get("description") or item.get("body"),
-        source="duckduckgo_fallback",
-    )
-
-
-def build_public_presence_queries(request: PublicPresenceRequest) -> List[Dict[str, str]]:
-    location = " ".join([part for part in [request.city, request.country] if part])
-    base = request.company_name
-
-    queries = [
-        {"category": "official_presence", "query": f"{base} sitio web oficial {location}".strip()},
-        {"category": "social_profiles", "query": f"{base} Instagram LinkedIn Facebook {location}".strip()},
-        {"category": "reputation", "query": f"{base} opiniones reseñas Google {location}".strip()},
-    ]
-
-    if request.industry:
-        queries.append({"category": "competitors", "query": f"{request.industry} {location} competidores {base}".strip()})
-    if request.website:
-        queries.append({"category": "known_website", "query": f"site:{request.website} {base}".strip()})
-    if request.instagram:
-        queries.append({"category": "known_instagram", "query": f"{request.instagram} {base}".strip()})
-    if getattr(request, "tiktok", None):
-        queries.append({"category": "known_tiktok", "query": f"{request.tiktok} {base}".strip()})
-    if getattr(request, "facebook", None):
-        queries.append({"category": "known_facebook", "query": f"{request.facebook} {base}".strip()})
-    if getattr(request, "youtube", None):
-        queries.append({"category": "known_youtube", "query": f"{request.youtube} {base}".strip()})
-    queries.append({"category": "platform_native_content", "query": f"{base} TikTok Instagram Reels contenido videos {location}".strip()})
-    if request.linkedin:
-        queries.append({"category": "known_linkedin", "query": f"{request.linkedin} {base}".strip()})
-
-    return queries
-
-
-def build_source_signal(source: PublicSourceResult) -> str:
-    text = " ".join([
-        source.category or "",
-        source.title or "",
-        source.snippet or "",
-        source.url or "",
-    ]).casefold()
-
-    if source.source == "provided_url" or source.category.startswith("declared_"):
-        if "tiktok" in text:
-            return "Fuente pública declarada por el usuario: perfil de TikTok. Sirve para auditar adaptación nativa, hook y riesgo estructural de retención; la extracción automática puede ser limitada."
-        if "instagram" in text:
-            return "Fuente pública declarada por el usuario: perfil de Instagram. Sirve para evaluar comunicación visual, Reels, prueba social, CTA y coherencia con la oferta; la extracción automática puede ser limitada."
-        if "linkedin" in text:
-            return "Fuente pública declarada por el usuario: perfil de LinkedIn. Sirve para evaluar autoridad, credibilidad y comunicación B2B."
-        return "Fuente pública declarada por el usuario. La búsqueda externa debe enriquecerla, no reemplazarla ni negar su existencia."
-
-    if source.category == "official_presence":
-        return "Señal de presencia oficial o catálogo digital. Sirve para evaluar si la marca comunica diferenciación o solo disponibilidad."
-    if source.category == "social_profiles":
-        return "Señal de presencia social. Sirve para revisar si la comunicación construye preferencia o solo visibilidad."
-    if source.category == "reputation":
-        return "Señal de reputación pública. Sirve para revisar confianza, prueba social y percepción externa."
-    if source.category == "competitors":
-        return "Señal de contexto competitivo. Sirve para comparar si el posicionamiento propio se distingue del resto del mercado."
-    if "zonaprop" in text or "argenprop" in text or "portal" in text:
-        return "Señal de dependencia de portales/catálogos. Riesgo: competir por propiedad visible, precio o ubicación, no por marca."
-    if "instagram" in text or "facebook" in text or "linkedin" in text:
-        return "Señal de canal social. Conviene revisar si el contenido guía a una acción comercial clara."
-    return "Fuente pública útil para validar presencia, mensaje, reputación o contexto competitivo."
-
-
-def summarize_public_sources(
-    sources: List[PublicSourceResult],
-    max_sources: int = 5,
-) -> List[ReviewedPublicSource]:
-    summarized: List[ReviewedPublicSource] = []
-    seen_urls = set()
-
-    for source in sources:
-        url = source.url or source.displayed_url
-        if not url or url in seen_urls:
-            continue
-
-        seen_urls.add(url)
-        summarized.append(
-            ReviewedPublicSource(
-                category=source.category,
-                title=source.title,
-                url=url,
-                signal=build_source_signal(source),
-            )
-        )
-
-        if len(summarized) >= max_sources:
+        seen.add(u)
+        low = (u + " " + link.get("text", "")).lower()
+        score = 0
+        for idx, kw in enumerate(priority):
+            if kw in low:
+                score += 100 - idx
+        if score > 0:
+            candidates.append((score, u))
+    ranked = [u for _, u in sorted(candidates, reverse=True)]
+    urls = [home_url]
+    for u in ranked:
+        if u not in urls:
+            urls.append(u)
+        if len(urls) >= max_pages:
             break
+    return urls[:max_pages]
 
-    return summarized
+
+def collector_report(
+    collector: str,
+    platform: str,
+    status: str,
+    tool_used: str,
+    input_url: Optional[str] = None,
+    intended_data: Optional[List[str]] = None,
+    collected_fields: Optional[List[str]] = None,
+    missing_fields: Optional[List[str]] = None,
+    reason_code: Optional[str] = None,
+    reason: Optional[str] = None,
+    confidence: str = "medium",
+    details: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    reason_text = reason or (REASON_MESSAGES_ES.get(reason_code or "", None))
+    return {
+        "collector": collector,
+        "platform": platform,
+        "status": status,
+        "tool_used": tool_used,
+        "input_url": input_url,
+        "intended_data": intended_data or EXPECTED_FIELDS.get(platform, []),
+        "collected_fields": collected_fields or [],
+        "missing_fields": missing_fields or [],
+        "reason_code": reason_code,
+        "reason": reason_text,
+        "how_to_collect_missing": HOW_TO_COLLECT_ES.get(platform, {}).get("generic", []),
+        "confidence": confidence,
+        "details": details or {},
+    }
 
 
-def build_research_notes(
-    request: ProspectWithResearchRequest,
-    public_sources: List[ReviewedPublicSource],
-    presence_summary: str,
-) -> str:
-    parts = []
-
-    if request.notes:
-        parts.append(request.notes)
-
-    parts.append(presence_summary)
-
-    if public_sources:
-        source_lines = []
-        for source in public_sources:
-            source_lines.append(
-                f"{source.category}: {source.title or 'sin título'} - {source.signal}"
+def build_recovery_guide(collector_reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    guide: List[Dict[str, Any]] = []
+    for report in collector_reports:
+        platform = report.get("platform") or "unknown"
+        status = report.get("status")
+        missing_fields = report.get("missing_fields") or []
+        if status == "skipped_missing_input":
+            guide.append(
+                {
+                    "platform": platform,
+                    "field": f"{platform}.all_public_fields",
+                    "label_es": f"Datos públicos de {platform}",
+                    "status": "not_collected",
+                    "why_not_collected": "No se recibió un link para esta fuente.",
+                    "attempted_tools": [report.get("tool_used")],
+                    "importance": "media",
+                    "can_be_collected_publicly": "variable",
+                    "how_to_collect": [f"Proveer el link público correcto de {platform}."] + report.get("how_to_collect_missing", []),
+                    "requires_client_permission": False,
+                }
             )
-        parts.append("Fuentes públicas revisadas: " + " | ".join(source_lines))
-
-    return " ".join(parts)
-
-
-def build_initial_diagnosis(
-    request: ProspectWithResearchRequest,
-    audit: ProspectAuditResponse,
-    public_sources: List[ReviewedPublicSource],
-) -> str:
-    if public_sources:
-        return (
-            f"{request.company_name} muestra presencia pública detectable, pero el principal riesgo comercial "
-            f"parece estar en {audit.primary_bottleneck}. La empresa puede estar generando visibilidad sin convertirla "
-            "en una razón clara de elección."
-        )
-
-    return (
-        f"No se encontraron suficientes fuentes públicas fuertes para validar la presencia de {request.company_name}. "
-        f"Aun así, con las señales disponibles, el cuello de botella probable es {audit.primary_bottleneck}."
-    )
-
-
-def clamp_score(value: int) -> int:
-    return max(1, min(value, 10))
-
-
-def source_count_by_category(
-    sources: List[ReviewedPublicSource],
-    category: str,
-) -> int:
-    return sum(1 for source in sources if source.category == category)
-
-
-def build_commercial_score(
-    audit: ProspectAuditResponse,
-    public_sources: List[ReviewedPublicSource],
-    raw_sources_count: int,
-    request: ProspectWithResearchRequest,
-) -> CommercialScore:
-    notes_text = " ".join([
-        request.notes or "",
-        request.offer or "",
-        " ".join([source.signal for source in public_sources]),
-    ]).casefold()
-
-    public_presence = 3
-    if raw_sources_count >= 12:
-        public_presence = 8
-    elif raw_sources_count >= 8:
-        public_presence = 7
-    elif raw_sources_count >= 4:
-        public_presence = 6
-    elif raw_sources_count >= 1:
-        public_presence = 4
-
-    value_proposition = 7
-    if audit.primary_bottleneck == "propuesta de valor":
-        value_proposition = 4
-    if "propuesta de valor clara" in notes_text or "diferencian" in notes_text or "diferenciación" in notes_text:
-        value_proposition = min(value_proposition, 4)
-
-    differentiation = 7
-    if audit.primary_bottleneck in ["propuesta de valor", "posicionamiento"]:
-        differentiation = 3
-    elif "competidores" in notes_text or source_count_by_category(public_sources, "competitors") > 0:
-        differentiation = 5
-
-    cta_strength = 7
-    if "cta" in notes_text or "llamada a la acción" in notes_text or audit.primary_bottleneck == "conversión":
-        cta_strength = 4
-
-    trust_signals = 5
-    if source_count_by_category(public_sources, "reputation") >= 2:
-        trust_signals = 7
-    elif source_count_by_category(public_sources, "reputation") == 1:
-        trust_signals = 6
-    elif raw_sources_count == 0:
-        trust_signals = 3
-
-    competitive_pressure = 5
-    if source_count_by_category(public_sources, "competitors") >= 3:
-        competitive_pressure = 8
-    elif source_count_by_category(public_sources, "competitors") >= 1:
-        competitive_pressure = 7
-    if request.industry:
-        competitive_pressure = max(competitive_pressure, 6)
-
-    positive_scores = [
-        value_proposition,
-        public_presence,
-        differentiation,
-        cta_strength,
-        trust_signals,
-    ]
-
-    pressure_penalty = max(0, competitive_pressure - 5) * 0.35
-    overall = round(max(1.0, min(10.0, (sum(positive_scores) / len(positive_scores)) - pressure_penalty)), 1)
-
-    return CommercialScore(
-        overall=overall,
-        value_proposition=clamp_score(value_proposition),
-        public_presence=clamp_score(public_presence),
-        differentiation=clamp_score(differentiation),
-        cta_strength=clamp_score(cta_strength),
-        trust_signals=clamp_score(trust_signals),
-        competitive_pressure=clamp_score(competitive_pressure),
-    )
-
-
-def build_score_interpretation(
-    score: CommercialScore,
-    audit: ProspectAuditResponse,
-) -> ScoreInterpretation:
-    if score.overall < 4:
-        level = "riesgo alto"
-    elif score.overall < 6:
-        level = "riesgo medio-alto"
-    elif score.overall < 8:
-        level = "riesgo medio"
-    else:
-        level = "riesgo bajo"
-
-    if audit.primary_bottleneck == "propuesta de valor":
-        main_risk = "competir por precio, disponibilidad o catálogo en vez de valor percibido"
-    elif audit.primary_bottleneck == "conversión":
-        main_risk = "generar interés sin transformarlo en consultas calificadas"
-    elif audit.primary_bottleneck == "funnel":
-        main_risk = "tener puntos de contacto aislados sin recorrido comercial claro"
-    elif audit.primary_bottleneck == "posicionamiento":
-        main_risk = "ser percibido como una alternativa más dentro de un mercado saturado"
-    else:
-        main_risk = "hacer actividad digital sin convertirla en demanda calificada"
-
-    return ScoreInterpretation(
-        level=level,
-        summary=(
-            f"Score general {score.overall}/10. La marca muestra señales comerciales aprovechables, "
-            f"pero el principal cuello de botella está en {audit.primary_bottleneck}."
-        ),
-        main_leverage=audit.primary_bottleneck,
-        main_risk=main_risk,
-    )
-
-
-
-
-def build_awareness_funnel_locator(
-    audit: ProspectAuditResponse,
-    score: CommercialScore,
-    request: ProspectWithResearchRequest,
-) -> AwarenessFunnelLocator:
-    """Build an awareness map from multiple crossed signals, not only from bottleneck labels."""
-    stages = ["Unaware", "Problem Aware", "Solution Aware", "Product Aware", "Most Aware"]
-    stage_map = {
-        "unaware": "Unaware",
-        "problem-aware": "Problem Aware",
-        "solution-aware": "Solution Aware",
-        "product-aware": "Product Aware",
-        "most-aware": "Most Aware",
-    }
-
-    base_stage = stage_map.get((audit.awareness_level or "").casefold(), "Problem Aware")
-    weights_by_stage: Dict[str, float] = {
-        "Unaware": 8.0,
-        "Problem Aware": 24.0,
-        "Solution Aware": 24.0,
-        "Product Aware": 24.0,
-        "Most Aware": 20.0,
-    }
-
-    # Base diagnosis bias.
-    diagnosis_bias = {
-        "Unaware": [24, 10, -6, -12, -16],
-        "Problem Aware": [-4, 20, 6, -8, -14],
-        "Solution Aware": [-8, 4, 18, 2, -10],
-        "Product Aware": [-10, -4, 8, 18, 2],
-        "Most Aware": [-12, -6, 2, 10, 20],
-    }.get(base_stage, [-4, 20, 6, -8, -14])
-    for stage, delta in zip(stages, diagnosis_bias):
-        weights_by_stage[stage] += delta
-
-    declared_links_count = len([value for value in [
-        request.website,
-        request.instagram,
-        getattr(request, "tiktok", None),
-        getattr(request, "facebook", None),
-        getattr(request, "youtube", None),
-        request.linkedin,
-    ] if value])
-    has_offer = bool((request.offer or "").strip())
-    has_notes = bool((request.notes or "").strip())
-
-    # Score-based cross checks: these are not real user counts; they are diagnostic weights.
-    if score.public_presence < 5:
-        weights_by_stage["Unaware"] += 10
-        weights_by_stage["Problem Aware"] += 6
-        weights_by_stage["Most Aware"] -= 8
-    else:
-        weights_by_stage["Problem Aware"] += 3
-        weights_by_stage["Solution Aware"] += min(7, score.public_presence - 4)
-
-    if score.value_proposition < 5:
-        weights_by_stage["Problem Aware"] += 8
-        weights_by_stage["Solution Aware"] += 4
-        weights_by_stage["Product Aware"] -= 6
-    else:
-        weights_by_stage["Solution Aware"] += min(8, score.value_proposition - 4)
-
-    if score.differentiation < 5:
-        weights_by_stage["Solution Aware"] += 8
-        weights_by_stage["Product Aware"] += 3
-        weights_by_stage["Most Aware"] -= 5
-    else:
-        weights_by_stage["Product Aware"] += min(8, score.differentiation - 4)
-
-    if score.trust_signals < 5:
-        weights_by_stage["Product Aware"] += 5
-        weights_by_stage["Most Aware"] -= 7
-    else:
-        weights_by_stage["Most Aware"] += min(7, score.trust_signals - 4)
-
-    if score.cta_strength < 5:
-        weights_by_stage["Product Aware"] += 8
-        weights_by_stage["Most Aware"] -= 10
-    else:
-        weights_by_stage["Most Aware"] += min(10, score.cta_strength - 4)
-
-    if declared_links_count >= 2:
-        weights_by_stage["Problem Aware"] += 2
-        weights_by_stage["Solution Aware"] += 3
-    if has_offer:
-        weights_by_stage["Solution Aware"] += 3
-        weights_by_stage["Product Aware"] += 2
-    if has_notes:
-        weights_by_stage["Problem Aware"] += 2
-
-    # Deterministic micro-variation from the canonical business profile so identical bottlenecks do not create cloned visuals.
-    fingerprint = make_stable_hash({
-        "company": request.company_name,
-        "industry": request.industry,
-        "city": request.city,
-        "offer": request.offer,
-        "website": request.website,
-        "instagram": request.instagram,
-        "linkedin": request.linkedin,
-        "bottleneck": audit.primary_bottleneck,
-    })
-    for index, stage in enumerate(stages):
-        weights_by_stage[stage] += ((int(fingerprint[index:index + 2], 16) % 7) - 3) * 0.8
-
-    normalized_raw = {stage: max(2.0, value) for stage, value in weights_by_stage.items()}
-    total = sum(normalized_raw.values()) or 1.0
-    rounded = {stage: int(round((value / total) * 100)) for stage, value in normalized_raw.items()}
-    drift = 100 - sum(rounded.values())
-    rounded[max(rounded, key=rounded.get)] += drift
-
-    dominant_stage = max(stages, key=lambda stage: rounded[stage])
-
-    gate_scores = {
-        "Problem Aware": score.public_presence,
-        "Solution Aware": round((score.value_proposition + score.public_presence) / 2),
-        "Product Aware": round((score.value_proposition + score.differentiation + score.trust_signals) / 3),
-        "Most Aware": round((score.cta_strength + score.trust_signals + score.differentiation) / 3),
-        "Purchase / Conversion": round((score.cta_strength + score.trust_signals) / 2),
-    }
-    blocked_stage = min(gate_scores, key=gate_scores.get)
-
-    distribution = []
-    for stage in stages:
-        if stage == dominant_stage:
-            state = "dominant"
-        elif stage == blocked_stage:
-            state = "blocked"
-        elif rounded[stage] >= 20:
-            state = "secondary"
-        else:
-            state = "neutral"
-        distribution.append(AwarenessStage(stage=stage, weight=rounded[stage], state=state))
-
-    weakest_metric = min(
-        {
-            "presencia pública": score.public_presence,
-            "propuesta de valor": score.value_proposition,
-            "diferenciación": score.differentiation,
-            "confianza": score.trust_signals,
-            "CTA/conversión": score.cta_strength,
-        }.items(),
-        key=lambda pair: pair[1],
-    )
-    explanation = (
-        f"El funnel se calculó cruzando awareness base, score comercial, cantidad de activos declarados, oferta y señales de confianza/CTA. "
-        f"La mayor concentración queda en {dominant_stage}; el bloqueo operativo cae en {blocked_stage} porque la señal más débil es {weakest_metric[0]} ({weakest_metric[1]}/10). "
-        "Los porcentajes son concentración diagnóstica, no volumen real de usuarios."
-    )
-
-    return AwarenessFunnelLocator(
-        dominant_stage=dominant_stage,
-        blocked_stage=blocked_stage,
-        stage_distribution=distribution,
-        explanation=explanation,
-    )
-
-
-
-def build_temperature_heatmap(
-    audit: ProspectAuditResponse,
-    score: CommercialScore,
-    request: Optional[ProspectWithResearchRequest] = None,
-    social_fit: Optional[SocialContentFitResponse] = None,
-    campaign_performance: Optional[CampaignPerformanceResponse] = None,
-) -> TemperatureHeatmap:
-    """Build a temperature map from crossed commercial signals.
-
-    Values remain diagnostic estimates, but they now vary by public presence, value proposition,
-    differentiation, CTA, trust, social fit and campaign-data quality instead of repeating static templates.
-    """
-    def ci(value: float, low: int = 0, high: int = 100) -> int:
-        return max(low, min(high, int(round(value))))
-
-    social_bonus = 0
-    if social_fit:
-        social_bonus = round((social_fit.overall_social_content_fit_score - 50) / 8)
-
-    declared_links_count = 0
-    has_offer = False
-    has_notes = False
-    if request:
-        declared_links_count = len([value for value in [
-            request.website,
-            request.instagram,
-            getattr(request, "tiktok", None),
-            getattr(request, "facebook", None),
-            getattr(request, "youtube", None),
-            request.linkedin,
-        ] if value])
-        has_offer = bool((request.offer or "").strip())
-        has_notes = bool((request.notes or "").strip())
-
-    campaign_quality_bonus = 0
-    tracking_penalty = 0
-    if campaign_performance and campaign_performance.data_quality != "sin_datos":
-        campaign_quality_bonus = round((campaign_performance.data_completeness.score - 50) / 7)
-        if any(item.severity == "crítica" for item in campaign_performance.tracking_health):
-            tracking_penalty = 14
-
-    source_bonus = min(10, declared_links_count * 2)
-    offer_bonus = 5 if has_offer else 0
-    notes_bonus = 3 if has_notes else 0
-
-    bases = {
-        "attention": ci(28 + score.public_presence * 6.3 + source_bonus + social_bonus + notes_bonus),
-        "interest": ci(22 + score.value_proposition * 4.2 + score.differentiation * 2.2 + offer_bonus + social_bonus),
-        "intent": ci(14 + score.cta_strength * 4.8 + score.value_proposition * 1.6 + offer_bonus + campaign_quality_bonus),
-        "trust": ci(16 + score.trust_signals * 5.7 + source_bonus + max(0, social_bonus) - tracking_penalty),
-        "action": ci(8 + score.cta_strength * 6.2 + campaign_quality_bonus + offer_bonus - tracking_penalty),
-    }
-
-    # Bottleneck penalties keep the map commercially interpretable.
-    bottleneck = (audit.primary_bottleneck or "").casefold()
-    if "awareness" in bottleneck:
-        bases["attention"] = ci(bases["attention"] - 16)
-        bases["interest"] = ci(bases["interest"] - 8)
-    if "propuesta" in bottleneck or "posicionamiento" in bottleneck:
-        bases["interest"] = ci(bases["interest"] - 8)
-        bases["trust"] = ci(bases["trust"] - 5)
-    if "convers" in bottleneck or "funnel" in bottleneck:
-        bases["intent"] = ci(bases["intent"] - 5)
-        bases["action"] = ci(bases["action"] - 12)
-
-    profiles = {
-        "Frío": (1.04, 0.48, 0.22, 0.32, 0.18),
-        "Tibio": (0.92, 0.70, 0.42, 0.48, 0.32),
-        "Templado": (0.74, 0.96, 0.70, 0.66, 0.50),
-        "Caliente": (0.48, 0.86, 0.98, 0.84, 0.74),
-        "Muy caliente": (0.26, 0.58, 0.92, 0.96, 1.00),
-    }
-
-    rows = []
-    row_scores: Dict[str, int] = {}
-    for temperature, multipliers in profiles.items():
-        attention = ci(bases["attention"] * multipliers[0])
-        interest = ci(bases["interest"] * multipliers[1])
-        intent = ci(bases["intent"] * multipliers[2])
-        trust = ci(bases["trust"] * multipliers[3])
-        action = ci(bases["action"] * multipliers[4])
-        average = round((attention + interest + intent + trust + action) / 5)
-        row_scores[temperature] = average
-        rows.append(
-            TemperatureHeatmapRow(
-                temperature=temperature,
-                values=TemperatureHeatmapValues(
-                    attention=attention,
-                    interest=interest,
-                    intent=intent,
-                    trust=trust,
-                    action=action,
-                    average=average,
-                ),
-            )
-        )
-
-    average_temperature = max(row_scores, key=row_scores.get)
-    weakest_axis = min(bases.items(), key=lambda pair: pair[1])[0]
-    axis_es = {
-        "attention": "atención",
-        "interest": "interés",
-        "intent": "intención",
-        "trust": "confianza",
-        "action": "acción",
-    }[weakest_axis]
-    summary = (
-        f"Predomina temperatura {average_temperature.lower()} según el cruce de presencia pública, propuesta de valor, diferenciación, CTA, confianza"
-        f"{', social content' if social_fit else ''}{' y campañas' if campaign_performance and campaign_performance.data_quality != 'sin_datos' else ''}. "
-        f"La variable más débil del mapa es {axis_es}, por eso el análisis no debe leerse como métrica real de comportamiento sino como diagnóstico de fricción comercial."
-    )
-
-    return TemperatureHeatmap(
-        average_temperature=average_temperature,
-        rows=rows,
-        summary=summary,
-    )
-
-
-
-def build_customer_intent_density_map(
-    awareness_funnel_locator: AwarenessFunnelLocator,
-    heatmap: TemperatureHeatmap,
-    audit: ProspectAuditResponse,
-) -> CustomerIntentDensityMap:
-    x_axis = ["Awareness", "Interest", "Consideration", "Conversion"]
-    y_axis = ["Frío", "Tibio", "Templado", "Caliente"]
-
-    stage_to_x = {
-        "Unaware": "Awareness",
-        "Problem Aware": "Interest",
-        "Solution Aware": "Consideration",
-        "Product Aware": "Consideration",
-        "Most Aware": "Conversion",
-        "Purchase / Conversion": "Conversion",
-    }
-
-    dominant_x = stage_to_x.get(awareness_funnel_locator.dominant_stage, "Interest")
-    blocked_x = stage_to_x.get(awareness_funnel_locator.blocked_stage, "Consideration")
-
-    temp = heatmap.average_temperature
-    dominant_y = "Caliente" if temp == "Muy caliente" else temp if temp in y_axis else "Templado"
-
-    if audit.primary_bottleneck in ["propuesta de valor", "posicionamiento"]:
-        blocked_y = "Templado" if dominant_y in ["Frío", "Tibio"] else dominant_y
-    elif audit.primary_bottleneck == "conversión":
-        blocked_y = "Caliente"
-    elif audit.primary_bottleneck == "awareness":
-        blocked_y = "Tibio"
-    else:
-        blocked_y = dominant_y
-
-    stage_weights = {item.stage: item.weight for item in awareness_funnel_locator.stage_distribution}
-    x_weights = {
-        "Awareness": stage_weights.get("Unaware", 0) + round(stage_weights.get("Problem Aware", 0) * 0.35),
-        "Interest": stage_weights.get("Problem Aware", 0) + round(stage_weights.get("Solution Aware", 0) * 0.25),
-        "Consideration": stage_weights.get("Solution Aware", 0) + stage_weights.get("Product Aware", 0),
-        "Conversion": stage_weights.get("Most Aware", 0),
-    }
-    max_x = max(x_weights.values()) or 1
-    x_weights = {key: (value / max_x) * 100 for key, value in x_weights.items()}
-
-    heat_rows = {row.temperature: row.values.average for row in heatmap.rows}
-    y_weights = {
-        "Frío": heat_rows.get("Frío", 10),
-        "Tibio": heat_rows.get("Tibio", 10),
-        "Templado": heat_rows.get("Templado", 10),
-        "Caliente": max(heat_rows.get("Caliente", 10), round(heat_rows.get("Muy caliente", 0) * 0.85)),
-    }
-    max_y = max(y_weights.values()) or 1
-    y_weights = {key: (value / max_y) * 100 for key, value in y_weights.items()}
-
-    values: Dict[tuple, int] = {}
-    for y in y_axis:
-        for x in x_axis:
-            stage_component = x_weights.get(x, 0) * 0.56
-            temp_component = y_weights.get(y, 0) * 0.38
-            diagonal_bonus = 0
-            if (x, y) in [("Awareness", "Frío"), ("Interest", "Tibio"), ("Consideration", "Templado"), ("Conversion", "Caliente")]:
-                diagonal_bonus = 6
-            values[(x, y)] = max(8, min(100, int(round(stage_component + temp_component + diagonal_bonus))))
-
-    def set_value(x: str, y: str, value: int):
-        values[(x, y)] = max(values.get((x, y), 0), max(0, min(int(value), 100)))
-
-    set_value(dominant_x, dominant_y, max(76, values.get((dominant_x, dominant_y), 0) + 14))
-    set_value(blocked_x, blocked_y, max(66, values.get((blocked_x, blocked_y), 0) + 10))
-
-    if audit.primary_bottleneck in ["propuesta de valor", "posicionamiento"]:
-        set_value("Consideration", "Templado", max(values[("Consideration", "Templado")], 64))
-        values[("Conversion", "Caliente")] = min(values[("Conversion", "Caliente")], 42)
-    elif audit.primary_bottleneck == "conversión":
-        set_value("Conversion", "Caliente", max(values[("Conversion", "Caliente")], 72))
-        set_value("Conversion", "Templado", max(values[("Conversion", "Templado")], 58))
-    elif audit.primary_bottleneck == "awareness":
-        set_value("Awareness", "Frío", max(values[("Awareness", "Frío")], 76))
-        values[("Conversion", "Caliente")] = min(values[("Conversion", "Caliente")], 36)
-
-    density_points = [
-        DensityPoint(x=x, y=y, value=values[(x, y)])
-        for y in y_axis
-        for x in x_axis
-    ]
-
-    interpretation = (
-        f"La mayor concentración diagnóstica aparece en {dominant_x} / {dominant_y}. "
-        f"La zona de fricción aparece en {blocked_x} / {blocked_y}. "
-        "El mapa cruza distribución de awareness con temperatura estimada; no usa plantillas fijas por cuello de botella y no representa clicks, sesiones ni conversiones reales."
-    )
-
-    return CustomerIntentDensityMap(
-        x_axis=x_axis,
-        y_axis=y_axis,
-        density_points=density_points,
-        dominant_zone=DensityZone(x=dominant_x, y=dominant_y, label="Mayor concentración del público"),
-        blocked_zone=DensityZone(x=blocked_x, y=blocked_y, label="Zona de bloqueo / pérdida de avance"),
-        interpretation=interpretation,
-    )
-
-
-def build_visual_diagram_mermaid(audit: ProspectAuditResponse) -> str:
-    bottleneck_label = audit.primary_bottleneck.capitalize()
-
-    return f"""flowchart LR
-A[Presencia pública] --> B[Contenido / catálogo]
-B --> C[Interés inicial]
-C --> D{{¿{bottleneck_label} resuelto?}}
-D -- No --> E[Pérdida de diferenciación]
-E --> F[Competencia por precio o disponibilidad]
-D -- Sí --> G[Preferencia de marca]
-G --> H[Consulta calificada]
-H --> I[Reunión / oportunidad comercial]"""
-
-
-
-def build_funnel_blueprint(audit: ProspectAuditResponse) -> FunnelBlueprint:
-    """Build a diagnostic blueprint whose content changes with the detected bottleneck."""
-    bottleneck = (audit.primary_bottleneck or "").casefold()
-    focus = " ".join(audit.detected_focus_areas or []).casefold()
-
-    def bp(current_flow, breakpoints, recommended_flow, missing_links, summary):
-        return FunnelBlueprint(
-            current_flow=list(dict.fromkeys(current_flow))[:5],
-            breakpoints=list(dict.fromkeys(breakpoints))[:5],
-            recommended_flow=list(dict.fromkeys(recommended_flow))[:5],
-            missing_links=list(dict.fromkeys(missing_links))[:5],
-            summary=summary,
-        )
-
-    if "convers" in bottleneck or "cta" in focus:
-        return bp(
-            ["Atención inicial", "Interés por la oferta", "Revisión de propuesta", "Fricción en próximo paso", "Consulta incompleta"],
-            ["CTA débil o poco específico", "Formulario/contacto con fricción", "Prueba social insuficiente antes de la acción"],
-            ["Reformular CTA", "Reducir fricción de contacto", "Agregar prueba social cercana al CTA", "Crear opción de diagnóstico/reunión", "Medir contacto calificado"],
-            ["CTA específico", "Prueba social", "Mensaje de bajo riesgo", "Formulario/WhatsApp medible", "Seguimiento comercial"],
-            "El recorrido se rompe al final del funnel: existe atención o interés, pero el usuario no encuentra un próximo paso suficientemente claro, confiable o medible.",
-        )
-
-    if "funnel" in bottleneck:
-        return bp(
-            ["Puntos de contacto aislados", "Contenido sin secuencia", "Interés no nutrido", "Seguimiento débil", "Oportunidad dispersa"],
-            ["Recorrido comercial incompleto", "Falta de conexión entre contenido, CTA y seguimiento", "Ausencia de retargeting/nurturing"],
-            ["Ordenar etapas del funnel", "Crear rutas por temperatura", "Conectar contenido con CTA", "Activar seguimiento/retargeting", "Medir avance por etapa"],
-            ["Mapa de etapas", "Retargeting", "Nurturing", "CRM/seguimiento", "Métricas por etapa"],
-            "El problema principal no es una pieza aislada, sino la falta de continuidad entre atención, interés y oportunidad comercial.",
-        )
-
-    if "posicion" in bottleneck:
-        return bp(
-            ["Presencia pública", "Oferta visible", "Comparación con alternativas", "Diferencia poco defendible", "Elección por precio"],
-            ["Diferenciación insuficiente frente a competidores", "Posición de marca poco distintiva", "Comparación por precio o disponibilidad"],
-            ["Definir categoría de elección", "Clarificar ventaja competitiva", "Mostrar criterio diferencial", "Construir autoridad", "Defender valor frente a precio"],
-            ["Territorio de marca", "Comparativas", "Argumentos de valor", "Prueba de autoridad", "Objeciones de precio"],
-            "El recorrido se rompe durante la comparación: el mercado puede entender la oferta, pero no ve una razón suficientemente distintiva para preferirla.",
-        )
-
-    if "propuesta" in bottleneck or "valor" in bottleneck:
-        return bp(
-            ["Presencia pública", "Contenido genérico", "Interés superficial", "Comparación por similitud", "Consulta poco calificada"],
-            ["Propuesta de valor poco clara", "Razón de elección insuficiente", "Beneficio diferencial no demostrado"],
-            ["Definir mensaje diferencial", "Explicar criterio de elección", "Conectar oferta con dolor real", "Probar valor con evidencia", "Convertir interés en consulta"],
-            ["Mensaje diferencial", "Criterio de elección", "Prueba social", "Objeciones resueltas", "CTA contextual"],
-            "El recorrido se rompe entre interés y consideración: la marca muestra presencia u oferta, pero no construye una razón clara de elección.",
-        )
-
-    if "contenido" in bottleneck:
-        return bp(
-            ["Publicaciones frecuentes", "Atención visual", "Interacción superficial", "Poca intención comercial", "Consulta fría"],
-            ["Contenido sin función comercial clara", "Falta de contenido de objeciones", "Poca separación entre awareness y conversión"],
-            ["Separar contenido por etapa", "Crear piezas de educación", "Resolver objeciones frecuentes", "Agregar prueba y autoridad", "Dirigir hacia CTA específico"],
-            ["Contenido de criterio", "Contenido de objeciones", "Prueba social", "CTA por temperatura", "Secuencia de nurturing"],
-            "El contenido puede generar atención, pero no está guiando suficientemente al usuario hacia confianza, preferencia y acción.",
-        )
-
-    if "awareness" in bottleneck:
-        return bp(
-            ["Baja presencia mental", "Alcance insuficiente", "Reconocimiento débil", "Demanda no educada", "Poca intención inicial"],
-            ["Awareness insuficiente", "Mercado poco educado", "Baja familiaridad con la marca"],
-            ["Aumentar presencia calificada", "Educar problema/oportunidad", "Crear autoridad temprana", "Capturar audiencias tibias", "Activar retargeting educativo"],
-            ["Educación de mercado", "Autoridad", "Audiencias tibias", "Retargeting", "Mensajes de problema"],
-            "El recorrido se rompe temprano: el mercado todavía no tiene suficiente presencia mental, educación o familiaridad para avanzar con intención.",
-        )
-
-    return bp(
-        ["Presencia pública", "Contenido o catálogo", "Interés inicial", "Comparación con competidores", "Consulta débil o poco calificada"],
-        ["Falta de claridad estratégica en el recorrido", "CTA débil o poco específico", "Prueba social insuficiente"],
-        ["Clarificar diagnóstico principal", "Ordenar propuesta de valor", "Agregar evidencia de confianza", "Crear CTA específico", "Activar seguimiento comercial"],
-        ["Mensaje diferencial", "Contenido que eduque criterio de elección", "Prueba social visible", "CTA específico", "Seguimiento comercial"],
-        "La presencia pública existe, pero todavía no se traduce en un recorrido comercial suficientemente defendible y medible.",
-    )
-
-
-def build_campaign_adapted_blueprint(
-    public_audit: ProspectWithResearchResponse,
-    campaign_performance: CampaignPerformanceResponse,
-) -> FunnelBlueprint:
-    """Adapt the blueprint when campaign evidence points to a specific rupture."""
-    base = public_audit.funnel_blueprint
-
-    if campaign_performance.data_quality == "sin_datos" or campaign_performance.campaigns_analyzed == 0:
-        return base
-
-    text_blob = " ".join([
-        " ".join([finding.title + " " + finding.interpretation for finding in campaign_performance.findings[:8]]),
-        " ".join([finding.pattern + " " + finding.interpretation for finding in campaign_performance.cross_metric_findings[:8]]),
-        " ".join([finding.issue + " " + finding.evidence for finding in campaign_performance.tracking_health[:6]]),
-        " ".join([finding.quality_level + " " + finding.evidence for finding in campaign_performance.lead_quality_assessment[:6]]),
-        " ".join([finding.leak_stage + " " + finding.probable_cause for finding in campaign_performance.funnel_leaks[:6]]),
-        " ".join([action.action + " " + action.evidence for action in campaign_performance.prioritized_actions[:8]]),
-    ]).casefold()
-
-    def blueprint(current_flow, breakpoints, recommended_flow, missing_links, summary):
-        return FunnelBlueprint(
-            current_flow=list(dict.fromkeys(current_flow))[:5],
-            breakpoints=list(dict.fromkeys(breakpoints))[:5],
-            recommended_flow=list(dict.fromkeys(recommended_flow))[:5],
-            missing_links=list(dict.fromkeys(missing_links))[:5],
-            summary=summary,
-        )
-
-    if contains_any(text_blob, ["tracking", "evento", "eventos", "tag", "pixel", "utm", "atribución", "sin eventos"]):
-        return blueprint(
-            ["Campañas activas", "Clicks registrados", "Landing/formulario", "Evento ausente o dudoso", "Decisión sin medición confiable"],
-            ["Tracking roto o incompleto", "No se puede validar CPA/CPL real", "Eventos/UTMs/formularios requieren auditoría"],
-            ["Auditar tags y eventos", "Corregir GA4/pixel/conversiones", "Estandarizar UTMs", "Validar formularios/WhatsApp", "Releer campañas con data confiable"],
-            ["GA4 events", "Pixel/conversion tags", "UTMs", "Thank-you / WhatsApp events", "CRM con fuente"],
-            "El blueprint se adapta a una falla de medición: antes de decidir presupuesto o performance, hay que reconstruir la capa de tracking.",
-        )
-
-    if contains_any(text_blob, ["landing", "formulario", "cvr", "conversión baja", "fricción", "message match", "oferta no convierte"]):
-        return blueprint(
-            ["Anuncio genera interés", "Click hacia landing", "Promesa pierde fuerza", "Fricción en formulario/CTA", "Lead insuficiente"],
-            ["Fricción de landing o CTA", "Message match débil entre anuncio y oferta", "Prueba/confianza insuficiente antes del formulario"],
-            ["Alinear anuncio y landing", "Reforzar prueba social", "Reducir fricción del formulario", "Reformular CTA", "Medir conversión final"],
-            ["Message match", "Prueba above the fold", "CTA claro", "Formulario medible", "Evento de conversión"],
-            "El recorrido no se rompe en la captación sino en la conversión: hay interés, pero la landing, el CTA o el formulario no sostienen la promesa.",
-        )
-
-    if contains_any(text_blob, ["calidad baja", "lead quality", "leads de baja calidad", "poca calidad", "capacidad", "no calificados"]):
-        return blueprint(
-            ["Promesa amplia", "Clicks/leads baratos", "Filtro insuficiente", "Consultas poco calificadas", "Equipo comercial pierde tiempo"],
-            ["Baja calidad de lead", "Falta de filtro de intención/capacidad", "Promesa o audiencia demasiado amplia"],
-            ["Reformular promesa", "Agregar filtro de calificación", "Separar audiencias por intención", "Resolver objeciones clave", "Seguimiento por calidad"],
-            ["Filtro de capacidad", "Preguntas de calificación", "Objeciones resueltas", "ICP explícito", "CRM por calidad"],
-            "El blueprint se adapta a un problema de calidad: el sistema genera leads, pero no filtra suficiente intención, capacidad o fit comercial.",
-        )
-
-    if contains_any(text_blob, ["ctr bajo", "cpc alto", "hook", "creatividad", "creativo", "audiencia", "fatiga", "saturación"]):
-        return blueprint(
-            ["Audiencia impactada", "Hook creativo débil", "Baja respuesta relativa", "Costo de click sube", "Poca intención"],
-            ["Problema de hook, creatividad o audiencia", "Pérdida de relevancia publicitaria", "Fatiga o baja conexión mensaje-mercado"],
-            ["Testear nuevos hooks", "Separar ángulos por temperatura", "Ajustar audiencia", "Rotar creatividad", "Medir respuesta por ángulo"],
-            ["Hook matrix", "Ángulos por awareness", "Testing creativo", "Audiencias separadas", "Control de frecuencia"],
-            "El recorrido se rompe al inicio de la pauta: el sistema necesita mejorar la conexión entre audiencia, hook creativo y etapa de consciencia.",
-        )
-
-    if contains_any(text_blob, ["retargeting", "remarketing", "consideration", "conversion", "escalar", "candidato a escalar"]):
-        return blueprint(
-            ["Tráfico frío captura atención", "Usuarios muestran interés", "Audiencia tibia acumulada", "Retargeting responde mejor", "Conversión más cercana"],
-            ["Oportunidad de retargeting no explotada", "Audiencias tibias requieren secuencia", "Falta separar temperatura de campaña"],
-            ["Separar campañas por temperatura", "Crear secuencia de retargeting", "Usar prueba/objeciones", "Escalar ganadores con cautela", "Medir calidad y conversión"],
-            ["Audiencias tibias", "Secuencia por intención", "Creativos de confianza", "Prueba social", "Control de frecuencia"],
-            "El blueprint se adapta a una oportunidad: el retargeting o audiencias tibias muestran mejor intención y requieren una ruta específica.",
-        )
-
-    return base
-
-
-def build_corrective_action_plan(
-    request: ProspectWithResearchRequest,
-    audit: ProspectAuditResponse,
-    public_sources: List[ReviewedPublicSource],
-    score: CommercialScore,
-) -> List[CorrectiveActionItem]:
-    evidence_base = (
-        "Las fuentes públicas y las notas disponibles sugieren presencia digital, "
-        "pero no una razón de elección suficientemente clara."
-    )
-    if public_sources:
-        evidence_base = (
-            f"Se revisaron {len(public_sources)} fuentes públicas resumidas; las señales apuntan a "
-            "presencia digital con necesidad de mayor diferenciación comercial."
-        )
-
-    actions: List[CorrectiveActionItem] = []
-
-    actions.append(
-        CorrectiveActionItem(
-            issue="Propuesta de valor débil o poco demostrada",
-            evidence=evidence_base,
-            recommended_action=(
-                "Definir una promesa comercial concreta: qué hace distinto a la marca, para quién, "
-                "en qué situación y por qué debería ser elegida."
-            ),
-            priority="alta",
-            effort="medio",
-            expected_impact="Mejorar claridad de elección, calidad de consultas y percepción de valor.",
-            verification_metric="Comparar tasa de consultas calificadas, respuesta al CTA y calidad de mensajes recibidos.",
-            do_not_give_for_free="No entregar copy final ni estrategia completa de posicionamiento sin contratación.",
-        )
-    )
-
-    if score.cta_strength <= 5 or audit.primary_bottleneck == "conversión":
-        actions.append(
-            CorrectiveActionItem(
-                issue="CTA débil o poco orientado a conversión",
-                evidence="El análisis detecta riesgo de atención sin una acción comercial clara.",
-                recommended_action=(
-                    "Reformular los puntos de conversión hacia una acción concreta: diagnóstico, consulta, "
-                    "tasación, reunión o evaluación inicial."
-                ),
-                priority="alta",
-                effort="bajo-medio",
-                expected_impact="Reducir fricción y aumentar consultas con intención comercial.",
-                verification_metric="Medir clics a contacto, mensajes iniciados, formularios enviados o reuniones agendadas.",
-                do_not_give_for_free="No entregar arquitectura completa de funnel ni secuencia completa de automatización.",
-            )
-        )
-
-    if score.differentiation <= 5 or audit.primary_bottleneck == "posicionamiento":
-        actions.append(
-            CorrectiveActionItem(
-                issue="Diferenciación insuficiente frente a competidores",
-                evidence="El contexto público sugiere similitud con otros jugadores del mercado.",
-                recommended_action=(
-                    "Construir un ángulo de posicionamiento basado en especialización, proceso, criterio, "
-                    "experiencia o prueba social."
-                ),
-                priority="media-alta",
-                effort="medio",
-                expected_impact="Reducir comparación por precio/disponibilidad y aumentar preferencia de marca.",
-                verification_metric="Evaluar recordación de mensaje, objeciones frecuentes y calidad de leads entrantes.",
-                do_not_give_for_free="No entregar manifiesto de marca completo ni sistema completo de mensajes.",
-            )
-        )
-
-    actions.append(
-        CorrectiveActionItem(
-            issue="Falta de sistema de seguimiento comercial visible",
-            evidence="La presencia pública por sí sola no garantiza conversión si no existe recorrido posterior.",
-            recommended_action=(
-                "Definir un siguiente paso comercial simple y medible: reunión breve, diagnóstico, evaluación "
-                "o formulario de intención."
-            ),
-            priority="media",
-            effort="medio",
-            expected_impact="Transformar visibilidad en oportunidades comerciales más ordenadas.",
-            verification_metric="Medir ratio de contacto a reunión y reunión a oportunidad.",
-            do_not_give_for_free="No entregar CRM completo, automatizaciones completas ni guiones finales de venta.",
-        )
-    )
-
-    return actions
-
-
-def build_report_pages(
-    request: ProspectWithResearchRequest,
-    audit: ProspectAuditResponse,
-    score: CommercialScore,
-    interpretation: ScoreInterpretation,
-    public_sources: List[ReviewedPublicSource],
-    corrective_actions: List[CorrectiveActionItem],
-    awareness_funnel_locator: AwarenessFunnelLocator,
-    temperature_heatmap: TemperatureHeatmap,
-    funnel_blueprint: FunnelBlueprint,
-) -> List[ReportPage]:
-    sources_text = "\\n".join([
-        f"- {source.title or 'Fuente pública'}: {source.signal}"
-        for source in public_sources
-    ]) or "No se detectaron fuentes públicas suficientemente fuertes."
-
-    actions_text = "\\n".join([
-        f"- {action.issue}: {action.recommended_action} Prioridad: {action.priority}."
-        for action in corrective_actions
-    ])
-
-    return [
-        ReportPage(
-            page=1,
-            title="Diagnóstico ejecutivo",
-            content=interpretation.summary,
-            visual_element="score_summary",
-        ),
-        ReportPage(
-            page=2,
-            title="Fuentes públicas revisadas",
-            content=sources_text,
-            visual_element="source_table",
-        ),
-        ReportPage(
-            page=3,
-            title="Awareness funnel locator",
-            content=(
-                f"Etapa dominante: {awareness_funnel_locator.dominant_stage}. "
-                f"Etapa bloqueada: {awareness_funnel_locator.blocked_stage}. "
-                f"{awareness_funnel_locator.explanation}"
-            ),
-            visual_element="awareness_funnel",
-        ),
-        ReportPage(
-            page=4,
-            title="Customer temperature heatmap",
-            content=(
-                f"Temperatura promedio: {temperature_heatmap.average_temperature}. "
-                f"{temperature_heatmap.summary}"
-            ),
-            visual_element="temperature_heatmap",
-        ),
-        ReportPage(
-            page=5,
-            title="Funnel blueprint",
-            content=funnel_blueprint.summary,
-            visual_element="system_blueprint",
-        ),
-        ReportPage(
-            page=6,
-            title="Plan de acción recomendado",
-            content=actions_text,
-            visual_element="priority_matrix",
-        ),
-    ]
-
-
-def build_report_ready_markdown(
-    request: ProspectWithResearchRequest,
-    audit: ProspectAuditResponse,
-    public_sources: List[ReviewedPublicSource],
-    diagnosis_initial: str,
-    commercial_score: CommercialScore,
-    score_interpretation: ScoreInterpretation,
-    awareness_funnel_locator: AwarenessFunnelLocator,
-    temperature_heatmap: TemperatureHeatmap,
-    customer_intent_density_map: CustomerIntentDensityMap,
-    visual_diagram_mermaid: str,
-    funnel_blueprint: FunnelBlueprint,
-    corrective_action_plan: List[CorrectiveActionItem],
-) -> str:
-    source_lines = []
-    if public_sources:
-        for index, source in enumerate(public_sources, start=1):
-            source_lines.append(
-                f"{index}. {source.title or 'Fuente pública'}\\n"
-                f"   URL: {source.url or 'No disponible'}\\n"
-                f"   Señal: {source.signal}"
-            )
-    else:
-        source_lines.append("No se detectaron fuentes públicas suficientemente fuertes. Revisar nombre, ciudad, rubro o perfiles conocidos.")
-
-    sources_block = "\\n".join(source_lines)
-
-    action_lines = []
-    for index, action in enumerate(corrective_action_plan, start=1):
-        action_lines.append(
-            f"{index}. {action.issue}\\n"
-            f"   Evidencia: {action.evidence}\\n"
-            f"   Acción recomendada: {action.recommended_action}\\n"
-            f"   Prioridad: {action.priority} | Esfuerzo: {action.effort}\\n"
-            f"   Impacto esperado: {action.expected_impact}\\n"
-            f"   Validación: {action.verification_metric}\\n"
-            f"   No regalar gratis: {action.do_not_give_for_free}"
-        )
-
-    actions_block = "\\n\\n".join(action_lines)
-
-    return f"""# Diagnóstico comercial breve — {request.company_name}
-
-## 1. Diagnóstico inicial
-{diagnosis_initial}
-
-## 2. Fuentes públicas revisadas
-{sources_block}
-
-## 3. Score comercial
-Score general: {commercial_score.overall}/10.
-- Propuesta de valor: {commercial_score.value_proposition}/10
-- Presencia pública: {commercial_score.public_presence}/10
-- Diferenciación: {commercial_score.differentiation}/10
-- CTA / conversión: {commercial_score.cta_strength}/10
-- Señales de confianza: {commercial_score.trust_signals}/10
-- Presión competitiva: {commercial_score.competitive_pressure}/10
-
-Lectura: {score_interpretation.summary}
-
-## 4. Awareness funnel locator
-Etapa dominante: {awareness_funnel_locator.dominant_stage}.
-Etapa bloqueada: {awareness_funnel_locator.blocked_stage}.
-
-Distribución estimada:
-{chr(10).join([f"- {stage.stage}: {stage.weight}% ({stage.state})" for stage in awareness_funnel_locator.stage_distribution])}
-
-Lectura:
-{awareness_funnel_locator.explanation}
-
-## 5. Customer temperature heatmap
-Temperatura promedio: {temperature_heatmap.average_temperature}.
-
-Heatmap diagnóstico:
-{chr(10).join([f"- {row.temperature}: atención {row.values.attention}, interés {row.values.interest}, intención {row.values.intent}, confianza {row.values.trust}, acción {row.values.action}, promedio {row.values.average}" for row in temperature_heatmap.rows])}
-
-Lectura:
-{temperature_heatmap.summary}
-
-## 6. Customer intent density map
-{customer_intent_density_map.interpretation}
-
-Zona dominante: {customer_intent_density_map.dominant_zone.x} / {customer_intent_density_map.dominant_zone.y}.
-Zona bloqueada: {customer_intent_density_map.blocked_zone.x} / {customer_intent_density_map.blocked_zone.y}.
-
-Cómo explicarlo:
-- El eje horizontal muestra avance comercial: Awareness → Interest → Consideration → Conversion.
-- El eje vertical muestra temperatura: Frío → Tibio → Templado → Caliente.
-- La intensidad de color muestra concentración diagnóstica, no medición real de clicks.
-- La zona dominante indica dónde está el grueso del público.
-- La zona bloqueada indica dónde el público pierde avance.
-- La zona bloqueada se conecta conceptualmente con el FAULT del blueprint.
-- Si la zona dominante está antes de conversión, hay interés sin suficiente movimiento hacia acción.
-- Si la zona bloqueada está en conversión, el problema suele estar en CTA, confianza, prueba social o propuesta de valor.
-
-Guion de lectura:
-Este mapa cruza etapa del funnel con temperatura del cliente. Sirve para explicar dónde está acumulada la atención, dónde se enfría el recorrido y qué parte del sistema comercial debe rediseñarse en el blueprint.
-
-## 7. Problema comercial principal
-{audit.primary_bottleneck}.
-
-## 8. Riesgo comercial
-{audit.commercial_risk}
-
-## 9. Funnel blueprint / system map
-Flujo actual:
-{chr(10).join([f"- {item}" for item in funnel_blueprint.current_flow])}
-
-Puntos de ruptura:
-{chr(10).join([f"- {item}" for item in funnel_blueprint.breakpoints])}
-
-Eslabones faltantes:
-{chr(10).join([f"- {item}" for item in funnel_blueprint.missing_links])}
-
-Flujo recomendado:
-{chr(10).join([f"- {item}" for item in funnel_blueprint.recommended_flow])}
-
-Resumen:
-{funnel_blueprint.summary}
-
-Cómo explicarlo:
-- A1–A5 muestran la ruta actual: lo que la marca ya tiene construido.
-- FAULT muestra el punto de ruptura donde el recorrido pierde continuidad comercial.
-- DG significa Diagnosis Gate: el diagnóstico que convierte la ruptura en rediseño.
-- S1–S5 muestran la ruta de reconstrucción recomendada.
-- SL-01–SL-05 muestran el support layer: mensajes, prueba, objeciones, CTA y seguimiento.
-- Las conexiones moradas muestran que el support layer alimenta la ruta verde; no es una ruta paralela del funnel.
-- OUT representa la salida deseada: oportunidad comercial más calificada.
-- La relación central es ruta actual → ruptura → diagnosis gate → rediseño → soporte → conversión.
-
-Guion de lectura:
-Este blueprint no es un calendario de implementación; es un plano del sistema comercial. La ruta azul muestra lo que existe, FAULT muestra dónde se rompe, DG explica por qué empieza el rediseño, la ruta verde muestra cómo debería reconstruirse el sistema y el Support Layer muestra qué activos sostienen esa reconstrucción.
-
-## 10. Blueprint diagram
-```mermaid
-{visual_diagram_mermaid}
-```
-
-## 11. Plan de acción recomendado
-{actions_block}
-
-## 12. Próximo paso recomendado
-{audit.next_step}
-
-## 13. Límites de esta entrega
-No incluye calendario completo de contenido, copys finales, segmentaciones detalladas, arquitectura completa de funnel ni implementación paso a paso.
-"""
-
-
-def h(value: Optional[str]) -> str:
-    return html.escape(str(value or ""), quote=True)
-
-
-def green_scale(value: int) -> str:
-    value = max(0, min(int(value), 100))
-    if value >= 80:
-        return "#22c55e"
-    if value >= 60:
-        return "#86efac"
-    if value >= 40:
-        return "#bbf7d0"
-    if value >= 20:
-        return "#dcfce7"
-    return "#f3f4f6"
-
-
-def render_awareness_funnel_svg(locator: AwarenessFunnelLocator) -> str:
-    width = 760
-    height = 430
-    cx = width / 2
-    top_y = 50
-    segment_h = 54
-    gap = 10
-    top_w = 640
-    shrink = 86
-
-    polygons = []
-    stages = locator.stage_distribution
-
-    for index, stage in enumerate(stages):
-        y1 = top_y + index * (segment_h + gap)
-        y2 = y1 + segment_h
-        w1 = top_w - index * shrink
-        w2 = top_w - (index + 1) * shrink
-
-        x1 = cx - w1 / 2
-        x2 = cx + w1 / 2
-        x3 = cx + w2 / 2
-        x4 = cx - w2 / 2
-
-        if stage.state == "dominant":
-            fill = "#22c55e"
-            stroke = "#15803d"
-            text_color = "#ffffff"
-            badge = "GRUESO DEL PÚBLICO"
-        elif stage.state == "blocked":
-            fill = "#fef3c7"
-            stroke = "#d97706"
-            text_color = "#111827"
-            badge = "ETAPA BLOQUEADA"
-        elif stage.state == "secondary":
-            fill = "#e5e7eb"
-            stroke = "#9ca3af"
-            text_color = "#111827"
-            badge = "SECUNDARIO"
-        else:
-            fill = "#f5f5f4"
-            stroke = "#d6d3d1"
-            text_color = "#374151"
-            badge = "NEUTRO"
-
-        points = f"{x1},{y1} {x2},{y1} {x3},{y2} {x4},{y2}"
-        label_y = y1 + 24
-        sub_y = y1 + 43
-
-        polygons.append(f'''
-        <polygon points="{points}" fill="{fill}" stroke="{stroke}" stroke-width="2"/>
-        <text x="{cx}" y="{label_y}" text-anchor="middle" font-size="18" font-weight="700" fill="{text_color}">{h(stage.stage)} · {stage.weight}%</text>
-        <text x="{cx}" y="{sub_y}" text-anchor="middle" font-size="11" font-weight="600" fill="{text_color}">{badge}</text>
-        ''')
-
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Awareness funnel locator">
-    <rect width="{width}" height="{height}" rx="22" fill="#fafaf9"/>
-    <text x="{cx}" y="28" text-anchor="middle" font-size="22" font-weight="800" fill="#111827">Awareness Funnel Locator</text>
-    {''.join(polygons)}
-    <text x="{cx}" y="390" text-anchor="middle" font-size="15" font-weight="700" fill="#111827">Dominante: {h(locator.dominant_stage)} · Bloqueada: {h(locator.blocked_stage)}</text>
-    <text x="{cx}" y="414" text-anchor="middle" font-size="12" fill="#4b5563">Verde = concentración principal del público. Neutros = etapas no dominantes.</text>
-</svg>'''
-
-
-def render_temperature_heatmap_svg(heatmap: TemperatureHeatmap) -> str:
-    cols = [
-        ("attention", "Atención"),
-        ("interest", "Interés"),
-        ("intent", "Intención"),
-        ("trust", "Confianza"),
-        ("action", "Acción"),
-        ("average", "Promedio"),
-    ]
-
-    cell_w = 96
-    cell_h = 46
-    left_w = 120
-    top_h = 96
-    width = left_w + cell_w * len(cols) + 40
-    height = top_h + cell_h * len(heatmap.rows) + 84
-
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Customer temperature heatmap">',
-        f'<rect width="{width}" height="{height}" rx="22" fill="#fafaf9"/>',
-        f'<text x="{width/2}" y="30" text-anchor="middle" font-size="22" font-weight="800" fill="#111827">Customer Temperature Heatmap</text>',
-        f'<text x="{width/2}" y="58" text-anchor="middle" font-size="13" fill="#4b5563">Temperatura promedio: {h(heatmap.average_temperature)}</text>',
-    ]
-
-    for col_index, (_, label) in enumerate(cols):
-        x = left_w + col_index * cell_w
-        parts.append(f'<text x="{x + cell_w/2}" y="{top_h - 12}" text-anchor="middle" font-size="12" font-weight="700" fill="#374151">{h(label)}</text>')
-
-    for row_index, row in enumerate(heatmap.rows):
-        y = top_h + row_index * cell_h
-        is_dominant = row.temperature == heatmap.average_temperature
-        row_fill = "#ecfdf5" if is_dominant else "#f5f5f4"
-        row_stroke = "#22c55e" if is_dominant else "#d6d3d1"
-
-        parts.append(f'<rect x="18" y="{y}" width="{left_w-24}" height="{cell_h-6}" rx="8" fill="{row_fill}" stroke="{row_stroke}" stroke-width="1.5"/>')
-        parts.append(f'<text x="{left_w/2}" y="{y + 28}" text-anchor="middle" font-size="13" font-weight="800" fill="#111827">{h(row.temperature)}</text>')
-
-        values = row.values
-        data = {
-            "attention": values.attention,
-            "interest": values.interest,
-            "intent": values.intent,
-            "trust": values.trust,
-            "action": values.action,
-            "average": values.average,
-        }
-
-        for col_index, (key, _) in enumerate(cols):
-            value = data[key]
-            x = left_w + col_index * cell_w
-            fill = green_scale(value)
-            stroke = "#15803d" if is_dominant and key == "average" else "#d1d5db"
-            parts.append(f'<rect x="{x+5}" y="{y}" width="{cell_w-10}" height="{cell_h-6}" rx="8" fill="{fill}" stroke="{stroke}" stroke-width="1"/>')
-            parts.append(f'<text x="{x + cell_w/2}" y="{y + 28}" text-anchor="middle" font-size="13" font-weight="800" fill="#111827">{value}</text>')
-
-    parts.append(f'<text x="{width/2}" y="{height-32}" text-anchor="middle" font-size="12" fill="#4b5563">Mayor intensidad verde = señal más fuerte. La fila dominante representa la temperatura promedio inferida.</text>')
-    parts.append('</svg>')
-    return ''.join(parts)
-
-
-def render_score_chart_svg(score: CommercialScore) -> str:
-    rows = [
-        ("Propuesta de valor", score.value_proposition),
-        ("Presencia pública", score.public_presence),
-        ("Diferenciación", score.differentiation),
-        ("CTA / conversión", score.cta_strength),
-        ("Confianza", score.trust_signals),
-        ("Presión competitiva", score.competitive_pressure),
-    ]
-
-    width = 760
-    row_h = 46
-    height = 94 + len(rows) * row_h
-    label_x = 36
-    bar_x = 250
-    bar_w = 410
-
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Commercial score chart">',
-        f'<rect width="{width}" height="{height}" rx="22" fill="#fafaf9"/>',
-        f'<text x="{width/2}" y="30" text-anchor="middle" font-size="22" font-weight="800" fill="#111827">Commercial Score</text>',
-        f'<text x="{width/2}" y="56" text-anchor="middle" font-size="15" font-weight="700" fill="#15803d">Score general: {score.overall}/10</text>',
-    ]
-
-    for i, (label, value) in enumerate(rows):
-        y = 82 + i * row_h
-        fill_w = bar_w * (value / 10)
-        fill = "#22c55e" if value >= 7 else "#84cc16" if value >= 5 else "#f59e0b" if value >= 4 else "#ef4444"
-        parts.append(f'<text x="{label_x}" y="{y+20}" font-size="13" font-weight="700" fill="#111827">{h(label)}</text>')
-        parts.append(f'<rect x="{bar_x}" y="{y}" width="{bar_w}" height="24" rx="12" fill="#e5e7eb"/>')
-        parts.append(f'<rect x="{bar_x}" y="{y}" width="{fill_w}" height="24" rx="12" fill="{fill}"/>')
-        parts.append(f'<text x="{bar_x + bar_w + 20}" y="{y+18}" font-size="13" font-weight="800" fill="#111827">{value}/10</text>')
-
-    parts.append('</svg>')
-    return ''.join(parts)
-
-
-
-
-
-
-
-
-def render_funnel_blueprint_svg(blueprint: FunnelBlueprint) -> str:
-    width = 1320
-    height = 720
-
-    def short_label(value: str, max_len: int = 22) -> str:
-        safe = h(value or "")
-        return safe if len(safe) <= max_len else safe[:max_len - 1] + "…"
-
-    def pad(values: List[str], fallback: List[str]) -> List[str]:
-        result = list(values or [])
-        for item in fallback:
-            if len(result) >= 5:
-                break
-            result.append(item)
-        return result[:5]
-
-    current_labels = pad(blueprint.current_flow, ["Ruta actual", "Interés", "Comparación", "Fricción", "Consulta"])
-    rebuild_labels = pad(blueprint.recommended_flow, ["Rediseño", "Prueba", "CTA", "Seguimiento", "Medición"])
-    support_labels = pad(blueprint.missing_links, ["Mensaje", "Prueba", "Objeciones", "CTA", "Follow-up"])
-    fault_label = short_label((blueprint.breakpoints or ["Ruptura comercial"])[0], 24)
-
-    def grid_lines() -> str:
-        parts = []
-        for x in range(0, width + 1, 24):
-            major = x % 120 == 0
-            parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{height}" stroke="#7dd3fc" stroke-width="{1.0 if major else 0.55}" opacity="{0.20 if major else 0.07}"/>')
-        for y in range(0, height + 1, 24):
-            major = y % 120 == 0
-            parts.append(f'<line x1="0" y1="{y}" x2="{width}" y2="{y}" stroke="#7dd3fc" stroke-width="{1.0 if major else 0.55}" opacity="{0.20 if major else 0.07}"/>')
-        return ''.join(parts)
-
-    def hex_points(cx: int, cy: int, r: int = 22) -> str:
-        coords = [(cx+r,cy),(cx+r*.5,cy+r*.866),(cx-r*.5,cy+r*.866),(cx-r,cy),(cx-r*.5,cy-r*.866),(cx+r*.5,cy-r*.866)]
-        return ' '.join([f'{x:.1f},{y:.1f}' for x,y in coords])
-
-    def path_from(points, color, width_px, dash='') -> str:
-        if not points:
-            return ''
-        d = f'M {points[0][0]} {points[0][1]}'
-        for i in range(1, len(points)):
-            px, py = points[i-1]
-            x, y = points[i]
-            mx = (px+x)/2
-            d += f' C {mx:.1f} {py}, {mx:.1f} {y}, {x} {y}'
-        dash_attr = f' stroke-dasharray="{dash}"' if dash else ''
-        return f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{width_px}" stroke-linecap="round" stroke-linejoin="round" opacity="0.92"{dash_attr}/>'
-
-    def arrow_path(points, color, width_px, marker, dash='') -> str:
-        if not points:
-            return ''
-        d = f'M {points[0][0]} {points[0][1]}'
-        for i in range(1, len(points)):
-            px, py = points[i-1]
-            x, y = points[i]
-            mx = (px+x)/2
-            d += f' C {mx:.1f} {py}, {mx:.1f} {y}, {x} {y}'
-        dash_attr = f' stroke-dasharray="{dash}"' if dash else ''
-        return f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{width_px}" stroke-linecap="round" stroke-linejoin="round" opacity="0.88" marker-end="url(#{marker})"{dash_attr}/>'
-
-    def node(cx, cy, code, label, color, fill, r=24):
-        return f'''
-        <g>
-          <polygon points="{hex_points(cx, cy, r + 10)}" fill="{color}" opacity="0.12" filter="url(#blueprintGlowSoft)"/>
-          <polygon points="{hex_points(cx, cy, r)}" fill="{fill}" stroke="{color}" stroke-width="3"/>
-          <text x="{cx}" y="{cy + 5}" text-anchor="middle" font-size="12" font-weight="900" fill="#e0f2fe">{h(code)}</text>
-          <text x="{cx}" y="{cy + 45}" text-anchor="middle" font-size="10.5" font-weight="750" fill="#dbeafe">{short_label(label)}</text>
-        </g>'''
-
-    def sl_node(cx, cy, code, label):
-        return f'''
-        <g>
-          <polygon points="{hex_points(cx, cy, 27)}" fill="#22143f" stroke="#c084fc" stroke-width="2.4"/>
-          <text x="{cx}" y="{cy - 4}" text-anchor="middle" font-size="10" font-weight="900" fill="#f3e8ff">{h(code)}</text>
-          <text x="{cx}" y="{cy + 12}" text-anchor="middle" font-size="13" font-weight="900" fill="#c084fc">SL</text>
-          <text x="{cx}" y="{cy + 49}" text-anchor="middle" font-size="10.5" font-weight="750" fill="#f3e8ff">{short_label(label)}</text>
-        </g>'''
-
-    current = [((95,250),'A1',current_labels[0]),((245,250),'A2',current_labels[1]),((395,250),'A3',current_labels[2]),((535,250),'A4',current_labels[3]),((620,350),'A5',current_labels[4])]
-    fault = (635,250)
-    dg = (770,250)
-    rebuild = [((875,250),'S1',rebuild_labels[0]),((985,250),'S2',rebuild_labels[1]),((1095,250),'S3',rebuild_labels[2]),((1205,250),'S4',rebuild_labels[3]),((1268,360),'S5',rebuild_labels[4])]
-    out = (1268,455)
-    sl_nodes = [
-        ((680,500),'SL-01',support_labels[0],(875,250)),
-        ((800,500),'SL-02',support_labels[1],(985,250)),
-        ((920,500),'SL-03',support_labels[2],(1095,250)),
-        ((1040,500),'SL-04',support_labels[3],(1205,250)),
-        ((1160,500),'SL-05',support_labels[4],(1268,360)),
-    ]
-
-    current_trace = path_from([c for c,_,_ in current[:4]], '#93c5fd', 4.4)
-    current_glow = path_from([c for c,_,_ in current[:4]], '#38bdf8', 13.0)
-    fault_trace = arrow_path([(535,250), fault], '#f59e0b', 2.8, 'arrowAmber', '7 6')
-    weak_trace = arrow_path([(535,250), (620,350)], '#93c5fd', 2.3, 'arrowBlue', '7 6')
-    dg_trace = arrow_path([fault, dg], '#f59e0b', 2.8, 'arrowAmber', '7 6')
-    rebuild_trace = path_from([dg]+[c for c,_,_ in rebuild[:4]], '#34d399', 4.4)
-    rebuild_glow = path_from([dg]+[c for c,_,_ in rebuild[:4]], '#22c55e', 13.0)
-    out_trace = arrow_path([(1205,250),(1268,360),out], '#34d399', 4.2, 'arrowGreen')
-
-    support_arrows = []
-    for (cx, cy), code, label, target in sl_nodes:
-        tx, ty = target
-        support_arrows.append(arrow_path([(cx,cy-27),(cx,410),(tx,ty+35)], '#c084fc', 2.0, 'arrowPurple', '4 6'))
-
-    current_nodes = ''.join([node(cx,cy,code,label,'#93c5fd','#0f2a4a') for (cx,cy),code,label in current])
-    rebuild_nodes = ''.join([node(cx,cy,code,label,'#34d399','#062d22') for (cx,cy),code,label in rebuild])
-    support_nodes = ''.join([sl_node(cx,cy,code,label) for (cx,cy),code,label,_ in sl_nodes])
-
-    fault_node = f'''
-    <g>
-      <polygon points="{hex_points(fault[0], fault[1], 34)}" fill="#3a2208" stroke="#f59e0b" stroke-width="3.2"/>
-      <text x="{fault[0]}" y="{fault[1] - 2}" text-anchor="middle" font-size="13" font-weight="900" fill="#fcd34d">FAULT</text>
-      <text x="{fault[0]}" y="{fault[1] + 16}" text-anchor="middle" font-size="9.5" font-weight="800" fill="#fde68a">{fault_label}</text>
-    </g>'''
-    dg_node = f'''
-    <g>
-      <polygon points="{hex_points(dg[0], dg[1], 28)}" fill="#112816" stroke="#eab308" stroke-width="2.8"/>
-      <text x="{dg[0]}" y="{dg[1] - 3}" text-anchor="middle" font-size="12" font-weight="900" fill="#fef3c7">DG</text>
-      <text x="{dg[0]}" y="{dg[1] + 13}" text-anchor="middle" font-size="8.5" font-weight="800" fill="#fef3c7">GATE</text>
-      <text x="{dg[0]}" y="{dg[1] + 48}" text-anchor="middle" font-size="11" fill="#fef3c7">Diagnosis Gate</text>
-    </g>'''
-    out_node = f'''
-    <g>
-      <polygon points="{hex_points(out[0], out[1], 30)}" fill="#062d22" stroke="#86efac" stroke-width="3"/>
-      <text x="{out[0]}" y="{out[1] + 5}" text-anchor="middle" font-size="12" font-weight="900" fill="#bbf7d0">OUT</text>
-      <text x="{out[0]}" y="{out[1] + 48}" text-anchor="middle" font-size="11" fill="#dcfce7">Oportunidad</text>
-    </g>'''
-
-    summary_line = short_label(blueprint.summary, 158)
-
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Commercial system blueprint">
-    <defs>
-      <radialGradient id="blueprintBg" cx="50%" cy="42%" r="78%"><stop offset="0%" stop-color="#14406f"/><stop offset="100%" stop-color="#061426"/></radialGradient>
-      <filter id="blueprintGlowSoft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="8"/></filter>
-      <filter id="traceGlow" x="-45%" y="-45%" width="190%" height="190%"><feGaussianBlur stdDeviation="5"/></filter>
-      <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#93c5fd"/></marker>
-      <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#34d399"/></marker>
-      <marker id="arrowAmber" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#f59e0b"/></marker>
-      <marker id="arrowPurple" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#c084fc"/></marker>
-    </defs>
-    <rect width="{width}" height="{height}" rx="26" fill="#061426"/>
-    <rect x="24" y="20" width="{width-48}" height="{height-36}" rx="24" fill="url(#blueprintBg)" stroke="#2563eb" stroke-width="1.2"/>
-    {grid_lines()}
-    <text x="660" y="52" text-anchor="middle" font-size="32" font-weight="900" fill="#e0f2fe">Commercial System Blueprint</text>
-    <text x="660" y="82" text-anchor="middle" font-size="14" fill="#bfdbfe">Blueprint dinámico según diagnóstico: ruta actual, ruptura, Diagnosis Gate y reconstrucción</text>
-    <path d="M 45 180 L 445 180 L 500 225 L 470 325 L 150 340 L 45 310 Z" fill="#0f2a4a" opacity="0.27" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="12 8"/>
-    <text x="82" y="203" font-size="13" font-weight="900" fill="#bfdbfe">RUTA ACTUAL</text><text x="82" y="221" font-size="11" fill="#dbeafe">nodos A dependen del caso</text>
-    <path d="M 480 178 L 805 178 L 835 310 L 750 390 L 555 390 L 470 310 Z" fill="#3a2208" opacity="0.30" stroke="#f59e0b" stroke-width="1.7" stroke-dasharray="10 7"/>
-    <text x="550" y="203" font-size="13" font-weight="900" fill="#fcd34d">ZONA DE RUPTURA</text>
-    <path d="M 840 180 L 1300 180 L 1310 420 L 1210 475 L 850 405 Z" fill="#062d22" opacity="0.30" stroke="#86efac" stroke-width="1.5" stroke-dasharray="12 8"/>
-    <text x="1015" y="203" text-anchor="middle" font-size="13" font-weight="900" fill="#bbf7d0">RUTA RECOMENDADA</text><text x="1015" y="221" text-anchor="middle" font-size="11" fill="#dcfce7">nodos S dependen del diagnóstico</text>
-    <path d="M 560 440 L 1238 440 L 1270 600 L 535 600 Z" fill="#20123d" opacity="0.30" stroke="#c084fc" stroke-width="1.6" stroke-dasharray="8 7"/>
-    <text x="584" y="462" font-size="14" font-weight="900" fill="#c084fc">SUPPORT LAYER (SL)</text><text x="584" y="480" font-size="11" fill="#e9d5ff">infraestructura específica que alimenta la ruta recomendada</text>
-    <g opacity="0.20" filter="url(#traceGlow)">{current_glow}{rebuild_glow}</g>
-    {current_trace}{fault_trace}{weak_trace}{dg_trace}{rebuild_trace}{out_trace}{''.join(support_arrows)}
-    {current_nodes}{fault_node}{dg_node}{rebuild_nodes}{out_node}{support_nodes}
-    <g><rect x="44" y="630" width="1232" height="42" rx="10" fill="#061a2f" stroke="#2563eb" stroke-width="1" opacity="0.92"/>
-      <line x1="70" y1="651" x2="110" y2="651" stroke="#93c5fd" stroke-width="4" stroke-linecap="round"/><text x="124" y="655" font-size="11" fill="#dbeafe">A = ruta actual</text>
-      <line x1="260" y1="651" x2="300" y2="651" stroke="#f59e0b" stroke-width="3" stroke-dasharray="7 6"/><text x="314" y="655" font-size="11" fill="#fef3c7">FAULT / DG</text>
-      <line x1="430" y1="651" x2="470" y2="651" stroke="#34d399" stroke-width="4" stroke-linecap="round"/><text x="484" y="655" font-size="11" fill="#dcfce7">S = rediseño recomendado</text>
-      <line x1="705" y1="651" x2="745" y2="651" stroke="#c084fc" stroke-width="3" stroke-dasharray="4 6"/><text x="759" y="655" font-size="11" fill="#f3e8ff">SL alimenta la ruta verde</text>
-      <text x="1065" y="655" font-size="11" fill="#cbd5e1">OUT = salida comercial</text></g>
-    <g><rect x="44" y="682" width="1232" height="28" rx="10" fill="#07182c" stroke="#2563eb" stroke-width="1" opacity="0.88"/><text x="660" y="701" text-anchor="middle" font-size="11.5" fill="#bfdbfe">{summary_line}</text></g>
-    </svg>'''
-
-
-def density_color(value: int) -> str:
-    value = max(0, min(int(value), 100))
-
-    # Cold -> warm gradient:
-    # 0 blue, 35 cyan, 55 yellow-green, 75 amber, 100 red.
-    stops = [
-        (0, (37, 99, 235)),
-        (35, (14, 165, 233)),
-        (55, (132, 204, 22)),
-        (75, (245, 158, 11)),
-        (100, (239, 68, 68)),
-    ]
-
-    for index in range(len(stops) - 1):
-        left_value, left_rgb = stops[index]
-        right_value, right_rgb = stops[index + 1]
-
-        if left_value <= value <= right_value:
-            ratio = (value - left_value) / (right_value - left_value)
-            rgb = tuple(
-                round(left_rgb[channel] + (right_rgb[channel] - left_rgb[channel]) * ratio)
-                for channel in range(3)
-            )
-            return f"rgb({rgb[0]}, {rgb[1]}, {rgb[2]})"
-
-    return "rgb(239, 68, 68)"
-
-
-
-
-
-
-def render_customer_intent_density_svg(density_map: CustomerIntentDensityMap) -> str:
-    x_axis = density_map.x_axis
-    y_axis = density_map.y_axis
-
-    width = 1100
-    height = 500
-    chart_x = 108
-    chart_y = 128
-    chart_w = 870
-    chart_h = 295
-    stage_step = chart_w / (len(x_axis) - 1)
-    temp_step = chart_h / (len(y_axis) - 1)
-
-    def x_pos(label: str) -> float:
-        return chart_x + x_axis.index(label) * stage_step
-
-    def y_pos(label: str) -> float:
-        # Invert y-axis: Frío abajo, Caliente arriba.
-        return chart_y + (len(y_axis) - 1 - y_axis.index(label)) * temp_step
-
-    points = [
-        (x_pos(point.x), y_pos(point.y), max(0, min(int(point.value), 100)), point.x, point.y)
-        for point in density_map.density_points
-    ]
-
-    def deterministic_noise(row: int, col: int, salt: int = 0) -> float:
-        raw = (row * 92821 + col * 68917 + row * col * 193 + salt * 8347) % 1000
-        return raw / 1000
-
-    def field_value(px: float, py: float, row: int, col: int) -> float:
-        total = 0.0
-        for gx, gy, value, _, _ in points:
-            dx = (px - gx) / 185
-            dy = (py - gy) / 34
-            total += value * math.exp(-0.5 * ((dx * dx) + (dy * dy)))
-
-        y_ratio = (py - chart_y) / chart_h
-        temp_bias = 7 + (1 - y_ratio) * 8
-        noise = 0.72 + deterministic_noise(row, col, 11) * 0.58
-        return max(0, min(100, (total * 0.64 + temp_bias) * noise))
-
-    raster_parts = []
-    raster_rows = 56
-    raster_cols = 72
-    cell_w = chart_w / raster_cols
-    cell_h = chart_h / raster_rows
-
-    for row in range(raster_rows):
-        py = chart_y + row * cell_h + cell_h / 2
-
-        for col in range(raster_cols):
-            px = chart_x + col * cell_w + cell_w / 2
-            value = field_value(px, py, row, col)
-            noise = deterministic_noise(row, col, 23)
-
-            if value < 13 and noise < 0.68:
-                continue
-
-            fill = density_color(round(value))
-            frag_w = cell_w * (0.50 + noise * 1.15)
-            frag_h = max(2.0, cell_h * (0.34 + deterministic_noise(row, col, 31) * 0.56))
-            x = px - frag_w / 2
-            y = py - frag_h / 2
-
-            opacity = min(0.82, 0.045 + value / 135)
-            if value < 20:
-                opacity *= 0.55
-
-            raster_parts.append(
-                f'<rect x="{x:.1f}" y="{y:.1f}" width="{frag_w:.1f}" height="{frag_h:.1f}" '
-                f'rx="1.5" fill="{fill}" opacity="{opacity:.3f}"/>'
-            )
-
-    shelves = []
-    for gx, gy, value, x_label, y_label in points:
-        if value < 35:
             continue
-
-        color = density_color(value)
-        for layer in range(3):
-            layer_noise = deterministic_noise(int(gx), int(gy), layer + 40)
-            shelf_len = 100 + value * (3.2 + layer * 0.55) + layer_noise * 70
-            shelf_h = max(2.2, 2 + value * (0.035 + layer * 0.018))
-            shelf_y = gy + (layer - 1) * (6 + layer_noise * 5)
-            shelf_x = max(chart_x, gx - shelf_len / 2 + (layer_noise - 0.5) * 50)
-            shelf_w = min(shelf_len, chart_x + chart_w - shelf_x)
-
-            shelves.append(
-                f'<rect x="{shelf_x:.1f}" y="{shelf_y:.1f}" width="{shelf_w:.1f}" height="{shelf_h:.1f}" '
-                f'rx="{shelf_h/2:.1f}" fill="{color}" opacity="{0.24 + value/210:.3f}" filter="url(#softGlow)"/>'
+        if status == "skipped_missing_api_key":
+            guide.append(
+                {
+                    "platform": platform,
+                    "field": f"{platform}.api_fields",
+                    "label_es": f"Datos por API de {platform}",
+                    "status": "not_collected",
+                    "why_not_collected": report.get("reason") or "Falta API key.",
+                    "attempted_tools": [report.get("tool_used")],
+                    "importance": "media-alta",
+                    "can_be_collected_publicly": "sí, si la API key está configurada y el dato es público",
+                    "how_to_collect": report.get("how_to_collect_missing", []),
+                    "requires_client_permission": False,
+                }
             )
-
-        if value >= 55:
-            core_len = 70 + value * 2.4
-            core_x = max(chart_x, gx - core_len / 2)
-            core_w = min(core_len, chart_x + chart_w - core_x)
-            shelves.append(
-                f'<rect x="{core_x:.1f}" y="{gy-1.8:.1f}" width="{core_w:.1f}" height="3.6" '
-                f'rx="1.8" fill="{color}" opacity="0.88"/>'
+            continue
+        for field in missing_fields:
+            requires_owner = field in {
+                "insights",
+                "reach",
+                "impressions",
+                "profile_visits",
+                "link_clicks",
+                "demographics",
+                "saved_posts",
+                "crm",
+                "conversions",
+                "revenue",
+            } or platform in {"instagram", "facebook", "linkedin", "tiktok"} and field in {"engagement_metrics", "likes_comments_views", "reactions_comments_shares", "followers_count", "post_dates", "latest_posts"}
+            guide.append(
+                {
+                    "platform": platform,
+                    "field": f"{platform}.{field}",
+                    "label_es": field.replace("_", " "),
+                    "status": "not_collected",
+                    "why_not_collected": report.get("reason") or "El dato no apareció en la recolección pública.",
+                    "attempted_tools": [report.get("tool_used")],
+                    "importance": "alta" if requires_owner else "media",
+                    "can_be_collected_publicly": "variable" if not requires_owner else "normalmente no",
+                    "how_to_collect": report.get("how_to_collect_missing", []),
+                    "requires_client_permission": bool(requires_owner),
+                }
             )
+    # Add always-private performance fields as explicit guidance.
+    for field, label in [
+        ("ga4.conversions", "conversiones reales"),
+        ("meta_ads.reach_impressions_clicks", "alcance, impresiones y clics de campañas"),
+        ("crm.lead_quality", "calidad de lead"),
+        ("sales.revenue_close", "ventas, revenue y cierre"),
+    ]:
+        guide.append(
+            {
+                "platform": field.split(".")[0],
+                "field": field,
+                "label_es": label,
+                "status": "requires_owner_access",
+                "why_not_collected": "No es información pública; requiere acceso del cliente o export manual.",
+                "attempted_tools": [],
+                "importance": "alta",
+                "can_be_collected_publicly": "no",
+                "how_to_collect": [
+                    "Solicitar acceso del cliente a la plataforma correspondiente.",
+                    "Aceptar export CSV/Excel o capturas fechadas si no se puede conectar API.",
+                    "Registrar período analizado y fuente exacta del dato.",
+                ],
+                "requires_client_permission": True,
+            }
+        )
+    return guide
 
-    clouds = []
-    for gx, gy, value, _, _ in points:
-        if value < 45:
+
+async def collect_robots_and_sitemap(base_url: str, evidence: EvidenceBuilder) -> Tuple[List[Dict[str, Any]], List[str]]:
+    reports: List[Dict[str, Any]] = []
+    collected: List[str] = []
+    robots_url = urljoin(base_url, "/robots.txt")
+    sitemap_url = urljoin(base_url, "/sitemap.xml")
+    robots_resp = await fetch_url(robots_url, timeout=8)
+    if robots_resp.get("ok") and robots_resp.get("text"):
+        collected.append("robots_txt")
+        evidence.add("website", robots_url, "robots_txt_collector", "robots_txt", "robots.txt disponible", "medium", robots_resp.get("text", "")[:1000])
+    sitemap_resp = await fetch_url(sitemap_url, timeout=8)
+    if sitemap_resp.get("ok") and sitemap_resp.get("text"):
+        collected.append("sitemap_xml")
+        evidence.add("website", sitemap_url, "sitemap_collector", "sitemap_xml", "sitemap.xml disponible", "medium", sitemap_resp.get("text", "")[:1000])
+    reports.append(
+        collector_report(
+            "robots_sitemap_collector",
+            "website",
+            "completed" if collected else "partial",
+            "httpx+urllib.robotparser",
+            base_url,
+            intended_data=["robots_txt", "sitemap_xml"],
+            collected_fields=collected,
+            missing_fields=[f for f in ["robots_txt", "sitemap_xml"] if f not in collected],
+            reason_code=None if collected else "insufficient_public_data",
+            confidence="medium",
+        )
+    )
+    return reports, collected
+
+
+async def collect_website_static(url: Optional[str], max_pages: int, evidence: EvidenceBuilder) -> Dict[str, Any]:
+    platform = "website"
+    collector = "website_static_collector"
+    if not url:
+        return {
+            "reports": [collector_report(collector, platform, "skipped_missing_input", "httpx+bs4+trafilatura", None, reason_code="missing_input", confidence="none")],
+            "summary": {},
+        }
+    normalized = normalize_url(url)
+    assert normalized is not None
+    base = root_url(normalized)
+    reports, _ = await collect_robots_and_sitemap(base, evidence)
+    home = await fetch_url(normalized, timeout=18)
+    if not home.get("ok"):
+        reason_code = "http_error" if home.get("status_code") else "timeout"
+        reports.append(collector_report(collector, platform, "failed_runtime", "httpx+bs4+trafilatura", normalized, reason_code=reason_code, reason=home.get("error"), confidence="none"))
+        return {"reports": reports, "summary": {"fetch_error": home.get("error"), "http_status": home.get("status_code")}}
+
+    home_doc = home.get("text") or ""
+    home_meta = extract_meta_and_links(home_doc, home.get("final_url") or normalized)
+    home_text = extract_visible_text(home_doc)
+    internal, external, socials = split_links(home.get("final_url") or normalized, home_meta.get("links", []))
+    pages_to_fetch = choose_internal_pages(home.get("final_url") or normalized, internal, max_pages=max_pages)
+
+    pages: List[Dict[str, Any]] = []
+    collected_fields = ["http_status", "final_url"]
+    all_text = home_text
+    all_links = list(home_meta.get("links", []))
+    all_headings = list(home_meta.get("headings", []))
+    all_buttons = list(home_meta.get("buttons", []))
+    forms_count = int(home_meta.get("forms_count") or 0)
+    scripts_src: List[str] = list(home_meta.get("scripts_src", []))
+    open_graph = dict(home_meta.get("open_graph", {}))
+    structured_data_count = int(home_meta.get("structured_data_count") or 0)
+
+    page_fetches = []
+    for page_url in pages_to_fetch[1:]:
+        page_fetches.append(fetch_url(page_url, timeout=12))
+    fetched_pages = await asyncio.gather(*page_fetches, return_exceptions=True) if page_fetches else []
+
+    page_docs = [(home.get("final_url") or normalized, home_doc, home_meta, home_text)]
+    for idx, result in enumerate(fetched_pages):
+        page_url = pages_to_fetch[idx + 1]
+        if isinstance(result, Exception) or not result.get("ok"):
             continue
-        color = density_color(value)
-        clouds.append(
-            f'<ellipse cx="{gx:.1f}" cy="{gy:.1f}" rx="{95 + value*1.15:.1f}" ry="{22 + value*0.20:.1f}" '
-            f'fill="{color}" opacity="{0.09 + value/420:.3f}" filter="url(#heavyBlur)"/>'
+        doc = result.get("text") or ""
+        meta = extract_meta_and_links(doc, result.get("final_url") or page_url)
+        text = extract_visible_text(doc)
+        page_docs.append((result.get("final_url") or page_url, doc, meta, text))
+        all_text += " " + text
+        all_links.extend(meta.get("links", []))
+        all_headings.extend(meta.get("headings", []))
+        all_buttons.extend(meta.get("buttons", []))
+        forms_count += int(meta.get("forms_count") or 0)
+        scripts_src.extend(meta.get("scripts_src", []))
+        open_graph.update(meta.get("open_graph", {}))
+        structured_data_count += int(meta.get("structured_data_count") or 0)
+
+    internal_all, external_all, socials_all = split_links(home.get("final_url") or normalized, all_links)
+    contacts = extract_contacts(all_text, all_links)
+    features = detect_content_features(all_text + " " + home_doc, {"headings": list(dict.fromkeys(all_headings)), "scripts_src": scripts_src})
+
+    if home_meta.get("title"):
+        collected_fields.append("title")
+        evidence.add(platform, normalized, collector, "title", home_meta.get("title"), "high")
+    if home_meta.get("meta_description"):
+        collected_fields.append("meta_description")
+        evidence.add(platform, normalized, collector, "meta_description", home_meta.get("meta_description"), "high")
+    if all_headings:
+        collected_fields.append("headings")
+        evidence.add(platform, normalized, collector, "headings", list(dict.fromkeys(all_headings))[:20], "medium-high")
+    if len(all_text) > 200:
+        collected_fields.append("visible_text")
+        evidence.add(platform, normalized, collector, "visible_text_sample", truncate(all_text, 1400), "medium", raw_excerpt=all_text[:1600])
+    if internal_all:
+        collected_fields.append("internal_links")
+    if external_all:
+        collected_fields.append("external_links")
+    if any(socials_all.values()):
+        collected_fields.append("social_links")
+        evidence.add(platform, normalized, collector, "social_links_detected", {k: v for k, v in socials_all.items() if v}, "medium-high")
+    if all_buttons:
+        collected_fields.append("cta")
+        evidence.add(platform, normalized, collector, "cta_detected", list(dict.fromkeys(all_buttons))[:20], "medium-high")
+    if contacts["phones"]:
+        collected_fields.append("phones")
+        evidence.add(platform, normalized, collector, "phones_detected", contacts["phones"], "medium-high")
+    if contacts["emails"]:
+        collected_fields.append("emails")
+        evidence.add(platform, normalized, collector, "emails_detected", contacts["emails"], "medium-high")
+    if contacts["whatsapp"]:
+        collected_fields.append("whatsapp")
+        evidence.add(platform, normalized, collector, "whatsapp_detected", contacts["whatsapp"], "medium-high")
+    if forms_count:
+        collected_fields.append("forms")
+        evidence.add(platform, normalized, collector, "forms_detected", f"{forms_count} formulario(s) detectado(s)", "medium")
+    for fname, dtype, label in [
+        ("services_or_products", "services_or_products", "Señales de servicios/productos detectadas"),
+        ("pricing", "pricing", "Señales de precios/planes detectadas"),
+        ("faq", "faq", "Señales de FAQ/preguntas frecuentes detectadas"),
+        ("blog_or_news", "blog_or_news", "Señales de blog/noticias/contenido detectadas"),
+        ("testimonials_or_clients", "testimonials_or_clients", "Señales de testimonios/clientes/logos detectadas"),
+        ("website_claims", "website_claims", "Claims del sitio detectados; requieren verificación externa"),
+    ]:
+        if features.get(fname):
+            collected_fields.append(dtype)
+            evidence_type = "website_claim" if dtype == "website_claims" else "website_observed"
+            evidence.add(platform, normalized, collector, dtype, label, "medium", raw_excerpt=all_text[:1200], evidence_type=evidence_type)
+    if features.get("tracking_scripts"):
+        collected_fields.append("tracking_scripts")
+        evidence.add(platform, normalized, collector, "tracking_scripts_detected", features["tracking_scripts"], "medium", limitations=["Detectar un script no prueba que el tracking esté bien configurado."])
+    if open_graph or structured_data_count:
+        collected_fields.append("structured_data")
+        evidence.add(platform, normalized, collector, "metadata_structured_data", {"open_graph_keys": list(open_graph.keys()), "json_ld_blocks": structured_data_count}, "medium")
+
+    collected_fields = list(dict.fromkeys(collected_fields))
+    missing_fields = [f for f in EXPECTED_FIELDS[platform] if f not in collected_fields]
+
+    for page_url, _doc, meta, text in page_docs:
+        pages.append(
+            {
+                "url": page_url,
+                "title": meta.get("title"),
+                "word_count": len(text.split()),
+                "headings_sample": meta.get("headings", [])[:8],
+            }
         )
 
-    background_zones = []
-    band_labels = [
-        ("Caliente", "#7f1d1d", 0.23),
-        ("Templado", "#713f12", 0.15),
-        ("Tibio", "#064e3b", 0.13),
-        ("Frío", "#0f2a5f", 0.22),
-    ]
-    for label, color, opacity in band_labels:
-        cy = y_pos(label)
-        background_zones.append(
-            f'<rect x="{chart_x}" y="{cy - 38:.1f}" width="{chart_w}" height="76" '
-            f'fill="{color}" opacity="{opacity}" rx="12"/>'
+    reports.append(
+        collector_report(
+            collector,
+            platform,
+            "completed" if len(collected_fields) >= 8 else "partial",
+            "httpx+bs4+trafilatura",
+            normalized,
+            collected_fields=collected_fields,
+            missing_fields=missing_fields,
+            reason_code=None if len(collected_fields) >= 8 else "insufficient_public_data",
+            confidence="medium-high" if len(collected_fields) >= 8 else "medium",
+            details={
+                "http_status": home.get("status_code"),
+                "final_url": home.get("final_url"),
+                "elapsed_ms": home.get("elapsed_ms"),
+                "pages_read": len(page_docs),
+                "pages": pages,
+                "word_count_total": len(all_text.split()),
+                "internal_links_count": len(internal_all),
+                "external_links_count": len(external_all),
+                "social_links": {k: v for k, v in socials_all.items() if v},
+                "contact_summary": contacts,
+                "features": features,
+            },
         )
-
-    x_labels = []
-    for label in x_axis:
-        x = x_pos(label)
-        x_labels.append(
-            f'<text x="{x:.1f}" y="{chart_y - 36}" text-anchor="middle" font-size="15" font-weight="900" fill="#f9fafb">{h(label)}</text>'
-        )
-        x_labels.append(
-            f'<line x1="{x:.1f}" y1="{chart_y - 8}" x2="{x:.1f}" y2="{chart_y + chart_h + 8}" '
-            f'stroke="#94a3b8" stroke-width="0.8" opacity="0.22" stroke-dasharray="4 6"/>'
-        )
-
-    y_labels = []
-    for label in y_axis:
-        y = y_pos(label)
-        y_labels.append(
-            f'<text x="{chart_x - 25}" y="{y + 5:.1f}" text-anchor="end" font-size="14" font-weight="900" fill="#f9fafb">{h(label)}</text>'
-        )
-        y_labels.append(
-            f'<line x1="{chart_x - 6}" y1="{y:.1f}" x2="{chart_x + chart_w + 6}" y2="{y:.1f}" '
-            f'stroke="#94a3b8" stroke-width="0.8" opacity="0.20" stroke-dasharray="4 6"/>'
-        )
-
-    profile_parts = []
-    profile_rows = 44
-    for row in range(profile_rows):
-        py = chart_y + row * (chart_h / profile_rows) + (chart_h / profile_rows) / 2
-        samples = [
-            field_value(chart_x + col * (chart_w / 28), py, row, col)
-            for col in range(29)
-        ]
-        max_value = max(samples)
-        if max_value < 11:
-            continue
-
-        bar_w = 10 + max_value * 1.15
-        bar_h = max(3.0, chart_h / profile_rows * 0.70)
-        color = density_color(round(max_value))
-        opacity = min(0.88, 0.12 + max_value / 110)
-        profile_parts.append(
-            f'<rect x="{chart_x + chart_w + 18}" y="{py - bar_h/2:.1f}" width="{bar_w:.1f}" height="{bar_h:.1f}" '
-            f'rx="1.5" fill="{color}" opacity="{opacity:.3f}"/>'
-        )
-
-    dominant_cx = x_pos(density_map.dominant_zone.x)
-    dominant_cy = y_pos(density_map.dominant_zone.y)
-    blocked_cx = x_pos(density_map.blocked_zone.x)
-    blocked_cy = y_pos(density_map.blocked_zone.y)
-
-    markers = [
-        f'<circle cx="{dominant_cx:.1f}" cy="{dominant_cy:.1f}" r="18" fill="#ffffff" opacity="0.20" filter="url(#softGlow)"/>',
-        f'<circle cx="{dominant_cx:.1f}" cy="{dominant_cy:.1f}" r="13" fill="none" stroke="#ffffff" stroke-width="3"/>',
-        f'<text x="{dominant_cx:.1f}" y="{dominant_cy - 26:.1f}" text-anchor="middle" font-size="11" font-weight="900" fill="#ffffff">DOMINANTE</text>',
-        f'<circle cx="{blocked_cx:.1f}" cy="{blocked_cy:.1f}" r="16" fill="#fbbf24" opacity="0.20" filter="url(#softGlow)"/>',
-        f'<circle cx="{blocked_cx:.1f}" cy="{blocked_cy:.1f}" r="12" fill="none" stroke="#fbbf24" stroke-width="3"/>',
-        f'<text x="{blocked_cx:.1f}" y="{blocked_cy + 32:.1f}" text-anchor="middle" font-size="11" font-weight="900" fill="#fbbf24">BLOQUEO</text>',
-    ]
-
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="Customer intent density map">
-    <defs>
-      <filter id="heavyBlur" x="-45%" y="-220%" width="190%" height="540%">
-        <feGaussianBlur stdDeviation="20"/>
-      </filter>
-      <filter id="softGlow" x="-40%" y="-160%" width="180%" height="420%">
-        <feGaussianBlur stdDeviation="5"/>
-      </filter>
-      <radialGradient id="chartGlow" cx="50%" cy="45%" r="70%">
-        <stop offset="0%" stop-color="#1e293b"/>
-        <stop offset="100%" stop-color="#0f172a"/>
-      </radialGradient>
-    </defs>
-
-    <rect width="{width}" height="{height}" rx="28" fill="#0b1220"/>
-    <rect x="28" y="24" width="{width - 56}" height="{height - 48}" rx="26" fill="url(#chartGlow)" stroke="#1f2937" stroke-width="1"/>
-
-    <text x="{width/2}" y="58" text-anchor="middle" font-size="28" font-weight="900" fill="#f9fafb">Customer Intent Density Map</text>
-
-    <rect x="{chart_x - 12}" y="{chart_y - 12}" width="{chart_w + 24}" height="{chart_h + 24}" rx="16" fill="#020617" opacity="0.52" stroke="#334155" stroke-width="1"/>
-
-    {''.join(background_zones)}
-    {''.join(x_labels)}
-    {''.join(y_labels)}
-    {''.join(clouds)}
-    {''.join(raster_parts)}
-    {''.join(shelves)}
-    {''.join(profile_parts)}
-    {''.join(markers)}
-</svg>'''
-
-
-def build_visual_report_html(
-    result: ProspectWithResearchResponse,
-    awareness_svg: str,
-    temperature_svg: str,
-    density_svg: str,
-    blueprint_svg: str,
-    score_svg: str,
-    social_content_fit: Optional[SocialContentFitResponse] = None,
-    analysis_trace: Optional[AnalysisTrace] = None,
-    strategic_measures_matrix: Optional[StrategicMeasuresMatrix] = None,
-    clean_visual_assets: Optional[List[VisualAssetLink]] = None,
-    stable_output: Optional[StableAuditOutput] = None,
-    evidence_cross_check: Optional[EvidenceCrossCheckReport] = None,
-    deliverable_reliability: Optional[DeliverableReliabilityReport] = None,
-    analytical_core: Optional[AnalyticalCoreResult] = None,
-) -> str:
-    sources = ''.join([
-        f'''
-        <tr>
-          <td>{h(source.category)}</td>
-          <td>{h(source.title)}</td>
-          <td><a href="{h(source.url)}" target="_blank" rel="noopener">Abrir fuente</a></td>
-          <td>{h(source.signal)}</td>
-        </tr>
-        '''
-        for source in result.public_sources_summary
-    ])
-
-    actions = ''.join([
-        f'''
-        <div class="action-card">
-          <h3>{h(action.issue)}</h3>
-          <p><strong>Evidencia:</strong> {h(action.evidence)}</p>
-          <p><strong>Acción:</strong> {h(action.recommended_action)}</p>
-          <p><strong>Prioridad:</strong> {h(action.priority)} · <strong>Esfuerzo:</strong> {h(action.effort)}</p>
-          <p><strong>Impacto esperado:</strong> {h(action.expected_impact)}</p>
-          <p><strong>Validación:</strong> {h(action.verification_metric)}</p>
-        </div>
-        '''
-        for action in result.corrective_action_plan
-    ])
-
-    blueprint_current_items = ''.join([
-        f'<li><strong>A{index + 1}</strong> · {h(item)}</li>'
-        for index, item in enumerate(result.funnel_blueprint.current_flow)
-    ])
-
-    blueprint_break_items = ''.join([
-        f'<li><strong>R{index + 1}</strong> · {h(item)}</li>'
-        for index, item in enumerate(result.funnel_blueprint.breakpoints)
-    ])
-
-    blueprint_rebuild_items = ''.join([
-        f'<li><strong>S{index + 1}</strong> · {h(item)}</li>'
-        for index, item in enumerate(result.funnel_blueprint.recommended_flow)
-    ])
-
-    blueprint_missing_items = ''.join([
-        f'<li>{h(item)}</li>'
-        for item in result.funnel_blueprint.missing_links
-    ])
-
-    awareness_connection_items = ''.join([
-        f'<li><strong>Qué mide:</strong> el awareness funnel no mide cantidad real de usuarios; ubica el nivel probable de conciencia comercial según la evidencia disponible.</li>',
-        f'<li><strong>Etapas:</strong> Unaware no reconoce el problema; Problem Aware reconoce dolor; Solution Aware compara soluciones; Product Aware ya entiende la oferta; Most Aware está cerca de decidir.</li>',
-        f'<li><strong>Distribución:</strong> los porcentajes son una concentración diagnóstica, no tráfico real. Sirven para explicar dónde conviene hablarle al público.</li>',
-        f'<li><strong>Etapa dominante:</strong> {h(result.awareness_funnel_locator.dominant_stage)} indica dónde parece estar el mayor peso de conciencia actual.</li>',
-        f'<li><strong>Etapa bloqueada:</strong> {h(result.awareness_funnel_locator.blocked_stage)} indica la transición donde el público probablemente deja de avanzar.</li>',
-        f'<li><strong>Relación con medidas:</strong> si el bloqueo está temprano, se corrige mensaje y educación; si está tarde, se corrige prueba, CTA, confianza y seguimiento.</li>',
-    ])
-
-    awareness_script = (
-        f"Este funnel muestra en qué nivel de conciencia parece estar el público. "
-        f"Hoy la concentración dominante está en {h(result.awareness_funnel_locator.dominant_stage)} y el avance se bloquea en {h(result.awareness_funnel_locator.blocked_stage)}. "
-        "No significa volumen real de tráfico; significa dónde debemos ajustar comunicación para mover al usuario hacia una oportunidad más calificada."
     )
-
-    density_connection_items = ''.join([
-        f'<li><strong>Eje horizontal:</strong> ordena el avance comercial de {h(" → ".join(result.customer_intent_density_map.x_axis))}. Sirve para explicar en qué parte del recorrido se acumula o se pierde intención.</li>',
-        f'<li><strong>Eje vertical:</strong> ordena la temperatura de {h(" → ".join(result.customer_intent_density_map.y_axis))}. Frío implica atención débil; templado implica interés con posibilidad de avance; caliente implica predisposición más cercana a acción.</li>',
-        f'<li><strong>Color e intensidad:</strong> el azul indica baja temperatura, el verde/amarillo indica transición y el naranja/rojo indica mayor calor comercial inferido. Más densidad visual significa mayor concentración diagnóstica.</li>',
-        f'<li><strong>Zona dominante:</strong> {h(result.customer_intent_density_map.dominant_zone.x)} / {h(result.customer_intent_density_map.dominant_zone.y)} muestra dónde está el grueso del público según las señales disponibles.</li>',
-        f'<li><strong>Zona bloqueada:</strong> {h(result.customer_intent_density_map.blocked_zone.x)} / {h(result.customer_intent_density_map.blocked_zone.y)} muestra dónde el público deja de avanzar. Esa zona se conecta con el FAULT del blueprint.</li>',
-        f'<li><strong>Relación con el blueprint:</strong> el heatmap muestra dónde se concentra y bloquea la intención; el blueprint muestra qué parte del sistema comercial habría que rediseñar para mover esa intención hacia conversión.</li>',
-        f'<li><strong>Límite metodológico:</strong> este mapa es diagnóstico e inferido; no reemplaza datos reales de GA4, CRM, campañas, Hotjar/Clarity o formularios.</li>',
-    ])
-
-    density_script = (
-        f"Este mapa no muestra solo colores: muestra movimiento comercial. "
-        f"El público se concentra en {h(result.customer_intent_density_map.dominant_zone.x)} / {h(result.customer_intent_density_map.dominant_zone.y)}, "
-        f"pero el avance se frena en {h(result.customer_intent_density_map.blocked_zone.x)} / {h(result.customer_intent_density_map.blocked_zone.y)}. "
-        f"La lectura es que existe intención o atención, pero el sistema necesita mejorar la conexión entre interés, confianza y acción."
-    )
-
-    blueprint_connection_items = ''.join([
-        '<li><strong>Nodos hexagonales:</strong> cada hexágono representa un punto funcional del sistema comercial. A1–A5 son la ruta actual; S1–S5 son la ruta recomendada; SL-01–SL-05 son nodos de soporte.</li>',
-        '<li><strong>Ruta azul A1–A5:</strong> muestra el recorrido actual, no necesariamente ideal. Explica cómo una persona pasa de ver la marca a mostrar interés, comparar y terminar en una consulta que puede ser débil o poco calificada.</li>',
-        '<li><strong>FAULT:</strong> marca la ruptura principal del sistema. No es un error visual: es el punto donde se pierde avance comercial por propuesta de valor, confianza, CTA, diferenciación, tracking o seguimiento insuficiente.</li>',
-        '<li><strong>DG / Diagnosis Gate:</strong> explica la transición entre problema y solución. La ruta verde no nace mágicamente del fallo; nace del diagnóstico que convierte la ruptura en rediseño.</li>',
-        '<li><strong>Ruta verde S1–S5:</strong> muestra el recorrido recomendado. Cada nodo verde es una corrección estratégica que intenta mover al usuario desde interés disperso hacia decisión o consulta más calificada.</li>',
-        '<li><strong>Support Layer SL:</strong> representa la infraestructura que alimenta la ruta recomendada. No es una etapa extra del funnel; son activos que hacen posible que S1–S5 funcionen: mensajes, prueba, objeciones, CTA y follow-up.</li>',
-        '<li><strong>Conexiones moradas:</strong> muestran cómo los nodos SL alimentan la ruta verde. Sirven para explicar que la conversión no depende solo de publicar más, sino de sostener el recorrido con evidencia, claridad y seguimiento.</li>',
-        '<li><strong>OUT:</strong> representa la salida buscada: oportunidad comercial más calificada, más defendible y con menor fricción.</li>',
-    ])
-
-    blueprint_script = (
-        "Este blueprint se lee de izquierda a derecha. Primero está la ruta azul: lo que la empresa ya hace. "
-        "Luego aparece FAULT: el punto donde el avance se rompe. DG es la compuerta de diagnóstico: convierte la ruptura en criterio de rediseño. "
-        "La ruta verde muestra cómo debería moverse el cliente después del rediseño. Abajo, el Support Layer alimenta esa ruta verde con mensajes, prueba, manejo de objeciones, CTA y seguimiento."
-    )
-
-
-    evidence_section = ""
-    if evidence_cross_check:
-        evidence_items = "".join([
-            f"""
-            <tr>
-              <td>{h(item.evidence_group)}</td>
-              <td>{h(item.source_label)}</td>
-              <td>{h(item.signal)}</td>
-              <td>{h(', '.join(item.used_for[:4]))}</td>
-              <td>{h(item.confidence)}</td>
-            </tr>
-            """
-            for item in evidence_cross_check.evidence_items[:14]
-        ])
-        crossed = "".join([f"<li>{h(signal)}</li>" for signal in evidence_cross_check.crossed_signals])
-        missing = "".join([f"<li>{h(item)}</li>" for item in evidence_cross_check.missing_data])
-        evidence_section = f"""
-        <section class="card full">
-          <h2>Control anti-genérico / cruce de evidencia</h2>
-          <p><strong>Estado:</strong> {h(evidence_cross_check.status)} · <strong>Riesgo de salida genérica:</strong> {h(evidence_cross_check.generic_output_risk)} · <strong>Visuales permitidos:</strong> {h(str(evidence_cross_check.visual_generation_allowed))}</p>
-          <p>{h(evidence_cross_check.explanation)}</p>
-          <div class="script-box">
-            <p><strong>Regla aplicada:</strong> {h(evidence_cross_check.rule_applied)}</p>
-          </div>
-          <h3>Señales cruzadas antes de generar mapas</h3>
-          <ul>{crossed or '<li>No hay señales cruzadas suficientes.</li>'}</ul>
-          <h3>Datos faltantes que limitan precisión</h3>
-          <ul>{missing or '<li>Sin faltantes críticos declarados por el motor.</li>'}</ul>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Grupo</th><th>Fuente</th><th>Señal usada</th><th>Usado para</th><th>Confianza</th></tr></thead>
-              <tbody>{evidence_items or '<tr><td colspan="5">Sin evidencia suficiente.</td></tr>'}</tbody>
-            </table>
-          </div>
-        </section>
-        """
-
-    reliability_section = ""
-    if deliverable_reliability:
-        rel_risks = "".join([f"<li>{h(item)}</li>" for item in deliverable_reliability.risks])
-        rel_required = "".join([f"<li>{h(item)}</li>" for item in deliverable_reliability.required_next_validation])
-        keys = deliverable_reliability.comparison_keys or {}
-        reliability_section = f"""
-        <section class="card full">
-          <h2>Stability output / confiabilidad del entregable</h2>
-          <p><strong>Estado del archivo:</strong> {h(deliverable_reliability.reliability_status)} · <strong>Seguro para presentar:</strong> {h(str(deliverable_reliability.safe_to_present))} · <strong>Seguro para ejecutar acciones:</strong> {h(str(deliverable_reliability.safe_to_execute_actions))}</p>
-          <p>{h(deliverable_reliability.file_confidence_summary)}</p>
-          <p><strong>canonical_input_hash:</strong> {h(str(keys.get('canonical_input_hash')))} · <strong>sources_hash:</strong> {h(str(keys.get('sources_hash')))}</p>
-          <p><strong>analysis_version:</strong> {h(str(keys.get('analysis_version')))} · <strong>ruleset_version:</strong> {h(str(keys.get('ruleset_version')))} · <strong>analysis_mode:</strong> {h(str(keys.get('analysis_mode')))}</p>
-          <h3>Riesgos</h3>
-          <ul>{rel_risks or '<li>Sin riesgos críticos detectados.</li>'}</ul>
-          <h3>Validaciones siguientes</h3>
-          <ul>{rel_required or '<li>No requiere validación adicional para uso preliminar.</li>'}</ul>
-        </section>
-        """
-    elif stable_output:
-        reliability_section = f"""
-        <section class="card full">
-          <h2>Stability output</h2>
-          <p><strong>stability_status:</strong> {h(stable_output.stability_status)} · <strong>safe_to_present:</strong> {h(str(stable_output.safe_to_present))} · <strong>safe_to_execute_actions:</strong> {h(str(stable_output.safe_to_execute_actions))}</p>
-          <p>{h(stable_output.stability_reason)}</p>
-        </section>
-        """
-
-
-    social_section = ""
-    if social_content_fit:
-        platform_cards = ''.join([
-            f'''
-            <div class="blueprint-code-card">
-              <h3>{h(audit.platform)} · Fit {audit.platform_fit_score}/100</h3>
-              <p><strong>Hook:</strong> {audit.hook_quality_score}/100 · <strong>Riesgo retención:</strong> {audit.retention_risk_score}/100 · <strong>CTA:</strong> {audit.cta_score}/100</p>
-              <p><strong>Issues:</strong> {h("; ".join(audit.detected_issues[:3]))}</p>
-              <p><strong>Mejoras:</strong> {h("; ".join(audit.recommended_improvements[:3]))}</p>
-              <p class="muted">{h(audit.limitation)}</p>
-            </div>
-            '''
-            for audit in social_content_fit.platform_audits
-        ])
-        action_items = ''.join([
-            f'<li><strong>{h(action.platform)}:</strong> {h(action.issue)} → {h(action.recommended_action)}</li>'
-            for action in social_content_fit.recommended_actions[:6]
-        ])
-        social_section = f'''
-        <section class="card full">
-          <h2>Social Content Fit Audit</h2>
-          <p><strong>Score general:</strong> {social_content_fit.overall_social_content_fit_score}/100 · <strong>Brecha principal:</strong> {h(social_content_fit.primary_content_gap)}</p>
-          <p>{h(social_content_fit.strategic_summary)}</p>
-          <div class="blueprint-code-grid">
-            {platform_cards}
-          </div>
-          <div class="explanation-card">
-            <h3>Acciones recomendadas para contenido por plataforma</h3>
-            <ul>{action_items or '<li>No hay acciones sociales suficientes con la información actual.</li>'}</ul>
-            <div class="script-box">
-              <p><strong>Límite metodológico:</strong> este módulo puede detectar riesgo estructural de baja retención con señales públicas y muestras. Para confirmar baja retención real hacen falta métricas internas de TikTok/Instagram/Meta.</p>
-            </div>
-          </div>
-        </section>
-        '''
-
-
-    clean_assets_section = ""
-    if clean_visual_assets:
-        clean_links = "".join([
-            f'<li><strong>{h(asset.asset_type)}:</strong> <a href="{h(asset.url)}" target="_blank" rel="noopener">Descargar PNG transparente sin texto</a></li>'
-            for asset in clean_visual_assets
-        ])
-        clean_assets_section = f"""
-        <section class="card full">
-          <h2>Gráficos limpios para integrar en reportes</h2>
-          <p>Versiones PNG con fondo transparente y sin textos, números ni leyendas. Sirven para insertar en documentos diseñados aparte.</p>
-          <ul>{clean_links}</ul>
-        </section>
-        """
-
-    analysis_trace_section = ""
-    if analysis_trace:
-        modules = ", ".join(analysis_trace.modules_used)
-        score_items = "".join([
-            f"<li><strong>{h(str(key))}:</strong> {h(str(value))}</li>"
-            for key, value in analysis_trace.score_breakdown.items()
-        ])
-        analysis_trace_section = f"""
-        <section class="card full">
-          <h2>Analysis Trace / trazabilidad del diagnóstico</h2>
-          <p><strong>Modo:</strong> {h(analysis_trace.analysis_mode)} · <strong>Versión:</strong> {h(analysis_trace.analysis_version)} · <strong>Ruleset:</strong> {h(analysis_trace.ruleset_version)}</p>
-          <p><strong>Módulos usados:</strong> {h(modules)}</p>
-          <p><strong>Input hash:</strong> {h(analysis_trace.input_hash)} · <strong>Sources hash:</strong> {h(analysis_trace.sources_hash)}</p>
-          <p><strong>Diagnóstico base:</strong> {h(analysis_trace.base_diagnosis)}</p>
-          <p><strong>Overlay social:</strong> {h(analysis_trace.social_overlay or "No activo")}</p>
-          <p><strong>Overlay performance:</strong> {h(analysis_trace.performance_overlay or "No activo")}</p>
-          <p><strong>Diagnóstico final:</strong> {h(analysis_trace.final_diagnosis)}</p>
-          <p><strong>Por qué llegó a esta conclusión:</strong> {h(analysis_trace.diagnosis_change_reason)}</p>
-          <ul>{score_items}</ul>
-          <div class="script-box">
-            <p><strong>Nota de comparabilidad:</strong> {h(analysis_trace.comparability_note)}</p>
-          </div>
-        </section>
-        """
-
-
-    strategic_measures_section = ""
-    if strategic_measures_matrix:
-        measure_cards = "".join([
-            f"""
-            <div class="action-card">
-              <h3>{h(measure.measure_name)}</h3>
-              <p><strong>Área:</strong> {h(measure.area)} - <strong>Prioridad:</strong> {h(measure.priority)} - <strong>Confianza:</strong> {h(measure.confidence)}</p>
-              <p><strong>Problema:</strong> {h(measure.problem_addressed)}</p>
-              <p><strong>Base de decisión:</strong> {h(measure.decision_basis)}</p>
-              <p><strong>Variante recomendada:</strong> {h(measure.implementation_variants[0].variant_name if measure.implementation_variants else "sin variante")} - <strong>Score:</strong> {h(str(measure.implementation_variants[0].score_1_to_10 if measure.implementation_variants else "N/A"))}/10</p>
-              <p><strong>Métrica:</strong> {h(", ".join(measure.validation_metrics[:3]))}</p>
-            </div>
-            """
-            for measure in strategic_measures_matrix.measures[:6]
-        ])
-        strategic_measures_section = f"""
-        <section class="card full">
-          <h2>Matriz estratégica de medidas comerciales</h2>
-          <p>{h(strategic_measures_matrix.summary)}</p>
-          <div class="script-box">
-            <p><strong>Lógica:</strong> {h(strategic_measures_matrix.decision_logic)}</p>
-          </div>
-          {measure_cards}
-        </section>
-        """
-
-
-    return f'''<!doctype html>
-<html lang="es">
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Reporte visual — {h(result.company_name)}</title>
-  <style>
-    body {{
-      margin: 0;
-      background: #f4f1eb;
-      color: #111827;
-      font-family: Arial, Helvetica, sans-serif;
-    }}
-    .page {{
-      max-width: 1120px;
-      margin: 0 auto;
-      padding: 32px 20px 64px;
-    }}
-    .hero {{
-      background: #111827;
-      color: white;
-      border-radius: 24px;
-      padding: 32px;
-      margin-bottom: 22px;
-    }}
-    .hero h1 {{
-      margin: 0 0 10px;
-      font-size: 34px;
-      letter-spacing: -0.04em;
-    }}
-    .hero p {{
-      margin: 0 0 8px;
-      color: #d1d5db;
-      max-width: 850px;
-      line-height: 1.5;
-    }}
-    .grid {{
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 20px;
-    }}
-    .card {{
-      background: #ffffff;
-      border: 1px solid #e5e7eb;
-      border-radius: 24px;
-      padding: 22px;
-      box-shadow: 0 12px 30px rgba(17, 24, 39, 0.08);
-      margin-bottom: 20px;
-      overflow: hidden;
-    }}
-    .card h2 {{
-      margin: 0 0 14px;
-      font-size: 21px;
-      letter-spacing: -0.03em;
-    }}
-    .full {{
-      grid-column: 1 / -1;
-    }}
-    .table-wrap {{
-      overflow-x: auto;
-    }}
-    table {{
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13px;
-    }}
-    th, td {{
-      border-bottom: 1px solid #e5e7eb;
-      text-align: left;
-      vertical-align: top;
-      padding: 10px;
-    }}
-    th {{
-      background: #f9fafb;
-    }}
-    .action-card {{
-      border: 1px solid #e5e7eb;
-      border-left: 5px solid #22c55e;
-      border-radius: 16px;
-      padding: 16px;
-      margin: 12px 0;
-      background: #fcfcfc;
-    }}
-    .action-card h3 {{
-      margin: 0 0 8px;
-    }}
-    .action-card p {{
-      margin: 6px 0;
-      line-height: 1.45;
-    }}
-    .muted {{
-      color: #6b7280;
-    }}
-    .visual-note-grid {{
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
-      margin-top: 14px;
-    }}
-    .visual-note {{
-      background: #ffffff;
-      border: 1px solid #e5e7eb;
-      border-radius: 16px;
-      padding: 14px 16px;
-      color: #111827;
-      line-height: 1.45;
-      box-shadow: 0 8px 18px rgba(17, 24, 39, 0.06);
-    }}
-    .visual-note h3 {{
-      margin: 0 0 8px;
-      font-size: 15px;
-      letter-spacing: -0.02em;
-    }}
-    .legend-bar {{
-      height: 12px;
-      border-radius: 999px;
-      background: linear-gradient(90deg, #2563eb 0%, #0ea5e9 35%, #84cc16 55%, #f59e0b 75%, #ef4444 100%);
-      margin: 8px 0 6px;
-    }}
-    .legend-labels {{
-      display: flex;
-      justify-content: space-between;
-      font-size: 12px;
-      color: #4b5563;
-      font-weight: 700;
-      gap: 10px;
-    }}
-    .blueprint-code-grid {{
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 14px;
-      margin-top: 14px;
-    }}
-    .blueprint-code-card {{
-      background: #ffffff;
-      border: 1px solid #e5e7eb;
-      border-radius: 16px;
-      padding: 14px 16px;
-      color: #111827;
-      box-shadow: 0 8px 18px rgba(17, 24, 39, 0.06);
-    }}
-    .blueprint-code-card h3 {{
-      margin: 0 0 10px;
-      font-size: 15px;
-      letter-spacing: -0.02em;
-    }}
-    .blueprint-code-card ul {{
-      margin: 0;
-      padding-left: 18px;
-    }}
-    .blueprint-code-card li {{
-      margin: 6px 0;
-      line-height: 1.35;
-    }}
-    .explanation-card {{
-      background: #ffffff;
-      border: 1px solid #e5e7eb;
-      border-radius: 16px;
-      padding: 16px 18px;
-      color: #111827;
-      line-height: 1.5;
-      box-shadow: 0 8px 18px rgba(17, 24, 39, 0.06);
-      margin-top: 14px;
-    }}
-    .explanation-card h3 {{
-      margin: 0 0 10px;
-      font-size: 16px;
-      letter-spacing: -0.02em;
-    }}
-    .explanation-card ul {{
-      margin: 0;
-      padding-left: 18px;
-    }}
-    .explanation-card li {{
-      margin: 7px 0;
-    }}
-    .script-box {{
-      margin-top: 12px;
-      padding: 12px 14px;
-      border-radius: 12px;
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      color: #334155;
-    }}
-    .script-box p {{
-      margin: 6px 0;
-    }}
-    @media print {{
-      body {{ background: white; }}
-      .card, .hero {{ box-shadow: none; break-inside: avoid; }}
-    }}
-    @media (max-width: 900px) {{
-      .grid {{ grid-template-columns: 1fr; }}
-      .visual-note-grid {{ grid-template-columns: 1fr; }}
-      .blueprint-code-grid {{ grid-template-columns: 1fr; }}
-    }}
-  </style>
-</head>
-<body>
-  <main class="page">
-    <section class="hero">
-      <h1>Reporte visual de auditoría comercial</h1>
-      <p><strong>{h(result.company_name)}</strong> · Confianza de investigación: {h(result.research_confidence)} · Tipo: {h(result.audit_type)}</p>
-      <p>{h(result.diagnosis_initial)}</p>
-    </section>
-
-    {reliability_section}
-
-    {evidence_section}
-
-    {social_section}
-
-    {analysis_trace_section}
-
-    {strategic_measures_section}
-
-    {clean_assets_section}
-
-    <section class="grid">
-      <div class="card">{score_svg}</div>
-      <div class="card">
-        {awareness_svg}
-        <div class="explanation-card">
-          <h3>Cómo explicar el Awareness Funnel</h3>
-          <ul>{awareness_connection_items}</ul>
-          <div class="script-box">
-            <p><strong>Guion de lectura:</strong> {awareness_script}</p>
-          </div>
-        </div>
-      </div>
-      <div class="card full">
-        {density_svg}
-        <div class="visual-note-grid">
-          <div class="visual-note">
-            <h3>Lectura de temperatura</h3>
-            <div class="legend-bar"></div>
-            <div class="legend-labels">
-              <span>Azul = frío</span>
-              <span>Verde/amarillo = templado</span>
-              <span>Rojo = caliente</span>
-            </div>
-          </div>
-          <div class="visual-note">
-            <h3>Interpretación del mapa</h3>
-            <p>{h(result.customer_intent_density_map.interpretation)}</p>
-            <p><strong>Zona dominante:</strong> {h(result.customer_intent_density_map.dominant_zone.x)} / {h(result.customer_intent_density_map.dominant_zone.y)}</p>
-            <p><strong>Zona bloqueada:</strong> {h(result.customer_intent_density_map.blocked_zone.x)} / {h(result.customer_intent_density_map.blocked_zone.y)}</p>
-          </div>
-        </div>
-        <div class="explanation-card">
-          <h3>Cómo explicar las conexiones del heatmap</h3>
-          <ul>{density_connection_items}</ul>
-          <div class="script-box">
-            <p><strong>Guion de lectura:</strong> {density_script}</p>
-          </div>
-        </div>
-      </div>
-      <div class="card full">{temperature_svg}</div>
-      <div class="card full">
-        {blueprint_svg}
-        <div class="blueprint-code-grid">
-          <div class="blueprint-code-card">
-            <h3>Current path · A-codes</h3>
-            <ul>{blueprint_current_items or '<li>No current-flow items detected.</li>'}</ul>
-          </div>
-          <div class="blueprint-code-card">
-            <h3>Rupture zone · R-codes</h3>
-            <ul>{blueprint_break_items or '<li>No rupture points detected.</li>'}</ul>
-          </div>
-          <div class="blueprint-code-card">
-            <h3>Rebuild route · S-codes</h3>
-            <ul>{blueprint_rebuild_items or '<li>No rebuild items detected.</li>'}</ul>
-          </div>
-          <div class="blueprint-code-card">
-            <h3>Missing links / support layer</h3>
-            <ul>{blueprint_missing_items or '<li>No missing links detected.</li>'}</ul>
-            <p><strong>Lectura:</strong> {h(result.funnel_blueprint.summary)}</p>
-          </div>
-        </div>
-        <div class="explanation-card">
-          <h3>Cómo explicar el blueprint completo</h3>
-          <ul>{blueprint_connection_items}</ul>
-          <div class="script-box">
-            <p><strong>Guion de lectura:</strong> {blueprint_script}</p>
-          </div>
-        </div>
-      </div>
-
-      <div class="card full">
-        <h2>Fuentes públicas revisadas</h2>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Categoría</th>
-                <th>Título</th>
-                <th>URL</th>
-                <th>Señal</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sources or '<tr><td colspan="4">No se detectaron fuentes públicas suficientemente fuertes.</td></tr>'}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="card full">
-        <h2>Plan de acción recomendado</h2>
-        {actions}
-      </div>
-
-      <div class="card full">
-        <h2>Próximo paso comercial</h2>
-        <p>{h(result.next_step)}</p>
-        <p class="muted">Límite de esta entrega: no incluye calendario completo, copys finales, segmentaciones detalladas, arquitectura completa de funnel ni implementación paso a paso.</p>
-      </div>
-    </section>
-  </main>
-</body>
-</html>'''
-
-
-# ---------------------------------------------------------------------
-# Clean transparent PNG visual assets.
-# These are intentionally text-free for use inside designed reports.
-# They use a small pure-Python PNG renderer to avoid adding heavy dependencies.
-# ---------------------------------------------------------------------
-
-def rgba_canvas(width: int, height: int) -> bytearray:
-    return bytearray([0, 0, 0, 0] * width * height)
-
-
-def rgba_tuple(color: str, alpha: int = 255) -> tuple:
-    color = (color or "").strip()
-    if color.startswith("#") and len(color) == 7:
-        return (int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16), alpha)
-    if color.startswith("rgb("):
-        nums = color.replace("rgb(", "").replace(")", "").split(",")
-        return (int(nums[0]), int(nums[1]), int(nums[2]), alpha)
-    return (0, 0, 0, alpha)
-
-
-def blend_pixel(canvas: bytearray, width: int, height: int, x: int, y: int, color: tuple):
-    if x < 0 or y < 0 or x >= width or y >= height:
-        return
-    r, g, b, a = color
-    if a <= 0:
-        return
-    idx = (y * width + x) * 4
-    dst_r, dst_g, dst_b, dst_a = canvas[idx], canvas[idx+1], canvas[idx+2], canvas[idx+3]
-    src_a = a / 255
-    dst_af = dst_a / 255
-    out_a = src_a + dst_af * (1 - src_a)
-    if out_a <= 0:
-        return
-    canvas[idx] = int((r * src_a + dst_r * dst_af * (1 - src_a)) / out_a)
-    canvas[idx+1] = int((g * src_a + dst_g * dst_af * (1 - src_a)) / out_a)
-    canvas[idx+2] = int((b * src_a + dst_b * dst_af * (1 - src_a)) / out_a)
-    canvas[idx+3] = int(out_a * 255)
-
-
-def draw_rect(canvas: bytearray, width: int, height: int, x: int, y: int, w: int, hgt: int, color: tuple):
-    x0, x1 = max(0, int(x)), min(width, int(x + w))
-    y0, y1 = max(0, int(y)), min(height, int(y + hgt))
-    for yy in range(y0, y1):
-        for xx in range(x0, x1):
-            blend_pixel(canvas, width, height, xx, yy, color)
-
-
-def draw_circle(canvas: bytearray, width: int, height: int, cx: float, cy: float, radius: float, color: tuple):
-    r = int(max(1, radius))
-    x0, x1 = int(cx - r), int(cx + r)
-    y0, y1 = int(cy - r), int(cy + r)
-    rr = radius * radius
-    for yy in range(y0, y1 + 1):
-        for xx in range(x0, x1 + 1):
-            if (xx - cx) ** 2 + (yy - cy) ** 2 <= rr:
-                blend_pixel(canvas, width, height, xx, yy, color)
-
-
-def draw_line(canvas: bytearray, width: int, height: int, x1: float, y1: float, x2: float, y2: float, color: tuple, thickness: float = 3):
-    steps = int(max(abs(x2 - x1), abs(y2 - y1), 1))
-    for step in range(steps + 1):
-        t = step / steps
-        x = x1 + (x2 - x1) * t
-        y = y1 + (y2 - y1) * t
-        draw_circle(canvas, width, height, x, y, thickness / 2, color)
-
-
-def draw_polyline(canvas: bytearray, width: int, height: int, points: List[tuple], color: tuple, thickness: float = 4):
-    for i in range(1, len(points)):
-        draw_line(canvas, width, height, points[i-1][0], points[i-1][1], points[i][0], points[i][1], color, thickness)
-
-
-def draw_polygon(canvas: bytearray, width: int, height: int, points: List[tuple], color: tuple):
-    if len(points) < 3:
-        return
-    min_y = max(0, int(min(y for _, y in points)))
-    max_y = min(height - 1, int(max(y for _, y in points)))
-    for y in range(min_y, max_y + 1):
-        intersections = []
-        for i in range(len(points)):
-            x1, y1 = points[i]
-            x2, y2 = points[(i + 1) % len(points)]
-            if y1 == y2:
-                continue
-            if (y >= min(y1, y2)) and (y < max(y1, y2)):
-                x = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
-                intersections.append(x)
-        intersections.sort()
-        for i in range(0, len(intersections), 2):
-            if i + 1 >= len(intersections):
-                break
-            x_start = max(0, int(intersections[i]))
-            x_end = min(width - 1, int(intersections[i + 1]))
-            for x in range(x_start, x_end + 1):
-                blend_pixel(canvas, width, height, x, y, color)
-
-
-def encode_png_rgba(width: int, height: int, canvas: bytearray) -> bytes:
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
-
-    raw = bytearray()
-    stride = width * 4
-    for y in range(height):
-        raw.append(0)
-        start = y * stride
-        raw.extend(canvas[start:start + stride])
-
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
-        + chunk(b"IDAT", zlib.compress(bytes(raw), 6))
-        + chunk(b"IEND", b"")
-    )
-
-
-def render_awareness_funnel_clean_png(locator: AwarenessFunnelLocator) -> bytes:
-    width, height = 1000, 650
-    canvas = rgba_canvas(width, height)
-    cx = width / 2
-    top_y = 80
-    segment_h = 82
-    gap = 18
-    top_w = 800
-    shrink = 108
-
-    for index, stage in enumerate(locator.stage_distribution):
-        y1 = top_y + index * (segment_h + gap)
-        y2 = y1 + segment_h
-        w1 = top_w - index * shrink
-        w2 = top_w - (index + 1) * shrink
-        x1 = cx - w1 / 2
-        x2 = cx + w1 / 2
-        x3 = cx + w2 / 2
-        x4 = cx - w2 / 2
-        if stage.state == "dominant":
-            fill = rgba_tuple("#22c55e", 235)
-            stroke = rgba_tuple("#15803d", 255)
-        elif stage.state == "blocked":
-            fill = rgba_tuple("#f59e0b", 215)
-            stroke = rgba_tuple("#d97706", 255)
-        elif stage.state == "secondary":
-            fill = rgba_tuple("#93c5fd", 170)
-            stroke = rgba_tuple("#2563eb", 210)
-        else:
-            fill = rgba_tuple("#cbd5e1", 130)
-            stroke = rgba_tuple("#64748b", 160)
-        polygon = [(x1, y1), (x2, y1), (x3, y2), (x4, y2)]
-        draw_polygon(canvas, width, height, polygon, fill)
-        for a, b in zip(polygon, polygon[1:] + [polygon[0]]):
-            draw_line(canvas, width, height, a[0], a[1], b[0], b[1], stroke, 4)
-    return encode_png_rgba(width, height, canvas)
-
-
-def render_customer_intent_density_clean_png(density_map: CustomerIntentDensityMap) -> bytes:
-    width, height = 1200, 650
-    canvas = rgba_canvas(width, height)
-    x_axis = density_map.x_axis
-    y_axis = density_map.y_axis
-    chart_x, chart_y, chart_w, chart_h = 120, 90, 960, 470
-    stage_step = chart_w / (len(x_axis) - 1)
-    temp_step = chart_h / (len(y_axis) - 1)
-
-    def x_pos(label: str) -> float:
-        return chart_x + x_axis.index(label) * stage_step
-
-    def y_pos(label: str) -> float:
-        return chart_y + (len(y_axis) - 1 - y_axis.index(label)) * temp_step
-
-    points = [
-        (x_pos(point.x), y_pos(point.y), max(0, min(int(point.value), 100)))
-        for point in density_map.density_points
-    ]
-
-    def deterministic_noise(row: int, col: int, salt: int = 0) -> float:
-        raw = (row * 92821 + col * 68917 + row * col * 193 + salt * 8347) % 1000
-        return raw / 1000
-
-    def field_value(px: float, py: float, row: int, col: int) -> float:
-        total = 0.0
-        for gx, gy, value in points:
-            dx = (px - gx) / 190
-            dy = (py - gy) / 48
-            total += value * math.exp(-0.5 * ((dx * dx) + (dy * dy)))
-        y_ratio = (py - chart_y) / chart_h
-        temp_bias = 7 + (1 - y_ratio) * 8
-        noise = 0.72 + deterministic_noise(row, col, 11) * 0.58
-        return max(0, min(100, (total * 0.64 + temp_bias) * noise))
-
-    rows, cols = 80, 98
-    cell_w, cell_h = chart_w / cols, chart_h / rows
-    for row in range(rows):
-        py = chart_y + row * cell_h + cell_h / 2
-        for col in range(cols):
-            px = chart_x + col * cell_w + cell_w / 2
-            value = field_value(px, py, row, col)
-            noise = deterministic_noise(row, col, 23)
-            if value < 12 and noise < 0.72:
-                continue
-            color = rgba_tuple(density_color(round(value)), int(min(210, 28 + value * 2.05)))
-            frag_w = max(2, int(cell_w * (0.50 + noise * 1.35)))
-            frag_h = max(2, int(cell_h * (0.45 + deterministic_noise(row, col, 31) * 0.8)))
-            draw_rect(canvas, width, height, int(px - frag_w / 2), int(py - frag_h / 2), frag_w, frag_h, color)
-
-    for gx, gy, value in points:
-        if value >= 35:
-            glow = rgba_tuple(density_color(value), min(190, 55 + value))
-            for r in [80, 52, 28]:
-                draw_circle(canvas, width, height, gx, gy, r, (glow[0], glow[1], glow[2], max(12, int(glow[3] / (r / 20)))))
-        if value >= 55:
-            draw_circle(canvas, width, height, gx, gy, 16, rgba_tuple("#ef4444", 230))
-    return encode_png_rgba(width, height, canvas)
-
-
-
-def render_blueprint_clean_png(blueprint: FunnelBlueprint) -> bytes:
-    width, height = 1320, 720
-    canvas = rgba_canvas(width, height)
-
-    fingerprint = make_stable_hash({
-        "current_flow": blueprint.current_flow,
-        "breakpoints": blueprint.breakpoints,
-        "recommended_flow": blueprint.recommended_flow,
-        "missing_links": blueprint.missing_links,
-        "summary": blueprint.summary,
-    })
-    seed = int(fingerprint[:8], 16)
-
-    def jitter(index: int, span: int = 28) -> int:
-        raw = (seed >> ((index % 8) * 4)) + index * 7919
-        return int((raw % (span * 2 + 1)) - span)
-
-    # Transparent blueprint grid only as subtle strokes, with deterministic offset per diagnosis.
-    grid_offset_x = abs(jitter(1, 23))
-    grid_offset_y = abs(jitter(2, 23))
-    for x in range(-48 + grid_offset_x, width + 49, 48):
-        draw_line(canvas, width, height, x, 0, x, height, rgba_tuple("#38bdf8", 18 + abs(jitter(x, 5))), 1)
-    for y in range(-48 + grid_offset_y, height + 49, 48):
-        draw_line(canvas, width, height, 0, y, width, y, rgba_tuple("#38bdf8", 18 + abs(jitter(y, 5))), 1)
-
-    current_base = [(120, 190), (330, 160), (540, 190), (705, 240), (880, 240)]
-    rebuild_base = [(930, 330), (1080, 270), (1180, 350), (1050, 455), (850, 455)]
-    support_base = [(275, 560), (450, 575), (625, 560), (800, 575), (975, 560)]
-
-    current_strength = max(1, len(blueprint.current_flow))
-    break_strength = max(1, len(blueprint.breakpoints))
-    rebuild_strength = max(1, len(blueprint.recommended_flow))
-    support_strength = max(1, len(blueprint.missing_links))
-
-    current = [(x + jitter(i, 22), y + jitter(i + 10, 18)) for i, (x, y) in enumerate(current_base[:current_strength])]
-    fault = (650 + jitter(31, 36), 325 + jitter(32, 24))
-    gate = (790 + jitter(33, 34), 330 + jitter(34, 24))
-    rebuild = [(x + jitter(i + 40, 26), y + jitter(i + 50, 24)) for i, (x, y) in enumerate(rebuild_base[:rebuild_strength])]
-    support = [(x + jitter(i + 60, 24), y + jitter(i + 70, 18)) for i, (x, y) in enumerate(support_base[:min(5, support_strength)])]
-
-    blue_alpha = 205 + (seed % 35)
-    green_alpha = 205 + ((seed >> 3) % 35)
-    fault_alpha = 215 + ((seed >> 6) % 30)
-    support_alpha = 165 + ((seed >> 9) % 45)
-
-    if len(current) >= 2:
-        draw_polyline(canvas, width, height, current, rgba_tuple("#38bdf8", blue_alpha), 6 + current_strength)
-        draw_line(canvas, width, height, current[-1][0], current[-1][1], fault[0], fault[1], rgba_tuple("#fb7185", fault_alpha), 6 + min(4, break_strength))
-    draw_line(canvas, width, height, fault[0], fault[1], gate[0], gate[1], rgba_tuple("#f472b6", 205), 6)
-    if rebuild:
-        draw_polyline(canvas, width, height, [gate] + rebuild, rgba_tuple("#22c55e", green_alpha), 6 + min(5, rebuild_strength))
-    if len(support) >= 2:
-        draw_polyline(canvas, width, height, support, rgba_tuple("#a78bfa", support_alpha), 4 + min(4, support_strength))
-
-    for index, spt in enumerate(support):
-        if rebuild:
-            target = rebuild[index % len(rebuild)]
-            draw_line(canvas, width, height, spt[0], spt[1] - 20, target[0], target[1] + 28, rgba_tuple("#c084fc", 105 + abs(jitter(index, 35))), 3 + (index % 3))
-
-    def hexagon(cx, cy, r):
-        rotation = (seed % 30) - 15
-        return [(cx + r * math.cos(math.radians(60 * i + rotation)), cy + r * math.sin(math.radians(60 * i + rotation))) for i in range(6)]
-
-    for index, (cx, cy) in enumerate(current):
-        radius = 32 + (index % 2) * 4 + min(6, current_strength)
-        draw_polygon(canvas, width, height, hexagon(cx, cy, radius), rgba_tuple("#0ea5e9", 210 + abs(jitter(index, 20))))
-        draw_polygon(canvas, width, height, hexagon(cx, cy, radius + 12), rgba_tuple("#38bdf8", 35 + abs(jitter(index + 80, 18))))
-    draw_polygon(canvas, width, height, hexagon(fault[0], fault[1], 40 + min(8, break_strength)), rgba_tuple("#fb7185", fault_alpha))
-    draw_polygon(canvas, width, height, hexagon(gate[0], gate[1], 38 + min(7, break_strength)), rgba_tuple("#f472b6", 215))
-    for index, (cx, cy) in enumerate(rebuild):
-        radius = 32 + min(7, rebuild_strength) + (index % 2) * 3
-        draw_polygon(canvas, width, height, hexagon(cx, cy, radius), rgba_tuple("#22c55e", 210 + abs(jitter(index + 90, 20))))
-        draw_polygon(canvas, width, height, hexagon(cx, cy, radius + 12), rgba_tuple("#86efac", 38 + abs(jitter(index + 100, 18))))
-    for index, (cx, cy) in enumerate(support):
-        radius = 26 + min(8, support_strength) + (index % 2) * 2
-        draw_polygon(canvas, width, height, hexagon(cx, cy, radius), rgba_tuple("#8b5cf6", 185 + abs(jitter(index + 110, 24))))
-
-    # Diagnostic watermark pattern: abstract dots only, no text, derived from breakpoints count/content.
-    for i in range(min(18, 6 + break_strength * 2 + support_strength)):
-        px = 80 + ((seed >> (i % 12)) + i * 137) % (width - 160)
-        py = 80 + ((seed >> ((i + 3) % 12)) + i * 91) % (height - 160)
-        draw_circle(canvas, width, height, px, py, 3 + (i % 4), rgba_tuple("#111827", 20 + (i % 5) * 6))
-
-    return encode_png_rgba(width, height, canvas)
-
-
-def save_png_asset(asset_id: str, png_bytes: bytes) -> str:
-    PNG_ASSET_STORE[asset_id] = png_bytes
-    file_path = os.path.join(ASSETS_DIR, f"{asset_id}.png")
-    with open(file_path, "wb") as asset_file:
-        asset_file.write(png_bytes)
-    return file_path
-
-
-def load_png_asset(asset_id: str) -> Optional[bytes]:
-    asset = PNG_ASSET_STORE.get(asset_id)
-    if asset:
-        return asset
-    file_path = os.path.join(ASSETS_DIR, f"{asset_id}.png")
-    if os.path.exists(file_path):
-        with open(file_path, "rb") as asset_file:
-            asset = asset_file.read()
-        PNG_ASSET_STORE[asset_id] = asset
-        return asset
-    return None
-
-
-def google_apps_script_configured() -> bool:
-    return bool(
-        GOOGLE_APPS_SCRIPT_ENABLED
-        and GOOGLE_APPS_SCRIPT_UPLOAD_URL
-        and GOOGLE_APPS_SCRIPT_SECRET
-        and GOOGLE_DRIVE_FOLDER_ID
-    )
-
-
-def upload_file_to_apps_script_drive(filename: str, mime_type: str, file_bytes: bytes) -> Dict[str, Any]:
-    if not google_apps_script_configured():
-        return {
-            "ok": False,
-            "storage_provider": "render_temp",
-            "error": "Google Apps Script storage is not configured or disabled.",
-        }
-
-    payload = {
-        "secret": GOOGLE_APPS_SCRIPT_SECRET,
-        "folder_id": GOOGLE_DRIVE_FOLDER_ID,
-        "filename": filename,
-        "mime_type": mime_type,
-        "base64": base64.b64encode(file_bytes).decode("ascii"),
-    }
-
-    try:
-        response = requests.post(
-            GOOGLE_APPS_SCRIPT_UPLOAD_URL,
-            json=payload,
-            timeout=30,
-            allow_redirects=True,
-        )
-        response.raise_for_status()
-        data = response.json()
-    except Exception as exc:
-        return {
-            "ok": False,
-            "storage_provider": "render_temp",
-            "error": f"Apps Script upload failed: {str(exc)}",
-        }
-
-    if not data.get("ok"):
-        return {
-            "ok": False,
-            "storage_provider": "render_temp",
-            "error": data.get("error", "Apps Script returned ok=false."),
-            "raw_response": data,
-        }
 
     return {
-        "ok": True,
-        "storage_provider": "google_drive",
-        "file_id": data.get("file_id"),
-        "url": data.get("url"),
-        "name": data.get("name"),
-        "raw_response": data,
-    }
-
-
-def safe_drive_filename(company_name: str, asset_type: str, extension: str = "png", hash_id: Optional[str] = None) -> str:
-    base = " ".join((company_name or "auditoria").strip().split())
-    safe_company = re.sub(r"[^A-Za-z0-9_-]+", "_", base)[:60].strip("_") or "auditoria"
-    safe_asset = re.sub(r"[^A-Za-z0-9_-]+", "_", asset_type)[:80].strip("_") or "asset"
-    suffix = f"_{hash_id[:12]}" if hash_id else ""
-    return f"{safe_company}_{safe_asset}{suffix}.{extension}"
-
-
-
-def post_to_apps_script(payload: Dict[str, Any], timeout: int = 55) -> Dict[str, Any]:
-    if not google_apps_script_configured():
-        return {"ok": False, "error": "Google Apps Script storage is not configured or disabled."}
-    try:
-        response = requests.post(
-            GOOGLE_APPS_SCRIPT_UPLOAD_URL,
-            json=payload,
-            timeout=timeout,
-            allow_redirects=True,
-        )
-        response.raise_for_status()
-        return response.json()
-    except Exception as exc:
-        return {"ok": False, "error": f"Apps Script request failed: {str(exc)}"}
-
-
-def load_png_asset_from_visual_link(asset: VisualAssetLink) -> Optional[bytes]:
-    if not asset.local_url:
-        return None
-    filename = asset.local_url.rsplit("/", 1)[-1]
-    if not filename.endswith(".png"):
-        return None
-    asset_id = filename[:-4]
-    return load_png_asset(asset_id)
-
-
-def build_written_audit_report_markdown(
-    request: FullCommercialSystemRequest,
-    public_audit: ProspectWithResearchResponse,
-    social_fit: SocialContentFitResponse,
-    campaign_performance: CampaignPerformanceResponse,
-    analysis_trace: AnalysisTrace,
-    stable_output: StableAuditOutput,
-    strategic_measures_matrix: StrategicMeasuresMatrix,
-    visual_report_url: Optional[str],
-    evidence_cross_check: Optional[EvidenceCrossCheckReport] = None,
-    deliverable_reliability: Optional[DeliverableReliabilityReport] = None,
-    analytical_core: Optional[AnalyticalCoreResult] = None,
-) -> str:
-    sources = "\\n".join([
-        f"- {source.category}: {source.title} | {source.url} | Señal: {source.signal}"
-        for source in public_audit.public_sources_summary[:8]
-    ]) or "- Sin fuentes suficientes."
-
-    measures = "\\n".join([
-        f"- {measure.measure_name} ({measure.priority}): {measure.expected_impact}"
-        for measure in strategic_measures_matrix.measures[:8]
-    ]) or "- Sin medidas suficientes."
-
-    risks = "\\n".join([f"- {risk}" for risk in (stable_output.instability_risks or [])]) or "- Sin riesgos de estabilidad relevantes."
-
-    evidence_block = "- No se generó reporte de cruce de evidencia."
-    if evidence_cross_check:
-        evidence_lines = [
-            f"- Estado de cruce: {evidence_cross_check.status}",
-            f"- Riesgo de salida genérica: {evidence_cross_check.generic_output_risk}",
-            f"- Visuales permitidos: {evidence_cross_check.visual_generation_allowed}",
-            f"- Grupos de evidencia: {', '.join(evidence_cross_check.evidence_groups) or 'n/d'}",
-            f"- Explicación: {evidence_cross_check.explanation}",
-        ]
-        evidence_lines.extend([f"- Señal cruzada: {item}" for item in evidence_cross_check.crossed_signals[:5]])
-        evidence_lines.extend([f"- Dato faltante: {item}" for item in evidence_cross_check.missing_data[:6]])
-        evidence_block = "\n".join(evidence_lines)
-
-    analytical_block = "- No se ejecutó analytical_core."
-    if analytical_core:
-        top_signals = sorted(analytical_core.signal_vector.values(), key=lambda item: item.score_0_to_10, reverse=True)[:8]
-        signal_lines = [f"- {item.signal}: {item.score_0_to_10}/10 · {item.confidence} · {item.rationale}" for item in top_signals]
-        claim_lines = [f"- {claim.claim_id}: {claim.statement} ({claim.support_status}; evidencia={', '.join(claim.evidence_ids) or 'n/d'})" for claim in analytical_core.claims[:8]]
-        rec_lines = [f"- {rec.recommendation_id}: {rec.recommendation} | prioridad={rec.priority} | evidencia={', '.join(rec.evidence_ids) or 'n/d'}" for rec in analytical_core.recommendations[:8]]
-        blocked_lines = [f"- {claim.statement}: {claim.blocked_reason or 'sin soporte suficiente'}" for claim in analytical_core.blocked_claims[:6]]
-        analytical_block = "\n".join([
-            f"- confidence_status: {analytical_core.confidence_status}",
-            f"- interpretación: {analytical_core.executive_interpretation}",
-            f"- factuality_check: {analytical_core.pre_report_factuality_check.status}",
-            "",
-            "### Señales",
-            *(signal_lines or ["- Sin señales suficientes."]),
-            "",
-            "### Claims permitidos",
-            *(claim_lines or ["- Sin claims permitidos."]),
-            "",
-            "### Recomendaciones trazables",
-            *(rec_lines or ["- Sin recomendaciones trazables."]),
-            "",
-            "### Claims bloqueados",
-            *(blocked_lines or ["- Sin claims bloqueados."]),
-        ])
-
-    reliability_block = "- No se generó reporte de confiabilidad del entregable."
-    if deliverable_reliability:
-        reliability_lines = [
-            f"- reliability_status: {deliverable_reliability.reliability_status}",
-            f"- safe_to_present: {deliverable_reliability.safe_to_present}",
-            f"- safe_to_execute_actions: {deliverable_reliability.safe_to_execute_actions}",
-            f"- confidence_summary: {deliverable_reliability.file_confidence_summary}",
-            f"- evidence_cross_check_status: {deliverable_reliability.evidence_cross_check_status}",
-        ]
-        reliability_lines.extend([f"- Riesgo: {item}" for item in deliverable_reliability.risks[:8]])
-        reliability_lines.extend([f"- Validación siguiente: {item}" for item in deliverable_reliability.required_next_validation[:8]])
-        reliability_block = "\n".join(reliability_lines)
-
-    return f"""# Informe preliminar de auditoría comercial
-
-## Empresa
-{request.company_name}
-
-## Resumen ejecutivo
-{public_audit.diagnosis_initial}
-
-## Diagnóstico principal
-- Cuello de botella primario: {public_audit.audit.primary_bottleneck if public_audit.audit else "no detectado"}
-- Commercial Score: {getattr(public_audit.commercial_score, "overall", "n/d")}
-- Commercial Readiness Score: {stable_output.commercial_score_overall if stable_output.commercial_score_overall is not None else "n/d"}
-- Fuente primaria de diagnóstico: {analysis_trace.primary_diagnosis_source}
-
-## Visuales fuertes / mapas
-{("- Visuales fuertes no generados en esta corrida. Motivo: modo analysis_only o evidencia insuficiente para evitar heatmap/blueprint genéricos. Usar analytical_core como salida principal." if "analytical_core" in (stable_output.modules_used or []) and "heatmap" not in (stable_output.modules_used or []) else f"- Awareness dominante: {public_audit.awareness_funnel_locator.dominant_stage} / bloqueada: {public_audit.awareness_funnel_locator.blocked_stage}\n- Heatmap dominante: {public_audit.customer_intent_density_map.dominant_zone.x} / {public_audit.customer_intent_density_map.dominant_zone.y}\n- Blueprint ruta actual: {' → '.join(public_audit.funnel_blueprint.current_flow)}\n- Blueprint rupturas: {'; '.join(public_audit.funnel_blueprint.breakpoints)}")}
-
-## Social Content Fit
-- Score: {social_fit.overall_social_content_fit_score}/100
-- Brecha principal: {social_fit.primary_content_gap}
-- Lectura: {social_fit.strategic_summary}
-
-## Performance
-- Calidad de datos: {campaign_performance.data_quality}
-- Campañas analizadas: {campaign_performance.campaigns_analyzed}
-- Resumen: {campaign_performance.summary}
-
-## Motor analítico evidence-first
-{analytical_block}
-
-## Medidas estratégicas recomendadas legacy
-{measures}
-
-## Fuentes públicas revisadas
-{sources}
-
-## Control de estabilidad
-- stability_status: {stable_output.stability_status}
-- needs_second_run: {stable_output.needs_second_run}
-- report_use: {stable_output.report_use}
-- safe_to_present: {stable_output.safe_to_present}
-- safe_to_execute_actions: {stable_output.safe_to_execute_actions}
-- canonical_input_hash: {stable_output.canonical_input_hash}
-- sources_hash: {stable_output.sources_hash}
-- analysis_version: {stable_output.analysis_version}
-- ruleset_version: {stable_output.ruleset_version}
-
-## Confiabilidad del entregable
-{reliability_block}
-
-## Control anti-genérico / cruce de evidencia
-{evidence_block}
-
-## Riesgos / límites
-{risks}
-
-## Reporte visual
-{visual_report_url or "No generado"}
-
-## Nota metodológica
-Este informe es preliminar y está basado en las fuentes, datos y métricas disponibles al momento de la auditoría. Las inferencias sobre contenido social no equivalen a retención real comprobada si no existen métricas internas de plataforma.
-"""
-
-
-def export_audit_bundle_to_drive(
-    company_name: str,
-    report_id: str,
-    report_html: str,
-    clean_visual_assets: List[VisualAssetLink],
-    written_report_markdown: str,
-    stable_output: Optional[StableAuditOutput] = None,
-    evidence_cross_check: Optional[EvidenceCrossCheckReport] = None,
-    deliverable_reliability: Optional[DeliverableReliabilityReport] = None,
-) -> DriveBundleExport:
-    if not google_apps_script_configured():
-        return DriveBundleExport(
-            status="not_configured",
-            storage_provider="render_temp",
-            error="Google Apps Script storage is disabled or incomplete.",
-            note="Los archivos quedan temporalmente en Render.",
-        )
-
-    assets_payload = []
-    for asset in clean_visual_assets:
-        png_bytes = load_png_asset_from_visual_link(asset)
-        if not png_bytes:
-            continue
-        filename = safe_drive_filename(company_name, asset.asset_type, "png", hash_id=report_id)
-        assets_payload.append({
-            "asset_type": asset.asset_type,
-            "filename": filename,
-            "mime_type": "image/png",
-            "base64": base64.b64encode(png_bytes).decode("ascii"),
-            "use_case": asset.use_case,
-        })
-
-    html_filename = safe_drive_filename(company_name, "visual_report", "html", hash_id=report_id)
-    report_html_b64 = base64.b64encode((report_html or "").encode("utf-8")).decode("ascii")
-    payload = {
-        "secret": GOOGLE_APPS_SCRIPT_SECRET,
-        "action": "create_audit_bundle",
-        "folder_id": GOOGLE_DRIVE_FOLDER_ID,
-        "company_name": company_name,
-        "report_id": report_id,
-        "filename": html_filename,
-        "mime_type": "text/html",
-        "base64": report_html_b64,
-        "html_filename": html_filename,
-        "pdf_filename": safe_drive_filename(company_name, "visual_report", "pdf", hash_id=report_id),
-        "docx_filename": safe_drive_filename(company_name, "informe_escrito_backend", "docx", hash_id=report_id),
-        "json_filename": safe_drive_filename(company_name, "audit_metadata", "json", hash_id=report_id),
-        "report_html_base64": report_html_b64,
-        "written_report_markdown": written_report_markdown,
-        "assets": assets_payload,
-        "metadata": {
-            "company_name": company_name,
-            "report_id": report_id,
-            "analysis_version": getattr(stable_output, "analysis_version", None),
-            "ruleset_version": getattr(stable_output, "ruleset_version", None),
-            "canonical_input_hash": getattr(stable_output, "canonical_input_hash", None),
-            "sources_hash": getattr(stable_output, "sources_hash", None),
-            "stability_status": getattr(stable_output, "stability_status", None),
-            "safe_to_present": getattr(stable_output, "safe_to_present", None),
-            "safe_to_execute_actions": getattr(stable_output, "safe_to_execute_actions", None),
-            "report_use": getattr(stable_output, "report_use", None),
-            "evidence_cross_check_status": getattr(evidence_cross_check, "status", None),
-            "evidence_groups": getattr(evidence_cross_check, "evidence_groups", None),
-            "generic_output_risk": getattr(evidence_cross_check, "generic_output_risk", None),
-            "visual_generation_allowed": getattr(evidence_cross_check, "visual_generation_allowed", None),
-            "deliverable_reliability_status": getattr(deliverable_reliability, "reliability_status", None),
-            "file_confidence_summary": getattr(deliverable_reliability, "file_confidence_summary", None),
+        "reports": reports,
+        "summary": {
+            "status": "completed",
+            "pages_read": len(page_docs),
+            "word_count_total": len(all_text.split()),
+            "social_links": {k: v for k, v in socials_all.items() if v},
+            "contacts": contacts,
+            "features": features,
         },
     }
 
-    data = post_to_apps_script(payload, timeout=GOOGLE_APPS_SCRIPT_TIMEOUT_SECONDS)
-    if not data.get("ok"):
-        return DriveBundleExport(
-            status="failed",
-            storage_provider="render_temp",
-            error=data.get("error", "Apps Script returned ok=false."),
-            note="Fallback: reporte/PNG temporales siguen disponibles en Render si se generaron. Si el error es Missing base64, redeployar Apps Script drive_bundle_v2 o superior.",
-        )
 
-    if data.get("files"):
-        files = [
-            DriveBundleFile(
-                file_type=item.get("file_type", "file"),
-                name=item.get("name", ""),
-                url=item.get("url"),
-                file_id=item.get("file_id"),
-                mime_type=item.get("mime_type"),
-                asset_type=item.get("asset_type"),
-            )
-            for item in data.get("files", [])
-        ]
-        return DriveBundleExport(
-            status="uploaded_to_google_drive",
-            storage_provider="google_drive",
-            folder_id=data.get("folder_id"),
-            folder_url=data.get("folder_url"),
-            files=files,
-            note="Carpeta Drive creada con PDF, HTML, PNG transparentes y DOCX generado por backend.",
-        )
-
-    if data.get("file_id") or data.get("url"):
-        return DriveBundleExport(
-            status="partial_uploaded_legacy_single_file",
-            storage_provider="google_drive",
-            folder_id=data.get("folder_id"),
-            folder_url=data.get("folder_url") or data.get("url"),
-            files=[DriveBundleFile(
-                file_type="html_report_legacy_single_upload",
-                name=data.get("name") or html_filename,
-                url=data.get("url"),
-                file_id=data.get("file_id"),
-                mime_type="text/html",
-            )],
-            note="Apps Script respondió como uploader simple, no como bundle. Se subió al menos el HTML; para carpeta con PDF/DOCX/metadata, redeployar Apps Script drive_bundle_v2 o superior.",
-        )
-
-    return DriveBundleExport(
-        status="failed",
-        storage_provider="render_temp",
-        error="Apps Script returned ok=true but no bundle files or file URL.",
-        note="Fallback: reporte/PNG temporales siguen disponibles en Render.",
-    )
-
-
-def update_visual_asset_links_from_drive_bundle(assets: List[VisualAssetLink], bundle: DriveBundleExport) -> List[VisualAssetLink]:
-    if bundle.status != "uploaded_to_google_drive":
-        return assets
-
-    file_by_asset = {
-        file.asset_type: file
-        for file in bundle.files
-        if file.asset_type and file.file_type == "png_asset"
-    }
-
-    updated: List[VisualAssetLink] = []
-    for asset in assets:
-        drive_file = file_by_asset.get(asset.asset_type)
-        if drive_file and drive_file.url:
-            asset.url = drive_file.url
-            asset.storage_provider = "google_drive"
-            asset.drive_file_id = drive_file.file_id
-            asset.drive_url = drive_file.url
-            asset.upload_status = "uploaded_to_google_drive_bundle"
-        updated.append(asset)
-
-    return updated
-
-
-
-def build_clean_visual_asset_links(result: ProspectWithResearchResponse, report_id: Optional[str] = None) -> List[VisualAssetLink]:
-    base_id = report_id or uuid.uuid4().hex
-    assets = [
-        (
-            "awareness_funnel_clean_transparent",
-            "Embudo de awareness sin texto ni fondo para integrar en reportes.",
-            render_awareness_funnel_clean_png(result.awareness_funnel_locator),
-        ),
-        (
-            "customer_intent_density_map_clean_transparent",
-            "Mapa de calor sin texto ni fondo para integrar en reportes.",
-            render_customer_intent_density_clean_png(result.customer_intent_density_map),
-        ),
-        (
-            "commercial_system_blueprint_clean_transparent",
-            "Blueprint comercial sin texto ni fondo para integrar en reportes.",
-            render_blueprint_clean_png(result.funnel_blueprint),
-        ),
-    ]
-
-    links: List[VisualAssetLink] = []
-
-    for asset_type, use_case, png_bytes in assets:
-        asset_id = f"{base_id}_{asset_type}"
-        save_png_asset(asset_id, png_bytes)
-        local_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/asset/{asset_id}.png"
-
-        selected_url = local_url
-        storage_provider = "render_temp"
-        upload_status = "local_only"
-        drive_file_id = None
-        drive_url = None
-
-        if GOOGLE_DRIVE_INDIVIDUAL_ASSET_UPLOAD_ENABLED and google_apps_script_configured():
-            filename = safe_drive_filename(result.company_name, asset_type, "png", hash_id=base_id)
-            upload_result = upload_file_to_apps_script_drive(filename, "image/png", png_bytes)
-
-            if upload_result.get("ok") and upload_result.get("url"):
-                drive_url = upload_result.get("url")
-                drive_file_id = upload_result.get("file_id")
-                selected_url = drive_url
-                storage_provider = "google_drive"
-                upload_status = "uploaded_to_google_drive"
-            else:
-                upload_status = f"drive_upload_failed_fallback_to_render: {upload_result.get('error', 'unknown error')}"
-
-        links.append(
-            VisualAssetLink(
-                asset_type=asset_type,
-                url=selected_url,
-                use_case=use_case,
-                storage_provider=storage_provider,
-                local_url=local_url,
-                drive_file_id=drive_file_id,
-                drive_url=drive_url,
-                upload_status=upload_status,
-            )
-        )
-
-    return links
-
-
-
-def save_visual_report_html(report_id: str, report_html: str) -> str:
-    VISUAL_REPORT_STORE[report_id] = report_html
-    file_path = os.path.join(REPORTS_DIR, f"{report_id}.html")
-    with open(file_path, "w", encoding="utf-8") as report_file:
-        report_file.write(report_html)
-    return file_path
-
-
-def load_visual_report_html(report_id: str) -> Optional[str]:
-    report_html = VISUAL_REPORT_STORE.get(report_id)
-    if report_html:
-        return report_html
-    file_path = os.path.join(REPORTS_DIR, f"{report_id}.html")
-    if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as report_file:
-            report_html = report_file.read()
-        VISUAL_REPORT_STORE[report_id] = report_html
-        return report_html
-    return None
-
-
-@app.post(
-    "/deliverables/visual-report",
-    response_model=VisualReportResponse,
-    operation_id="createVisualAuditReport",
-    summary="Create a visual audit report",
-    description="Ejecuta la auditoría integrada y genera un reporte visual con embudo, heatmap, blueprint y score chart en SVG/HTML.",
-    dependencies=[Security(verify_api_key)],
-)
-
-def create_visual_audit_report(request: ProspectWithResearchRequest):
-    result = audit_prospect_with_research(request)
-
-    awareness_svg = render_awareness_funnel_svg(result.awareness_funnel_locator)
-    temperature_svg = render_temperature_heatmap_svg(result.temperature_heatmap)
-    density_svg = render_customer_intent_density_svg(result.customer_intent_density_map)
-    blueprint_svg = render_funnel_blueprint_svg(result.funnel_blueprint)
-    score_svg = render_score_chart_svg(result.commercial_score)
-
-    report_id = uuid.uuid4().hex
-    clean_visual_assets = build_clean_visual_asset_links(result, report_id=report_id)
-
-    report_html = build_visual_report_html(
-        result=result,
-        awareness_svg=awareness_svg,
-        temperature_svg=temperature_svg,
-        density_svg=density_svg,
-        blueprint_svg=blueprint_svg,
-        score_svg=score_svg,
-        clean_visual_assets=clean_visual_assets,
-    )
-
-    drive_bundle = export_audit_bundle_to_drive(
-        company_name=result.company_name,
-        report_id=report_id,
-        report_html=report_html,
-        clean_visual_assets=clean_visual_assets,
-        written_report_markdown=result.report_ready_markdown or result.diagnosis_initial,
-        stable_output=None,
-    )
-    clean_visual_assets = update_visual_asset_links_from_drive_bundle(clean_visual_assets, drive_bundle)
-
-    save_visual_report_html(report_id, report_html)
-    report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
-
-    return VisualReportResponse(
-        company_name=result.company_name,
-        report_id=report_id,
-        report_url=report_url,
-        visual_assets=[
-            "awareness_funnel",
-            "temperature_heatmap",
-            "customer_intent_density_map",
-            "commercial_system_blueprint",
-            "commercial_score_chart",
-            "awareness_funnel_clean_transparent_png",
-            "customer_intent_density_map_clean_transparent_png",
-            "commercial_system_blueprint_clean_transparent_png",
-        ],
-        visual_asset_urls=clean_visual_assets,
-        drive_bundle=drive_bundle,
-        report_summary=(
-            f"Reporte visual generado para {result.company_name}. "
-            "La respuesta de API es compacta para evitar errores de tamaño; los SVG/HTML completos están disponibles en report_url."
-        ),
-        how_to_use="Abrí report_url para ver heatmap, blueprint, embudo, score chart y explicación completa. Usá visual_asset_urls para descargar PNG limpios; si Google Drive está activo, esos links son persistentes.",
-        note="No se devuelven SVG/HTML en el JSON porque eso dispara response_too_large en Custom GPT Actions. Los PNG limpios pueden guardarse en Google Drive vía Apps Script si está configurado.",
-    )
-
-
-@app.get(
-    "/deliverables/asset/{asset_id}.png",
-    response_class=Response,
-    operation_id="getCleanVisualAssetPng",
-    summary="Download a clean transparent PNG visual asset",
-)
-def get_clean_visual_asset_png(asset_id: str):
-    png_bytes = load_png_asset(asset_id)
-    if not png_bytes:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Asset PNG no encontrado o expirado. Regenerá el reporte visual o la auditoría completa. "
-                "En Render, el almacenamiento temporal puede perderse tras reinicios."
-            ),
-        )
-    return Response(content=png_bytes, media_type="image/png")
-
-
-
-
-@app.get(
-    "/deliverables/report/{report_id}",
-    response_class=HTMLResponse,
-    operation_id="getVisualAuditReport",
-    summary="Open a generated visual audit report",
-)
-def get_visual_audit_report(report_id: str):
-    report_html = load_visual_report_html(report_id)
-    if not report_html:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Reporte no encontrado o expirado. Generá un nuevo visual report. "
-                "Si el servicio fue reiniciado en Render, el almacenamiento temporal puede haberse limpiado."
-            ),
-        )
-    return HTMLResponse(content=report_html)
-
-
-
-@app.post(
-    "/debug/stability-preview",
-    operation_id="debugStabilityPreview",
-    summary="Preview canonical input and stability hashes",
-    dependencies=[Security(verify_api_key)],
-)
-def debug_stability_preview(request: FullCommercialSystemRequest):
-    raw_payload = request_to_raw_payload(request)
-    canonical_payload = canonical_full_system_payload(request)
-    return {
-        "raw_input_hash": make_stable_hash(raw_payload),
-        "canonical_input_hash": make_stable_hash(canonical_payload),
-        "received_input_keys": request_received_keys(request),
-        "request_snapshot": canonical_payload,
-        "stability_mode": "canonical_locked",
-        "note": "Usar canonical_input_hash para comparar payloads equivalentes. raw_input_hash puede cambiar si el GPT cambia campos neutros o formato.",
-    }
-
-
-
-
-
-
-@app.post(
-    "/deliverables/save-gpt-report-to-drive",
-    response_model=SaveGptWrittenReportResponse,
-    operation_id="saveGptWrittenReportToDrive",
-    summary="Save the GPT-written report as DOCX in Google Drive",
-    dependencies=[Security(verify_api_key)],
-)
-def save_gpt_written_report_to_drive(request: SaveGptWrittenReportRequest):
-    if not google_apps_script_configured():
-        return SaveGptWrittenReportResponse(
-            status="not_configured",
-            storage_provider="render_temp",
-            error="Google Apps Script storage is disabled or incomplete.",
-            note="No se pudo guardar el informe GPT en Drive.",
-        )
-
-    payload = {
-        "secret": GOOGLE_APPS_SCRIPT_SECRET,
-        "action": "save_gpt_report_docx",
-        "folder_id": request.drive_folder_id or GOOGLE_DRIVE_FOLDER_ID,
-        "parent_folder_id": GOOGLE_DRIVE_FOLDER_ID,
-        "company_name": request.company_name,
-        "filename": request.filename,
-        "report_markdown": request.report_markdown,
-        "report_id": request.report_id,
-    }
-
-    data = post_to_apps_script(payload, timeout=GOOGLE_APPS_SCRIPT_TIMEOUT_SECONDS)
-    if not data.get("ok"):
-        return SaveGptWrittenReportResponse(
-            status="failed",
-            error=data.get("error", "Apps Script returned ok=false."),
-            note="No se pudo guardar el informe GPT como DOCX.",
-        )
-
-    return SaveGptWrittenReportResponse(
-        status="uploaded_to_google_drive",
-        folder_id=data.get("folder_id"),
-        folder_url=data.get("folder_url"),
-        file_id=data.get("file_id"),
-        file_url=data.get("url"),
-        file_name=data.get("name"),
-        note="Informe GPT guardado como DOCX en Google Drive.",
-    )
-
-
-
-@app.post(
-    "/debug/google-drive-upload-test",
-    operation_id="debugGoogleDriveUploadTest",
-    summary="Test upload a small text file to Google Drive through Apps Script",
-    dependencies=[Security(verify_api_key)],
-)
-def debug_google_drive_upload_test():
-    test_content = (
-        "Marketing Audit API Google Drive upload test\\n"
-        f"analysis_version={ANALYSIS_VERSION}\\n"
-        f"ruleset_version={RULESET_VERSION}\\n"
-    ).encode("utf-8")
-    filename = f"marketing_audit_upload_test_{uuid.uuid4().hex[:8]}.txt"
-    result = upload_file_to_apps_script_drive(filename, "text/plain", test_content)
-    return {
-        "configured": google_apps_script_configured(),
-        "upload_ok": bool(result.get("ok")),
-        "storage_provider": result.get("storage_provider"),
-        "file_id": result.get("file_id"),
-        "url": result.get("url"),
-        "name": result.get("name"),
-        "error": result.get("error"),
-        "note": (
-            "Si upload_ok=true, Render puede subir a Drive. Si una auditoría cae a render_temp después de esto, "
-            "el problema está en la generación de assets. Si upload_ok=false, revisar env vars/deploy/Apps Script."
-        ),
-    }
-
-
-
-@app.get(
-    "/debug/google-drive-storage",
-    operation_id="debugGoogleDriveStorage",
-    summary="Check Google Apps Script Drive storage configuration",
-    dependencies=[Security(verify_api_key)],
-)
-def debug_google_drive_storage():
-    return {
-        "google_apps_script_enabled": GOOGLE_APPS_SCRIPT_ENABLED,
-        "google_apps_script_upload_url_present": bool(GOOGLE_APPS_SCRIPT_UPLOAD_URL),
-        "google_apps_script_secret_present": bool(GOOGLE_APPS_SCRIPT_SECRET),
-        "google_drive_folder_id_present": bool(GOOGLE_DRIVE_FOLDER_ID),
-        "configured": google_apps_script_configured(),
-        "google_drive_individual_asset_upload_enabled": GOOGLE_DRIVE_INDIVIDUAL_ASSET_UPLOAD_ENABLED,
-        "upload_url_endswith_exec": bool(GOOGLE_APPS_SCRIPT_UPLOAD_URL and GOOGLE_APPS_SCRIPT_UPLOAD_URL.endswith("/exec")),
-        "secret_length": len(GOOGLE_APPS_SCRIPT_SECRET or ""),
-        "folder_id_length": len(GOOGLE_DRIVE_FOLDER_ID or ""),
-        "note": "No expone secretos. Si configured=false, los PNG quedan en Render temporal como fallback. Usar /debug/google-drive-upload-test para probar subida real desde Render.",
-    }
-
-
-
-@app.get(
-    "/deliverables/report-health",
-    operation_id="getReportStorageHealth",
-    summary="Check visual report storage health",
-)
-def get_report_storage_health():
+async def collect_firecrawl(url: Optional[str], evidence: EvidenceBuilder) -> Dict[str, Any]:
+    platform = "website"
+    collector = "firecrawl_website_collector"
+    if not url:
+        return {"reports": [collector_report(collector, platform, "skipped_missing_input", "firecrawl_api", None, reason_code="missing_input", confidence="none")], "summary": {}}
+    if not FIRECRAWL_API_KEY:
+        return {"reports": [collector_report(collector, platform, "skipped_missing_api_key", "firecrawl_api", url, reason_code="missing_api_key", confidence="none")], "summary": {}}
+    normalized = normalize_url(url)
+    assert normalized is not None
+    if httpx is None:
+        return {"reports": [collector_report(collector, platform, "failed_runtime", "firecrawl_api", normalized, reason="httpx no está disponible en el entorno.", confidence="none")], "summary": {}}
     try:
-        disk_reports = [name for name in os.listdir(REPORTS_DIR) if name.endswith(".html")]
-    except Exception:
-        disk_reports = []
+        async with httpx.AsyncClient(timeout=35) as client:
+            resp = await client.post(
+                "https://api.firecrawl.dev/v1/scrape",
+                headers={"Authorization": f"Bearer {FIRECRAWL_API_KEY}", "Content-Type": "application/json"},
+                json={"url": normalized, "formats": ["markdown", "html"], "onlyMainContent": True},
+            )
+        if resp.status_code >= 400:
+            reason_code = "rate_limited" if resp.status_code == 429 else "http_error"
+            return {"reports": [collector_report(collector, platform, "failed_runtime", "firecrawl_api", normalized, reason_code=reason_code, reason=f"Firecrawl HTTP {resp.status_code}: {truncate(resp.text, 300)}", confidence="none")], "summary": {}}
+        data = resp.json()
+        payload = data.get("data") if isinstance(data, dict) else None
+        markdown = (payload or {}).get("markdown") or ""
+        title = ((payload or {}).get("metadata") or {}).get("title")
+        collected = []
+        if markdown:
+            collected.append("visible_text")
+            evidence.add(platform, normalized, collector, "firecrawl_markdown_sample", truncate(markdown, 1600), "medium-high", raw_excerpt=markdown[:1800])
+        if title:
+            collected.append("title")
+            evidence.add(platform, normalized, collector, "title", title, "medium-high")
+        missing = [f for f in ["visible_text", "title", "meta_description", "internal_links"] if f not in collected]
+        return {
+            "reports": [
+                collector_report(
+                    collector,
+                    platform,
+                    "completed" if markdown else "partial",
+                    "firecrawl_api",
+                    normalized,
+                    intended_data=["markdown", "html", "metadata"],
+                    collected_fields=collected,
+                    missing_fields=missing,
+                    reason_code=None if markdown else "insufficient_public_data",
+                    confidence="medium-high" if markdown else "low",
+                    details={"markdown_length": len(markdown), "metadata": (payload or {}).get("metadata", {})},
+                )
+            ],
+            "summary": {"markdown_length": len(markdown), "title": title},
+        }
+    except Exception as exc:
+        return {"reports": [collector_report(collector, platform, "failed_runtime", "firecrawl_api", normalized, reason=str(exc), confidence="none")], "summary": {}}
+
+
+async def collect_browserbase_placeholder(url: Optional[str]) -> Dict[str, Any]:
+    platform = "website"
+    collector = "browserbase_render_collector"
+    if not url:
+        status = "skipped_missing_input"
+        reason_code = "missing_input"
+    elif not BROWSERBASE_API_KEY:
+        status = "skipped_missing_api_key"
+        reason_code = "missing_api_key"
+    else:
+        status = "collector_not_implemented"
+        reason_code = "collector_not_implemented"
     return {
-        "status": "ok",
-        "reports_dir": REPORTS_DIR,
-        "google_apps_script_enabled": GOOGLE_APPS_SCRIPT_ENABLED,
-        "google_apps_script_configured": google_apps_script_configured(),
-        "google_drive_individual_asset_upload_enabled": GOOGLE_DRIVE_INDIVIDUAL_ASSET_UPLOAD_ENABLED,
-        "memory_reports": len(VISUAL_REPORT_STORE),
-        "disk_reports": len(disk_reports),
-        "memory_png_assets": len(PNG_ASSET_STORE),
-        "assets_dir": ASSETS_DIR,
-        "note": "En Render, /tmp puede perderse tras reinicios. Para producción conviene usar storage externo persistente.",
+        "reports": [
+            collector_report(
+                collector,
+                platform,
+                status,
+                "browserbase_api",
+                url,
+                intended_data=["rendered_dom", "screenshot", "js_loaded_content"],
+                collected_fields=[],
+                missing_fields=["rendered_dom", "screenshot", "js_loaded_content"],
+                reason_code=reason_code,
+                confidence="none",
+                details={"available_env_key": bool(BROWSERBASE_API_KEY)},
+            )
+        ],
+        "summary": {},
     }
+
+
+def parse_social_public_fields(platform: str, text: str, meta: Dict[str, Any]) -> Tuple[List[str], Dict[str, Any]]:
+    collected: List[str] = []
+    data: Dict[str, Any] = {}
+    title = meta.get("title") or (meta.get("open_graph") or {}).get("og:title")
+    desc = meta.get("meta_description") or (meta.get("open_graph") or {}).get("og:description")
+    if title:
+        key = "profile_title" if platform not in {"facebook", "linkedin"} else ("page_title" if platform == "facebook" else "company_title")
+        collected.append(key)
+        data[key] = title
+    if desc:
+        key = "profile_description" if platform not in {"facebook", "linkedin"} else ("page_description" if platform == "facebook" else "company_description")
+        collected.append(key)
+        data[key] = desc
+    low = text.lower()
+    number_patterns = {
+        "followers_count": [r"([\d.,]+\s*[kKmM]?)\s+(?:followers|seguidores)", r"(?:followers|seguidores)\s*[:\-]?\s*([\d.,]+\s*[kKmM]?)"],
+        "following_count": [r"([\d.,]+\s*[kKmM]?)\s+(?:following|seguidos)", r"(?:following|seguidos)\s*[:\-]?\s*([\d.,]+\s*[kKmM]?)"],
+        "posts_count": [r"([\d.,]+\s*[kKmM]?)\s+(?:posts|publicaciones|tweets)", r"(?:posts|publicaciones|tweets)\s*[:\-]?\s*([\d.,]+\s*[kKmM]?)"],
+        "likes_total": [r"([\d.,]+\s*[kKmM]?)\s+(?:likes|me gusta)"]
+    }
+    for field, patterns in number_patterns.items():
+        for pat in patterns:
+            m = re.search(pat, low, flags=re.I)
+            if m:
+                collected.append(field)
+                data[field] = m.group(1)
+                break
+    if "http" in text and any(k in low for k in ["http://", "https://", "www."]):
+        collected.append("external_link")
+    return list(dict.fromkeys(collected)), data
+
+
+async def collect_social_public(platform: str, url: Optional[str], evidence: EvidenceBuilder) -> Dict[str, Any]:
+    collector = f"{platform}_public_collector"
+    if not url:
+        return {"reports": [collector_report(collector, platform, "skipped_missing_input", "public_html_best_effort", None, reason_code="missing_input", confidence="none")], "summary": {}}
+    normalized = normalize_url(url)
+    assert normalized is not None
+    resp = await fetch_url(normalized, timeout=16)
+    if not resp.get("ok"):
+        status_code = resp.get("status_code")
+        reason_code = "blocked_by_platform" if status_code in {401, 403, 429} else "http_error"
+        return {"reports": [collector_report(collector, platform, "blocked_by_platform" if reason_code == "blocked_by_platform" else "failed_runtime", "public_html_best_effort", normalized, reason_code=reason_code, reason=resp.get("error") or f"HTTP {status_code}", confidence="none")], "summary": {}}
+    doc = resp.get("text") or ""
+    meta = extract_meta_and_links(doc, resp.get("final_url") or normalized)
+    text = extract_visible_text(doc)
+    collected, parsed_data = parse_social_public_fields(platform, text, meta)
+    if collected:
+        evidence.add(platform, normalized, collector, "public_profile_metadata", parsed_data or {"title": meta.get("title"), "description": meta.get("meta_description")}, "low", raw_excerpt=text[:1000], limitations=["Datos públicos best-effort; la plataforma puede ocultar métricas o requerir login."])
+    if len(text.split()) > 40:
+        evidence.add(platform, normalized, collector, "public_text_sample", truncate(text, 900), "low", raw_excerpt=text[:1000], limitations=["No equivale a insights nativos de la plataforma."])
+    expected = EXPECTED_FIELDS.get(platform, [])
+    missing = [f for f in expected if f not in collected]
+    status = "partial" if collected or len(text.split()) > 40 else "blocked_by_platform"
+    reason_code = "insufficient_public_data" if status == "partial" else "blocked_by_platform"
+    return {
+        "reports": [
+            collector_report(
+                collector,
+                platform,
+                status,
+                "public_html_best_effort",
+                normalized,
+                collected_fields=collected,
+                missing_fields=missing,
+                reason_code=reason_code,
+                confidence="low" if status == "partial" else "none",
+                details={"http_status": resp.get("status_code"), "final_url": resp.get("final_url"), "word_count": len(text.split()), "parsed_public_data": parsed_data},
+            )
+        ],
+        "summary": {"parsed_public_data": parsed_data, "word_count": len(text.split())},
+    }
+
+
+def parse_youtube_identifier(url: str) -> Dict[str, Optional[str]]:
+    parsed = urlparse(url)
+    path = parsed.path.strip("/")
+    parts = path.split("/") if path else []
+    out = {"channel_id": None, "handle": None, "query": None}
+    if not parts:
+        return out
+    if parts[0] == "channel" and len(parts) > 1:
+        out["channel_id"] = parts[1]
+    elif parts[0].startswith("@"):
+        out["handle"] = parts[0].lstrip("@")
+    elif parts[0] in {"c", "user"} and len(parts) > 1:
+        out["query"] = parts[1]
+    elif "youtu.be" in parsed.netloc or parts[0] == "watch":
+        out["query"] = url
+    else:
+        out["query"] = parts[-1]
+    return out
+
+
+async def youtube_api_get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    if httpx is None:
+        raise RuntimeError("httpx no está disponible")
+    params = dict(params)
+    params["key"] = YOUTUBE_API_KEY
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(f"https://www.googleapis.com/youtube/v3/{path}", params=params)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"YouTube API HTTP {resp.status_code}: {truncate(resp.text, 300)}")
+    return resp.json()
+
+
+async def collect_youtube(url: Optional[str], evidence: EvidenceBuilder) -> Dict[str, Any]:
+    platform = "youtube"
+    collector = "youtube_data_api_collector"
+    if not url:
+        return {"reports": [collector_report(collector, platform, "skipped_missing_input", "youtube_data_api", None, reason_code="missing_input", confidence="none")], "summary": {}}
+    if not YOUTUBE_API_KEY:
+        return {"reports": [collector_report(collector, platform, "skipped_missing_api_key", "youtube_data_api", url, reason_code="missing_api_key", confidence="none")], "summary": {}}
+    normalized = normalize_url(url)
+    assert normalized is not None
+    try:
+        ident = parse_youtube_identifier(normalized)
+        channel_data = None
+        if ident.get("channel_id"):
+            channel_data = await youtube_api_get("channels", {"part": "snippet,statistics,contentDetails", "id": ident["channel_id"]})
+        elif ident.get("handle"):
+            # YouTube supports forHandle on channels.list for public handles.
+            channel_data = await youtube_api_get("channels", {"part": "snippet,statistics,contentDetails", "forHandle": ident["handle"]})
+        if not channel_data or not channel_data.get("items"):
+            query = ident.get("query") or ident.get("handle") or normalized
+            search = await youtube_api_get("search", {"part": "snippet", "q": query, "type": "channel", "maxResults": 1})
+            items = search.get("items") or []
+            if items:
+                channel_id = items[0].get("snippet", {}).get("channelId")
+                channel_data = await youtube_api_get("channels", {"part": "snippet,statistics,contentDetails", "id": channel_id})
+        items = channel_data.get("items") if channel_data else []
+        if not items:
+            return {"reports": [collector_report(collector, platform, "partial", "youtube_data_api", normalized, reason="No se pudo resolver el canal desde el link recibido.", missing_fields=EXPECTED_FIELDS[platform], confidence="low")], "summary": {}}
+        channel = items[0]
+        snippet = channel.get("snippet", {})
+        stats = channel.get("statistics", {})
+        content = channel.get("contentDetails", {})
+        collected = ["channel_id", "channel_title", "channel_description", "published_at", "video_count", "view_count"]
+        if "subscriberCount" in stats:
+            collected.append("subscriber_count")
+        latest_videos: List[Dict[str, Any]] = []
+        uploads = (((content.get("relatedPlaylists") or {}).get("uploads")))
+        if uploads:
+            pl = await youtube_api_get("playlistItems", {"part": "snippet,contentDetails", "playlistId": uploads, "maxResults": 5})
+            video_ids = [it.get("contentDetails", {}).get("videoId") for it in (pl.get("items") or []) if it.get("contentDetails", {}).get("videoId")]
+            if video_ids:
+                vids = await youtube_api_get("videos", {"part": "snippet,statistics,contentDetails", "id": ",".join(video_ids), "maxResults": 5})
+                for v in vids.get("items") or []:
+                    latest_videos.append(
+                        {
+                            "video_id": v.get("id"),
+                            "title": v.get("snippet", {}).get("title"),
+                            "published_at": v.get("snippet", {}).get("publishedAt"),
+                            "view_count": (v.get("statistics") or {}).get("viewCount"),
+                            "like_count": (v.get("statistics") or {}).get("likeCount"),
+                            "comment_count": (v.get("statistics") or {}).get("commentCount"),
+                        }
+                    )
+                collected.extend(["latest_videos", "video_dates", "video_views"])
+        collected = list(dict.fromkeys(collected))
+        missing = [f for f in EXPECTED_FIELDS[platform] if f not in collected]
+        summary = {
+            "channel_id": channel.get("id"),
+            "title": snippet.get("title"),
+            "description": snippet.get("description"),
+            "published_at": snippet.get("publishedAt"),
+            "statistics": stats,
+            "latest_videos": latest_videos,
+        }
+        evidence.add(platform, normalized, collector, "youtube_channel_statistics", summary, "high", limitations=["subscriberCount puede estar oculto por configuración del canal."])
+        return {
+            "reports": [
+                collector_report(
+                    collector,
+                    platform,
+                    "completed" if len(collected) >= 6 else "partial",
+                    "youtube_data_api",
+                    normalized,
+                    collected_fields=collected,
+                    missing_fields=missing,
+                    reason_code=None if len(collected) >= 6 else "insufficient_public_data",
+                    confidence="high",
+                    details=summary,
+                )
+            ],
+            "summary": summary,
+        }
+    except Exception as exc:
+        return {"reports": [collector_report(collector, platform, "failed_runtime", "youtube_data_api", normalized, reason=str(exc), confidence="none")], "summary": {}}
+
+
+async def collect_composio_search_placeholder(company_name: Optional[str], website: Optional[str]) -> Dict[str, Any]:
+    collector = "composio_search_enrichment_collector"
+    platform = "search"
+    if not company_name and not website:
+        return {"reports": [collector_report(collector, platform, "skipped_missing_input", "composio_search", None, intended_data=["public_search_results", "possible_profiles", "mentions"], reason_code="missing_input", confidence="none")], "summary": {}}
+    if not COMPOSIO_API_KEY:
+        return {"reports": [collector_report(collector, platform, "skipped_missing_api_key", "composio_search", website, intended_data=["public_search_results", "possible_profiles", "mentions"], reason_code="missing_api_key", confidence="none")], "summary": {}}
+    return {
+        "reports": [
+            collector_report(
+                collector,
+                platform,
+                "collector_not_implemented",
+                "composio_search",
+                website,
+                intended_data=["public_search_results", "possible_profiles", "mentions"],
+                collected_fields=[],
+                missing_fields=["public_search_results", "possible_profiles", "mentions"],
+                reason_code="collector_not_implemented",
+                confidence="none",
+                details={"available_env_key": True},
+            )
+        ],
+        "summary": {},
+    }
+
+
+def merge_assets(req: PublicPresenceCollectRequest) -> Dict[str, Optional[str]]:
+    assets = {
+        "website": req.website or req.website_url,
+        "instagram": req.instagram,
+        "facebook": req.facebook,
+        "linkedin": req.linkedin,
+        "youtube": req.youtube,
+        "tiktok": req.tiktok,
+        "x": req.x,
+    }
+    if req.assets:
+        nested = req.assets
+        for key in assets.keys():
+            val = getattr(nested, key, None)
+            if val and not assets.get(key):
+                assets[key] = val
+    return {k: normalize_url(v) if v else None for k, v in assets.items()}
+
+
+def summarize_execution(reports: List[Dict[str, Any]]) -> Dict[str, Any]:
+    counts: Dict[str, int] = {}
+    for r in reports:
+        counts[r.get("status", "unknown")] = counts.get(r.get("status", "unknown"), 0) + 1
+    hard_fail = counts.get("failed_runtime", 0)
+    completed = counts.get("completed", 0)
+    partial = counts.get("partial", 0)
+    limitations = counts.get("blocked_by_platform", 0) + counts.get("skipped_missing_api_key", 0) + counts.get("collector_not_implemented", 0) + partial
+    if completed and not hard_fail and not limitations:
+        status = "completed"
+    elif completed or partial:
+        status = "completed_with_limitations"
+    elif hard_fail:
+        status = "failed"
+    else:
+        status = "not_collected"
+    return {
+        "overall_status": status,
+        "collectors_attempted_or_evaluated": len(reports),
+        "collectors_completed": completed,
+        "collectors_partial": partial,
+        "collectors_skipped": counts.get("skipped_missing_input", 0) + counts.get("skipped_missing_api_key", 0),
+        "collectors_failed": hard_fail,
+        "collectors_blocked_by_platform": counts.get("blocked_by_platform", 0),
+        "collectors_not_implemented": counts.get("collector_not_implemented", 0),
+        "status_counts": counts,
+    }
+
+
+def build_metrics_summary(evidence_items: List[Dict[str, Any]], collector_reports: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_platform: Dict[str, Dict[str, Any]] = {}
+    for ev in evidence_items:
+        platform = ev.get("platform") or "unknown"
+        bucket = by_platform.setdefault(platform, {"evidence_count": 0, "data_types": []})
+        bucket["evidence_count"] += 1
+        bucket["data_types"].append(ev.get("data_type"))
+    for platform in by_platform:
+        by_platform[platform]["data_types"] = sorted(set([x for x in by_platform[platform]["data_types"] if x]))
+    for report in collector_reports:
+        platform = report.get("platform") or "unknown"
+        bucket = by_platform.setdefault(platform, {"evidence_count": 0, "data_types": []})
+        bucket["collector_status"] = report.get("status")
+        bucket["confidence"] = report.get("confidence")
+    return by_platform
+
+
+def build_txt_report(payload: Dict[str, Any]) -> str:
+    lines: List[str] = []
+    lines.append("REPORTE DE RECOLECCIÓN DE PRESENCIA PÚBLICA")
+    lines.append("=" * 58)
+    lines.append("")
+    lines.append(f"Empresa: {payload.get('company_name') or 'No informada'}")
+    lines.append(f"Fecha de recolección: {payload.get('created_at')}")
+    lines.append(f"Versión del collector: {payload.get('collector_version')}")
+    lines.append(f"Estado general: {payload.get('collection_status')}")
+    lines.append(f"Hash de recolección: {payload.get('collection_hash')}")
+    lines.append("")
+    lines.append("FUENTES RECIBIDAS")
+    for k, v in (payload.get("assets_received") or {}).items():
+        lines.append(f"- {k}: {v or 'no recibido'}")
+    lines.append("")
+    lines.append("1. RESUMEN DE EJECUCIÓN")
+    rep = payload.get("collection_execution_report") or {}
+    for key in ["collectors_attempted_or_evaluated", "collectors_completed", "collectors_partial", "collectors_skipped", "collectors_failed", "collectors_blocked_by_platform", "collectors_not_implemented"]:
+        lines.append(f"- {key}: {rep.get(key, 0)}")
+    lines.append("")
+    lines.append("2. ESTADO POR COLLECTOR")
+    for r in payload.get("collector_reports", []):
+        lines.append("")
+        lines.append(f"Collector: {r.get('collector')}")
+        lines.append(f"Plataforma: {r.get('platform')}")
+        lines.append(f"Estado: {r.get('status')}")
+        lines.append(f"Herramienta usada: {r.get('tool_used')}")
+        lines.append(f"URL/input: {r.get('input_url') or 'no aplica'}")
+        if r.get("reason"):
+            lines.append(f"Motivo: {r.get('reason')}")
+        collected = r.get("collected_fields") or []
+        missing = r.get("missing_fields") or []
+        lines.append("Datos recolectados:")
+        if collected:
+            for f in collected:
+                lines.append(f"  - {f}")
+        else:
+            lines.append("  - ninguno")
+        lines.append("Datos no recolectados:")
+        if missing:
+            for f in missing[:40]:
+                lines.append(f"  - {f}")
+        else:
+            lines.append("  - ninguno")
+        how = r.get("how_to_collect_missing") or []
+        if how:
+            lines.append("Cómo obtener lo faltante:")
+            for step in how:
+                lines.append(f"  - {step}")
+    lines.append("")
+    lines.append("3. RESUMEN DE MÉTRICAS / DATOS OBSERVADOS")
+    summary = payload.get("metrics_summary") or {}
+    for platform, data in summary.items():
+        lines.append(f"\n{platform.upper()}")
+        lines.append(f"- Evidencias registradas: {data.get('evidence_count', 0)}")
+        lines.append(f"- Estado del collector: {data.get('collector_status', 'n/d')}")
+        lines.append(f"- Confianza: {data.get('confidence', 'n/d')}")
+        types = data.get("data_types") or []
+        if types:
+            lines.append("- Tipos de datos observados: " + ", ".join(types))
+    lines.append("")
+    lines.append("4. EVIDENCIA RECOLECTADA")
+    for ev in payload.get("evidence_registry", []):
+        lines.append("")
+        lines.append(f"{ev.get('evidence_id')} | {ev.get('platform')} | {ev.get('data_type')}")
+        lines.append(f"Fuente: {ev.get('source_url') or 'n/d'}")
+        lines.append(f"Collector: {ev.get('collector')}")
+        lines.append(f"Tipo de evidencia: {ev.get('evidence_type')}")
+        lines.append(f"Confianza: {ev.get('confidence')}")
+        value = ev.get("value")
+        if isinstance(value, (dict, list)):
+            value_text = json.dumps(value, ensure_ascii=False, indent=2)
+        else:
+            value_text = str(value)
+        lines.append("Valor observado:")
+        lines.append(truncate(value_text, 1400))
+        if ev.get("limitations"):
+            lines.append("Limitaciones:")
+            for lim in ev.get("limitations", []):
+                lines.append(f"  - {lim}")
+    lines.append("")
+    lines.append("5. DATOS NO RECOLECTADOS Y CÓMO RECUPERARLOS")
+    for item in payload.get("field_recovery_guide", []):
+        lines.append("")
+        lines.append(f"Campo: {item.get('label_es')} ({item.get('field')})")
+        lines.append(f"Plataforma: {item.get('platform')}")
+        lines.append(f"Estado: {item.get('status')}")
+        lines.append(f"Por qué no se recopiló: {item.get('why_not_collected')}")
+        lines.append(f"Importancia: {item.get('importance')}")
+        lines.append(f"Requiere permiso del cliente: {'sí' if item.get('requires_client_permission') else 'no'}")
+        lines.append("Cómo se puede recopilar:")
+        for step in item.get("how_to_collect", [])[:8]:
+            lines.append(f"  - {step}")
+    lines.append("")
+    lines.append("6. DATOS QUE REQUIEREN ACCESO DEL CLIENTE")
+    lines.append("- Google Analytics / GA4: tráfico, eventos, conversiones, fuentes y landings.")
+    lines.append("- Search Console: queries, clicks, impresiones, CTR, posición media y páginas orgánicas.")
+    lines.append("- Google Ads / Meta Ads: inversión, impresiones, clics, leads, conversiones y costos.")
+    lines.append("- Instagram/Facebook/LinkedIn/TikTok Insights: alcance, impresiones, demografía, visitas, guardados y clicks.")
+    lines.append("- CRM/ventas: calidad de lead, contacto efectivo, cierre, ventas y revenue.")
+    lines.append("")
+    lines.append("7. LIMITACIONES DEL REPORTE")
+    lines.append("- Este archivo recopila presencia pública observable; no diagnostica performance comercial.")
+    lines.append("- No afirma ROAS, CPA, CPL real, conversión, ventas ni calidad de lead.")
+    lines.append("- Los datos de redes sociales públicas pueden estar incompletos por restricciones de plataforma.")
+    lines.append("- Los claims del sitio se registran como claims declarados, no como hechos verificados externamente.")
+    return "\n".join(lines) + "\n"
 
 
 @app.get("/")
-def root():
-    return {"status": "ok", "message": "Marketing Audit API funcionando"}
-
-
-def build_analysis_text(request: ProspectAuditRequest) -> str:
-    fields = [
-        request.company_name,
-        request.website,
-        request.instagram,
-        request.linkedin,
-        request.industry,
-        request.offer,
-        request.notes,
-    ]
-    return " ".join([field for field in fields if field]).casefold()
-
-
-def contains_any(text: str, keywords: List[str]) -> bool:
-    return any(keyword.casefold() in text for keyword in keywords)
-
-
-def infer_focus_areas(text: str, request: ProspectAuditRequest) -> List[str]:
-    focus_areas = []
-
-    if request.instagram or contains_any(text, ["instagram", "contenido", "publicaciones", "posteos", "feed", "reels"]):
-        focus_areas.append("contenido")
-    if contains_any(text, ["awareness", "visibilidad", "alcance", "reconocimiento", "tráfico", "audiencia"]):
-        focus_areas.append("awareness")
-    if contains_any(text, ["propuesta de valor", "diferenciación", "diferenciacion", "oferta", "por qué elegir", "porque elegir", "posicionamiento"]):
-        focus_areas.append("propuesta de valor")
-    if contains_any(text, ["cta", "llamada a la acción", "llamada a la accion", "conversión", "conversion", "convertir", "leads", "consulta", "mensaje"]):
-        focus_areas.append("conversión")
-    if contains_any(text, ["funnel", "embudo", "landing", "retargeting", "seguimiento", "pipeline"]):
-        focus_areas.append("funnel")
-    if contains_any(text, ["marca", "competidores", "competencia", "precio", "premium", "autoridad"]):
-        focus_areas.append("posicionamiento")
-
-    if not focus_areas:
-        focus_areas = ["awareness", "propuesta de valor", "contenido", "funnel", "conversión"]
-
-    return list(dict.fromkeys(focus_areas))
-
-
-def infer_primary_bottleneck(text: str, focus_areas: List[str]) -> str:
-    if "propuesta de valor" in focus_areas:
-        return "propuesta de valor"
-    if "conversión" in focus_areas:
-        return "conversión"
-    if "funnel" in focus_areas:
-        return "funnel"
-    if "posicionamiento" in focus_areas:
-        return "posicionamiento"
-    if "contenido" in focus_areas:
-        return "contenido"
-    return "awareness"
-
-
-def infer_awareness_level(text: str, primary_bottleneck: str) -> str:
-    if contains_any(text, ["no saben", "desconocen", "educar mercado", "mercado no entiende"]):
-        return "unaware"
-    if contains_any(text, ["problema", "dolor", "necesidad", "poca claridad", "confusión", "confusion"]):
-        return "problem-aware"
-    if contains_any(text, ["solución", "solucion", "alternativa", "comparan", "competidores"]):
-        return "solution-aware"
-    if contains_any(text, ["marca", "producto", "servicio", "testimonios", "casos de éxito", "casos de exito"]):
-        return "product-aware"
-    if contains_any(text, ["precio", "promoción", "promocion", "agenda", "cotización", "cotizacion", "comprar"]):
-        return "most-aware"
-    if primary_bottleneck in ["propuesta de valor", "contenido", "funnel"]:
-        return "problem-aware"
-    return "problem-aware"
-
-
-def build_commercial_risk(primary_bottleneck: str) -> str:
-    risks = {
-        "propuesta de valor": "La empresa puede estar generando visibilidad sin lograr que el mercado entienda por qué debería elegirla frente a otras alternativas.",
-        "conversión": "La empresa puede estar atrayendo atención, pero perdiendo oportunidades porque no guía al usuario hacia una acción comercial concreta.",
-        "funnel": "La empresa puede tener puntos de contacto aislados, pero sin un recorrido claro que transforme interés en oportunidad comercial.",
-        "posicionamiento": "La empresa puede quedar atrapada en comparación por precio o apariencia porque no comunica una diferencia estratégica clara.",
-        "contenido": "La empresa puede estar publicando con frecuencia, pero sin una narrativa que construya demanda, autoridad o intención de compra.",
-        "awareness": "La empresa puede tener baja presencia mental en el mercado y depender demasiado de acciones tácticas de corto plazo.",
-    }
-    return risks.get(primary_bottleneck, "La empresa puede estar haciendo actividad digital sin convertirla en demanda calificada.")
-
-
-def build_recommended_angle(primary_bottleneck: str) -> str:
-    angles = {
-        "propuesta de valor": "Mostrar la brecha entre tener presencia digital y comunicar una razón clara para ser elegido.",
-        "conversión": "Mostrar cómo la falta de CTA y dirección comercial reduce la cantidad de consultas calificadas.",
-        "funnel": "Mostrar que el problema no es solo publicar más, sino construir un recorrido desde atención hasta conversión.",
-        "posicionamiento": "Mostrar cómo una marca sin diferenciación termina compitiendo por precio, estética o disponibilidad.",
-        "contenido": "Mostrar que el contenido actual puede entretener o informar, pero no necesariamente vender.",
-        "awareness": "Mostrar que sin presencia mental suficiente, cada acción comercial empieza desde cero.",
-    }
-    return angles.get(primary_bottleneck, "Mostrar una brecha comercial concreta sin entregar todavía la solución completa.")
-
-
-def infer_confidence(request: ProspectAuditRequest) -> str:
-    signal_count = sum([
-        bool(request.website),
-        bool(request.instagram),
-        bool(request.linkedin),
-        bool(request.industry),
-        bool(request.offer),
-        bool(request.notes and len(request.notes) > 40),
-    ])
-    if signal_count >= 4:
-        return "media-alta"
-    if signal_count >= 2:
-        return "media"
-    return "baja"
-
-
-@app.post(
-    "/audit/prospect",
-    response_model=ProspectAuditResponse,
-    operation_id="auditProspect",
-    summary="Audit a marketing prospect",
-    description="Recibe datos básicos de un prospecto y devuelve focos de auditoría comercial.",
-    dependencies=[Security(verify_api_key)],
-)
-def audit_prospect(request: ProspectAuditRequest):
-    text = build_analysis_text(request)
-    focus_areas = infer_focus_areas(text, request)
-    primary_bottleneck = infer_primary_bottleneck(text, focus_areas)
-    awareness_level = infer_awareness_level(text, primary_bottleneck)
-
-    return ProspectAuditResponse(
-        company_name=request.company_name,
-        audit_type="smart_prospect_audit",
-        awareness_level=awareness_level,
-        primary_bottleneck=primary_bottleneck,
-        detected_focus_areas=focus_areas,
-        commercial_risk=build_commercial_risk(primary_bottleneck),
-        recommended_angle=build_recommended_angle(primary_bottleneck),
-        next_step="Preparar un diagnóstico comercial breve que muestre la brecha principal y proponga una reunión para profundizar la solución.",
-        do_not_give_for_free=[
-            "calendario completo de contenido",
-            "reescritura integral de la propuesta de valor",
-            "estructura completa de campañas",
-            "arquitectura completa de funnel",
-            "segmentaciones detalladas de pauta",
-            "copys finales listos para implementar",
-        ],
-        confidence=infer_confidence(request),
-    )
-
-
-@app.post(
-    "/report/brief",
-    response_model=ReportBriefResponse,
-    operation_id="createReportBrief",
-    summary="Create a commercial audit report brief",
-    description="Genera una estructura breve de reporte comercial a partir de hallazgos de auditoría.",
-    dependencies=[Security(verify_api_key)],
-)
-def create_report_brief(request: ReportBriefRequest):
-    bottleneck = request.primary_bottleneck or "brecha comercial"
-    return ReportBriefResponse(
-        company_name=request.company_name,
-        report_type="commercial_audit_brief",
-        report_sections=[
-            "Diagnóstico inicial",
-            "Mapa de awareness",
-            "Problema comercial principal",
-            "Riesgo de mantener la situación actual",
-            "Oportunidad estratégica detectada",
-            "Qué conviene mostrar en reunión",
-            "Próximo paso recomendado",
-        ],
-        opening_angle=f"La presentación debería abrir mostrando cómo {request.company_name} puede estar perdiendo oportunidades por un problema de {bottleneck}.",
-        recommended_close="Cerrar con una invitación a revisar el caso en una reunión breve, sin entregar todavía la estrategia completa.",
-        do_not_include=[
-            "plan completo de contenidos",
-            "estructura completa de campañas",
-            "copys finales",
-            "segmentaciones detalladas",
-            "presupuesto táctico completo",
-            "implementación paso a paso",
-        ],
-    )
-
-
-@app.get(
-    "/tools/status",
-    response_model=ToolsStatusResponse,
-    operation_id="getToolsStatus",
-    summary="Check available Composio toolkits",
-    description="Verifica si Composio está configurado y revisa herramientas disponibles para toolkits relevantes.",
-    dependencies=[Security(verify_api_key)],
-)
-def get_tools_status():
-    toolkits_to_check = [
-        "apify",
-        "browser_tool",
-        "composio_search",
-        "search_api",
-        "semrush",
-        "similarweb",
-        "google_sheets",
-        "google_drive",
-    ]
-
-    if not COMPOSIO_API_KEY:
-        return ToolsStatusResponse(
-            composio_configured=False,
-            checked_toolkits=[],
-            recommendation="COMPOSIO_API_KEY no está configurada. Agregala como variable de entorno antes de usar herramientas externas.",
-        )
-
-    checked = []
-
-    for toolkit in toolkits_to_check:
-        try:
-            data = composio_get("/tools", params={"toolkit_slug": toolkit, "limit": 20})
-            tools = extract_tools_list(data)
-            sample_tools = [normalize_tool(tool).slug for tool in tools[:5]]
-            checked.append(
-                ToolkitStatus(
-                    toolkit=toolkit,
-                    available=len(tools) > 0,
-                    tool_count=len(tools),
-                    sample_tools=sample_tools,
-                )
-            )
-        except Exception as exc:
-            checked.append(
-                ToolkitStatus(
-                    toolkit=toolkit,
-                    available=False,
-                    tool_count=0,
-                    sample_tools=[],
-                    error=str(exc),
-                )
-            )
-
-    essential = ["search_api", "browser_tool", "apify"]
-    available_essential = [
-        item.toolkit for item in checked
-        if item.toolkit in essential and item.available
-    ]
-
-    if len(available_essential) == len(essential):
-        recommendation = "Herramientas esenciales disponibles. Se puede avanzar a búsqueda pública, validación de páginas y scraping controlado."
-    elif available_essential:
-        recommendation = "Hay algunas herramientas esenciales disponibles, pero conviene conectar o verificar las faltantes antes de una auditoría completa."
-    else:
-        recommendation = "No se detectaron herramientas esenciales. Primero conectá o verificá Search API, Browser Tool o Apify."
-
-    return ToolsStatusResponse(
-        composio_configured=True,
-        checked_toolkits=checked,
-        recommendation=recommendation,
-    )
-
-
-@app.post(
-    "/tools/search",
-    response_model=ToolsSearchResponse,
-    operation_id="searchComposioTools",
-    summary="Search Composio tools",
-    description="Busca herramientas disponibles en Composio usando texto libre y, opcionalmente, un toolkit específico.",
-    dependencies=[Security(verify_api_key)],
-)
-def search_composio_tools(request: ToolsSearchRequest):
-    params = {"limit": 100}
-
-    if request.toolkit_slug:
-        params["toolkit_slug"] = request.toolkit_slug
-
-    data = composio_get("/tools", params=params)
-    tools = extract_tools_list(data)
-
-    matches = [
-        normalize_tool(tool)
-        for tool in tools
-        if tool_matches_query(tool, request.query)
-    ]
-
-    return ToolsSearchResponse(
-        query=request.query,
-        toolkit_slug=request.toolkit_slug,
-        results=matches[:request.limit],
-    )
-
-
-@app.get(
-    "/tools/details/{tool_slug}",
-    response_model=ToolDetailsResponse,
-    operation_id="getComposioToolDetails",
-    summary="Get Composio tool details",
-    description="Obtiene detalles y schema de una herramienta específica de Composio.",
-    dependencies=[Security(verify_api_key)],
-)
-def get_composio_tool_details(tool_slug: str):
-    data = composio_get(f"/tools/{tool_slug}")
-
-    if not isinstance(data, dict):
-        data = {"response": data}
-
-    return ToolDetailsResponse(
-        tool_slug=tool_slug,
-        raw_response=data,
-    )
-
-
-@app.post(
-    "/tools/execute",
-    response_model=ToolExecuteResponse,
-    operation_id="executeComposioTool",
-    summary="Execute an allowed Composio tool",
-    description="Ejecuta una herramienta permitida de Composio usando argumentos estructurados o texto en lenguaje natural.",
-    dependencies=[Security(verify_api_key)],
-)
-def execute_composio_tool(request: ToolExecuteRequest):
-    if request.tool_slug not in ALLOWED_COMPOSIO_TOOLS:
-        raise HTTPException(
-            status_code=403,
-            detail=f"La herramienta {request.tool_slug} no está permitida todavía. Permitidas: {sorted(ALLOWED_COMPOSIO_TOOLS)}",
-        )
-
-    if not request.arguments and not request.text:
-        raise HTTPException(
-            status_code=422,
-            detail="Debés enviar arguments o text para ejecutar la herramienta.",
-        )
-
-    payload = {"user_id": request.user_id, "version": "latest"}
-
-    if request.arguments:
-        payload["arguments"] = request.arguments
-    else:
-        payload["text"] = request.text
-
-    data = composio_post(f"/tools/execute/{request.tool_slug}", payload=payload)
-
-    if not isinstance(data, dict):
-        data = {"response": data}
-
-    return ToolExecuteResponse(
-        tool_slug=request.tool_slug,
-        successful=data.get("successful"),
-        data=data.get("data"),
-        error=data.get("error"),
-        raw_response=data,
-    )
-
-
-@app.post(
-    "/research/company-public-presence",
-    response_model=PublicPresenceResponse,
-    operation_id="researchCompanyPublicPresence",
-    summary="Research public presence of a company",
-    description="Busca presencia pública de una empresa usando Search API vía Composio y devuelve fuentes normalizadas para auditoría comercial.",
-    dependencies=[Security(verify_api_key)],
-)
-def research_company_public_presence(request: PublicPresenceRequest):
-    if "SEARCH_API_SEARCH" not in ALLOWED_COMPOSIO_TOOLS:
-        raise HTTPException(status_code=403, detail="SEARCH_API_SEARCH no está permitido en ALLOWED_COMPOSIO_TOOLS.")
-
-    declared_sources = build_declared_public_sources(request)
-    if getattr(request, "research_mode", "live_public_search") == "declared_only":
-        return PublicPresenceResponse(
-            company_name=request.company_name,
-            research_type="company_public_presence",
-            queries_used=[],
-            sources_found=declared_sources,
-            presence_summary=(
-                f"Modo declared_only activo: se usan {len(declared_sources)} fuentes públicas declaradas por el usuario. "
-                "No se ejecutó búsqueda externa para maximizar estabilidad."
-            ),
-            research_confidence="media-baja" if declared_sources else "baja",
-            next_step="Para enriquecer evidencia pública, cambiar research_mode a live_public_search.",
-            raw_result_count=len(declared_sources),
-        )
-
-    queries = build_public_presence_queries(request)
-    discovered_sources: List[PublicSourceResult] = []
-    fallback_sources: List[PublicSourceResult] = []
-    errors: List[str] = []
-    safe_num = max(1, min(request.num_results_per_query, 10))
-
-    for query_item in queries:
-        category = query_item["category"]
-        query = query_item["query"]
-        try:
-            raw_response = execute_search_api_query(query=query, num_results=safe_num, user_id="default")
-            organic_results = find_organic_results(raw_response)
-            for item in organic_results[:safe_num]:
-                if isinstance(item, dict):
-                    discovered_sources.append(normalize_search_result(item=item, category=category, query=query))
-        except HTTPException as exc:
-            errors.append(f"{category}: {exc.detail}")
-        except Exception as exc:
-            errors.append(f"{category}: {str(exc)}")
-
-    if len(discovered_sources) < 3 and "COMPOSIO_SEARCH_DUCK_DUCK_GO_SEARCH" in ALLOWED_COMPOSIO_TOOLS:
-        fallback_queries = [
-            f"{request.company_name} {request.city or ''} {request.country or ''}".strip(),
-            f"{request.company_name} Instagram TikTok LinkedIn".strip(),
-            f"{request.company_name} recursos humanos Córdoba".strip(),
-        ]
-        if request.website:
-            fallback_queries.append(f"{request.company_name} {request.website}".strip())
-        if request.instagram:
-            fallback_queries.append(f"{request.company_name} {request.instagram}".strip())
-        if getattr(request, "tiktok", None):
-            fallback_queries.append(f"{request.company_name} {request.tiktok}".strip())
-        if request.linkedin:
-            fallback_queries.append(f"{request.company_name} {request.linkedin}".strip())
-
-        for fallback_query in list(dict.fromkeys(fallback_queries))[:6]:
-            try:
-                raw_fallback = execute_duckduckgo_query(query=fallback_query, num_results=max(3, min(safe_num, 5)), user_id="default")
-                for item in find_duckduckgo_results(raw_fallback)[:max(3, min(safe_num, 5))]:
-                    fallback_sources.append(normalize_duckduckgo_result(item=item, category="fallback_public_search", query=fallback_query))
-            except Exception as exc:
-                errors.append(f"fallback_public_search: {str(exc)}")
-
-    sources = dedupe_public_sources(declared_sources + discovered_sources + fallback_sources)
-    declared_count = len(declared_sources)
-    discovered_count = len(dedupe_public_sources(discovered_sources + fallback_sources))
-    queries_used = [item["query"] for item in queries]
-
-    if discovered_count >= 8:
-        confidence = "media-alta"
-    elif discovered_count >= 3:
-        confidence = "media"
-    elif declared_count > 0:
-        confidence = "media-baja"
-    else:
-        confidence = "baja"
-
-    if declared_count and discovered_count:
-        summary = (
-            f"Se recibieron {declared_count} fuentes públicas declaradas por el usuario y se encontraron "
-            f"{discovered_count} fuentes adicionales relacionadas con {request.company_name}. "
-            "Los links provistos se consideran fuentes públicas válidas; la búsqueda externa funciona como enriquecimiento."
-        )
-    elif declared_count:
-        summary = (
-            f"Se recibieron {declared_count} fuentes públicas declaradas por el usuario para {request.company_name}, "
-            "pero la búsqueda externa no encontró suficientes fuentes adicionales para enriquecer la validación. "
-            "Esto no significa que la presencia pública no exista: significa que la extracción automática fue limitada."
-        )
-    elif discovered_count:
-        summary = (
-            f"Se encontraron {discovered_count} fuentes públicas relacionadas con {request.company_name}. "
-            "La información puede usarse como base para validar presencia digital, perfiles sociales, reputación y contexto competitivo."
-        )
-    else:
-        summary = (
-            f"No se encontraron fuentes públicas suficientes para {request.company_name}. "
-            "Conviene revisar el nombre, ciudad, rubro o perfiles conocidos."
-        )
-
-    if errors:
-        summary = summary + f" Algunas búsquedas tuvieron errores: {len(errors)}."
-
-    return PublicPresenceResponse(
-        company_name=request.company_name,
-        research_type="company_public_presence",
-        queries_used=queries_used,
-        sources_found=sources,
-        presence_summary=summary,
-        research_confidence=confidence,
-        next_step=(
-            "Usar fuentes declaradas + fuentes encontradas como insumo. Si redes como TikTok/Instagram no permiten extracción completa, "
-            "pedir muestras de contenido y métricas internas para validar retención real."
-        ),
-        raw_result_count=len(sources),
-    )
-
-@app.post(
-    "/audit/prospect-with-research",
-    response_model=ProspectWithResearchResponse,
-    operation_id="auditProspectWithResearch",
-    summary="Audit a prospect with public research",
-    description="Investiga presencia pública, resume fuentes, audita el prospecto y devuelve scoring, blueprint, plan correctivo y reporte listo para plantilla.",
-    dependencies=[Security(verify_api_key)],
-)
-def audit_prospect_with_research(request: ProspectWithResearchRequest):
-    public_presence_request = PublicPresenceRequest(
-        company_name=request.company_name,
-        industry=request.industry,
-        city=request.city,
-        country=request.country,
-        website=request.website,
-        instagram=request.instagram,
-        tiktok=getattr(request, "tiktok", None),
-        facebook=getattr(request, "facebook", None),
-        youtube=getattr(request, "youtube", None),
-        linkedin=request.linkedin,
-        num_results_per_query=request.num_results_per_query,
-    )
-
-    research = research_company_public_presence(public_presence_request)
-    public_sources_summary = summarize_public_sources(
-        research.sources_found,
-        max_sources=5,
-    )
-
-    enriched_notes = build_research_notes(
-        request=request,
-        public_sources=public_sources_summary,
-        presence_summary=research.presence_summary,
-    )
-
-    audit_request = ProspectAuditRequest(
-        company_name=request.company_name,
-        website=request.website,
-        instagram=request.instagram,
-        linkedin=request.linkedin,
-        industry=request.industry,
-        offer=request.offer,
-        notes=enriched_notes,
-    )
-
-    audit = audit_prospect(audit_request)
-
-    diagnosis_initial = build_initial_diagnosis(
-        request=request,
-        audit=audit,
-        public_sources=public_sources_summary,
-    )
-
-    commercial_score = build_commercial_score(
-        audit=audit,
-        public_sources=public_sources_summary,
-        raw_sources_count=research.raw_result_count,
-        request=request,
-    )
-
-    score_interpretation = build_score_interpretation(
-        score=commercial_score,
-        audit=audit,
-    )
-
-    awareness_funnel_locator = build_awareness_funnel_locator(
-        audit=audit,
-        score=commercial_score,
-        request=request,
-    )
-
-    temperature_heatmap = build_temperature_heatmap(
-        audit=audit,
-        score=commercial_score,
-        request=request,
-    )
-
-    customer_intent_density_map = build_customer_intent_density_map(
-        awareness_funnel_locator=awareness_funnel_locator,
-        heatmap=temperature_heatmap,
-        audit=audit,
-    )
-
-    visual_diagram_mermaid = build_visual_diagram_mermaid(audit)
-    funnel_blueprint = build_funnel_blueprint(audit)
-
-    corrective_action_plan = build_corrective_action_plan(
-        request=request,
-        audit=audit,
-        public_sources=public_sources_summary,
-        score=commercial_score,
-    )
-
-    report_pages = build_report_pages(
-        request=request,
-        audit=audit,
-        score=commercial_score,
-        interpretation=score_interpretation,
-        public_sources=public_sources_summary,
-        corrective_actions=corrective_action_plan,
-        awareness_funnel_locator=awareness_funnel_locator,
-        temperature_heatmap=temperature_heatmap,
-        funnel_blueprint=funnel_blueprint,
-    )
-
-    report_ready_markdown = build_report_ready_markdown(
-        request=request,
-        audit=audit,
-        public_sources=public_sources_summary,
-        diagnosis_initial=diagnosis_initial,
-        commercial_score=commercial_score,
-        score_interpretation=score_interpretation,
-        awareness_funnel_locator=awareness_funnel_locator,
-        temperature_heatmap=temperature_heatmap,
-        customer_intent_density_map=customer_intent_density_map,
-        visual_diagram_mermaid=visual_diagram_mermaid,
-        funnel_blueprint=funnel_blueprint,
-        corrective_action_plan=corrective_action_plan,
-    )
-
-    report_sections = [
-        "Diagnóstico inicial",
-        "Fuentes públicas revisadas",
-        "Score comercial",
-        "Awareness funnel locator",
-        "Customer temperature heatmap",
-        "Customer intent density map",
-        "Problema comercial principal",
-        "Riesgo comercial",
-        "Funnel blueprint / system map",
-        "Blueprint diagram",
-        "Plan de acción recomendado",
-        "Próximo paso recomendado",
-        "Límites de esta entrega",
-    ]
-
-    return ProspectWithResearchResponse(
-        company_name=request.company_name,
-        audit_type="prospect_audit_with_public_research_v2",
-        research_confidence=research.research_confidence,
-        public_sources_summary=public_sources_summary,
-        diagnosis_initial=diagnosis_initial,
-        audit=IntegratedAuditBlock(
-            awareness_level=audit.awareness_level,
-            primary_bottleneck=audit.primary_bottleneck,
-            detected_focus_areas=audit.detected_focus_areas,
-            commercial_risk=audit.commercial_risk,
-            recommended_angle=audit.recommended_angle,
-            confidence=audit.confidence,
-        ),
-        commercial_score=commercial_score,
-        score_interpretation=score_interpretation,
-        awareness_funnel_locator=awareness_funnel_locator,
-        temperature_heatmap=temperature_heatmap,
-        customer_intent_density_map=customer_intent_density_map,
-        visual_diagram_mermaid=visual_diagram_mermaid,
-        funnel_blueprint=funnel_blueprint,
-        corrective_action_plan=corrective_action_plan,
-        report_pages=report_pages,
-        report_sections=report_sections,
-        report_ready_markdown=report_ready_markdown,
-        do_not_give_for_free=audit.do_not_give_for_free,
-        next_step=audit.next_step,
-        raw_sources_count=research.raw_result_count,
-    )
-
-
-def safe_number(value: Optional[float], default: float = 0.0) -> float:
-    try:
-        if value is None:
-            return default
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def calc_ctr_percent(campaign: CampaignMetric) -> Optional[float]:
-    if campaign.ctr_percent is not None:
-        return campaign.ctr_percent
-    if campaign.impressions and campaign.clicks is not None and campaign.impressions > 0:
-        return (campaign.clicks / campaign.impressions) * 100
-    return None
-
-
-def calc_cpl(campaign: CampaignMetric) -> Optional[float]:
-    if campaign.cpl is not None:
-        return campaign.cpl
-    leads = campaign.leads or campaign.form_submits or campaign.whatsapp_clicks
-    if campaign.spend is not None and leads and leads > 0:
-        return campaign.spend / leads
-    return None
-
-
-def calc_cpa(campaign: CampaignMetric) -> Optional[float]:
-    if campaign.cpa is not None:
-        return campaign.cpa
-    conversions = campaign.conversions or campaign.sales
-    if campaign.spend is not None and conversions and conversions > 0:
-        return campaign.spend / conversions
-    return None
-
-
-def calc_landing_conversion_rate(campaign: CampaignMetric) -> Optional[float]:
-    conversions = campaign.leads or campaign.form_submits or campaign.whatsapp_clicks or campaign.calls
-    visits = campaign.landing_visits or campaign.clicks
-    if visits and visits > 0 and conversions is not None:
-        return (conversions / visits) * 100
-    return None
-
-
-def calc_lead_quality_rate(campaign: CampaignMetric) -> Optional[float]:
-    if campaign.lead_quality_score is not None:
-        return campaign.lead_quality_score
-    if campaign.leads and campaign.leads > 0 and campaign.qualified_leads is not None:
-        return (campaign.qualified_leads / campaign.leads) * 100
-    if campaign.leads and campaign.leads > 0 and campaign.bad_leads is not None:
-        return max(0.0, 100.0 - ((campaign.bad_leads / campaign.leads) * 100))
-    return None
-
-
-def campaign_label(campaign: CampaignMetric) -> str:
-    parts = [campaign.channel, campaign.campaign_name, campaign.adset_name, campaign.ad_name]
-    return " / ".join([part for part in parts if part])
-
-
-def has_meaningful_campaign_data(campaigns: List[CampaignMetric]) -> bool:
-    metric_fields = [
-        "spend", "impressions", "clicks", "ctr_percent", "landing_visits", "leads",
-        "qualified_leads", "bad_leads", "conversions", "sales", "revenue", "cpl", "cpa",
-    ]
-    for campaign in campaigns:
-        for field in metric_fields:
-            if getattr(campaign, field) is not None:
-                return True
-    return False
-
-
-def infer_campaign_data_quality(request: CampaignPerformanceRequest) -> str:
-    if not request.campaigns:
-        return "sin_datos"
-    if not has_meaningful_campaign_data(request.campaigns):
-        return "baja"
-
-    metric_count = 0
-    for campaign in request.campaigns:
-        for field in ["spend", "impressions", "clicks", "leads", "qualified_leads", "conversions", "revenue"]:
-            if getattr(campaign, field) is not None:
-                metric_count += 1
-
-    if metric_count >= len(request.campaigns) * 5:
-        return "alta"
-    if metric_count >= len(request.campaigns) * 3:
-        return "media"
-    return "baja"
-
-
-def make_action(
-    category: str,
-    action: str,
-    trigger: str,
-    evidence: str,
-    priority: str,
-    effort: str,
-    expected_impact: str,
-    verification_metric: str,
-    related_campaign: Optional[str] = None,
-    funnel_stage: Optional[str] = None,
-    confidence: str = "media",
-    data_required: bool = False,
-) -> PerformanceAction:
-    return PerformanceAction(
-        category=category,
-        action=action,
-        trigger=trigger,
-        evidence=evidence,
-        priority=priority,
-        effort=effort,
-        expected_impact=expected_impact,
-        verification_metric=verification_metric,
-        related_campaign=related_campaign,
-        funnel_stage=funnel_stage,
-        confidence=confidence,
-        data_required=data_required,
-    )
-
-
-def build_default_strategic_actions(company_name: str, has_data: bool = False) -> List[PerformanceAction]:
-    confidence = "media" if has_data else "inferida"
-    return [
-        make_action(
-            category="propuesta_de_valor",
-            action="Corregir propuesta de valor",
-            trigger="La auditoría necesita una razón de elección más explícita.",
-            evidence="Señal estratégica: si la marca comunica oferta o disponibilidad sin diferencia, compite por precio, cercanía o conveniencia.",
-            priority="alta",
-            effort="medio",
-            expected_impact="Mayor claridad de posicionamiento y mejor calidad de intención.",
-            verification_metric="Aumento de consultas calificadas, mejor ratio visita→consulta y reducción de objeciones repetidas.",
-            confidence=confidence,
-            data_required=False,
-        ),
-        make_action(
-            category="cta",
-            action="Reformular CTA",
-            trigger="El recorrido necesita un próximo paso más claro.",
-            evidence="Un CTA genérico o débil reduce avance entre interés, consideración y contacto.",
-            priority="alta",
-            effort="bajo",
-            expected_impact="Más usuarios avanzando hacia consulta, diagnóstico, WhatsApp o formulario.",
-            verification_metric="CTR a contacto, clicks en WhatsApp, formularios enviados, llamadas o eventos clave.",
-            confidence=confidence,
-            data_required=False,
-        ),
-        make_action(
-            category="prueba_social",
-            action="Agregar prueba social",
-            trigger="La decisión requiere evidencia de confianza.",
-            evidence="Sin testimonios, casos, reseñas o pruebas visibles, el usuario compara más y avanza menos.",
-            priority="alta",
-            effort="medio",
-            expected_impact="Mayor confianza percibida y menor fricción en etapa de consideración.",
-            verification_metric="Conversión en landing, avance a consulta y reducción de abandono antes del contacto.",
-            confidence=confidence,
-            data_required=False,
-        ),
-        make_action(
-            category="objeciones",
-            action="Crear contenido de objeciones",
-            trigger="El usuario necesita resolver dudas antes de consultar.",
-            evidence="Las objeciones no resueltas suelen frenar consideración y conversión aunque haya interés.",
-            priority="media-alta",
-            effort="medio",
-            expected_impact="Más avance desde interés hacia consideración y consulta calificada.",
-            verification_metric="Engagement en piezas de objeciones, tiempo en página, clicks a CTA y preguntas repetidas en ventas.",
-            confidence=confidence,
-            data_required=False,
-        ),
-        make_action(
-            category="funnel",
-            action="Separar contenido de awareness y conversión",
-            trigger="No todo contenido debe cumplir el mismo objetivo.",
-            evidence="Mezclar contenido de descubrimiento con contenido de conversión debilita lectura del funnel y medición.",
-            priority="media-alta",
-            effort="medio",
-            expected_impact="Mejor organización del mensaje por temperatura y etapa de decisión.",
-            verification_metric="Performance por etapa: alcance/engagement para awareness, leads/consultas para conversión.",
-            confidence=confidence,
-            data_required=False,
-        ),
-        make_action(
-            category="posicionamiento",
-            action="Definir mensaje diferencial",
-            trigger="La marca necesita una diferencia defendible.",
-            evidence="Si el mercado no entiende por qué elegir la marca, la comparación baja a precio, ubicación o disponibilidad.",
-            priority="alta",
-            effort="medio",
-            expected_impact="Mayor preferencia y menor dependencia de argumentos tácticos.",
-            verification_metric="Mejor tasa de consulta calificada, feedback comercial y menor presión por descuento/precio.",
-            confidence=confidence,
-            data_required=False,
-        ),
-        make_action(
-            category="seguimiento",
-            action="Crear seguimiento comercial",
-            trigger="La conversión no termina en el primer contacto.",
-            evidence="Sin seguimiento, leads tibios se pierden aunque hayan mostrado intención.",
-            priority="media-alta",
-            effort="medio",
-            expected_impact="Recuperación de oportunidades que no convierten en el primer contacto.",
-            verification_metric="Tasa de respuesta post-consulta, recontactos, citas agendadas y oportunidades recuperadas.",
-            confidence=confidence,
-            data_required=False,
-        ),
-    ]
-
-
-def build_campaign_findings_and_actions(request: CampaignPerformanceRequest) -> tuple[List[PerformanceFinding], List[PerformanceAction], List[PerformanceAction], List[PerformanceAction]]:
-    findings: List[PerformanceFinding] = []
-    performance_actions: List[PerformanceAction] = []
-    budget_actions: List[PerformanceAction] = []
-    tracking_actions: List[PerformanceAction] = []
-
-    for campaign in request.campaigns:
-        label = campaign_label(campaign)
-        ctr = calc_ctr_percent(campaign)
-        cpl = calc_cpl(campaign)
-        cpa = calc_cpa(campaign)
-        landing_cr = calc_landing_conversion_rate(campaign)
-        quality_rate = calc_lead_quality_rate(campaign)
-        spend = safe_number(campaign.spend)
-        clicks = campaign.clicks or 0
-        leads = campaign.leads or campaign.form_submits or campaign.whatsapp_clicks or campaign.calls or 0
-        conversions = campaign.conversions or campaign.sales or 0
-        stage = campaign.funnel_stage or campaign.temperature
-
-        evidence_parts = []
-        if campaign.spend is not None:
-            evidence_parts.append(f"gasto={campaign.spend:g} {request.currency}")
-        if ctr is not None:
-            evidence_parts.append(f"CTR={ctr:.2f}%")
-        if cpl is not None:
-            evidence_parts.append(f"CPL={cpl:.2f} {request.currency}")
-        if cpa is not None:
-            evidence_parts.append(f"CPA={cpa:.2f} {request.currency}")
-        if landing_cr is not None:
-            evidence_parts.append(f"landing→lead={landing_cr:.2f}%")
-        if quality_rate is not None:
-            evidence_parts.append(f"calidad lead={quality_rate:.1f}%")
-        evidence = ", ".join(evidence_parts) or "datos parciales disponibles"
-
-        low_ctr = ctr is not None and ctr < request.target_ctr_percent
-        high_cpl = (
-            cpl is not None
-            and request.target_cpl is not None
-            and cpl > request.target_cpl * 1.25
-        )
-        good_cpl = (
-            cpl is not None
-            and request.target_cpl is not None
-            and cpl <= request.target_cpl * 0.75
-        )
-        low_quality = quality_rate is not None and quality_rate < request.min_lead_quality_rate_percent
-        good_quality = quality_rate is None or quality_rate >= request.min_lead_quality_rate_percent
-        low_landing_cr = landing_cr is not None and landing_cr < request.target_landing_conversion_rate_percent
-        meaningful_spend = spend > 0 and (
-            request.target_cpl is None
-            or spend >= request.target_cpl * 2
-        )
-
-        if high_cpl and low_quality:
-            findings.append(PerformanceFinding(
-                title="CPL alto con baja calidad de lead",
-                evidence=evidence,
-                interpretation="El gasto está comprando oportunidades caras y comercialmente débiles.",
-                severity="alta",
-                affected_campaigns=[label],
-            ))
-            budget_actions.append(make_action(
-                category="presupuesto",
-                action="Pausar campañas con CPL alto y baja calidad",
-                trigger="CPL por encima del objetivo y calidad por debajo del mínimo.",
-                evidence=evidence,
-                priority="alta",
-                effort="bajo",
-                expected_impact="Reducir desperdicio de presupuesto y evitar alimentar ventas con leads débiles.",
-                verification_metric="CPL, tasa de lead calificado y costo por oportunidad calificada.",
-                related_campaign=label,
-                funnel_stage=stage,
-                confidence="alta",
-            ))
-
-        if good_cpl and leads > 0 and good_quality:
-            budget_actions.append(make_action(
-                category="presupuesto",
-                action="Duplicar presupuesto en campañas con CPL bajo y buena conversión",
-                trigger="CPL por debajo del objetivo y calidad/conversión aceptable.",
-                evidence=evidence,
-                priority="media-alta",
-                effort="bajo",
-                expected_impact="Escalar inversión en campañas que ya muestran eficiencia.",
-                verification_metric="CPL, lead calificado, CPA y saturación/frecuencia después del aumento.",
-                related_campaign=label,
-                funnel_stage=stage,
-                confidence="media-alta",
-            ))
-
-        if low_ctr and (campaign.impressions or 0) >= 1000:
-            findings.append(PerformanceFinding(
-                title="CTR bajo",
-                evidence=evidence,
-                interpretation="La creatividad, el hook o la promesa inicial no están generando suficiente respuesta.",
-                severity="media-alta",
-                affected_campaigns=[label],
-            ))
-            performance_actions.append(make_action(
-                category="creativo",
-                action="Testear nuevos hooks en anuncios con CTR bajo",
-                trigger="CTR inferior al umbral definido.",
-                evidence=evidence,
-                priority="media-alta",
-                effort="medio",
-                expected_impact="Mejorar atención inicial y reducir costo de tráfico útil.",
-                verification_metric="CTR, CPC, thumbstop/hook rate si existe y visitas calificadas.",
-                related_campaign=label,
-                funnel_stage=stage,
-                confidence="alta",
-            ))
-
-        if low_landing_cr and clicks >= 50:
-            findings.append(PerformanceFinding(
-                title="Tráfico con baja conversión de landing",
-                evidence=evidence,
-                interpretation="El anuncio consigue tráfico, pero la landing o el siguiente paso no sostienen la intención.",
-                severity="alta",
-                affected_campaigns=[label],
-            ))
-            performance_actions.append(make_action(
-                category="landing",
-                action="Rehacer landing si hay tráfico pero baja conversión",
-                trigger="Clicks o visitas suficientes con baja conversión a lead/contacto.",
-                evidence=evidence,
-                priority="alta",
-                effort="alto",
-                expected_impact="Convertir mejor el tráfico existente sin depender solo de más inversión.",
-                verification_metric="Tasa landing→lead, eventos de contacto, scroll/clicks si hay medición y CPL efectivo.",
-                related_campaign=label,
-                funnel_stage=stage,
-                confidence="alta",
-            ))
-
-        if meaningful_spend and clicks > 50 and leads == 0 and conversions == 0:
-            performance_actions.append(make_action(
-                category="audiencia",
-                action="Cambiar audiencia si hay alto gasto y baja intención",
-                trigger="Gasto y clicks sin leads/conversiones.",
-                evidence=evidence,
-                priority="alta",
-                effort="medio",
-                expected_impact="Reducir tráfico irrelevante y acercar la campaña a usuarios con intención real.",
-                verification_metric="Lead rate, CPL, calidad de lead y tasa de conversación comercial.",
-                related_campaign=label,
-                funnel_stage=stage,
-                confidence="media-alta",
-            ))
-
-        if (campaign.landing_visits or clicks) >= 100 and leads > 0 and conversions == 0:
-            performance_actions.append(make_action(
-                category="retargeting",
-                action="Crear retargeting para usuarios con interés sin conversión",
-                trigger="Hay visitas/clicks/leads iniciales, pero no conversión final.",
-                evidence=evidence,
-                priority="media-alta",
-                effort="medio",
-                expected_impact="Recuperar usuarios tibios que ya mostraron interés.",
-                verification_metric="Conversión asistida, CPL retargeting, CPA y tasa de retorno a contacto.",
-                related_campaign=label,
-                funnel_stage=stage,
-                confidence="media",
-            ))
-
-        # Tracking issue: clicks exist, but no downstream metrics are provided or all are zero.
-        downstream_values = [
-            campaign.landing_visits, campaign.form_starts, campaign.form_submits,
-            campaign.whatsapp_clicks, campaign.calls, campaign.key_events,
-            campaign.leads, campaign.conversions, campaign.sales,
-        ]
-        downstream_known = any(value is not None for value in downstream_values)
-        downstream_sum = sum([int(value or 0) for value in downstream_values])
-        if clicks >= 50 and (not downstream_known or downstream_sum == 0):
-            tracking_actions.append(make_action(
-                category="tracking",
-                action="Corregir tracking si hay clicks pero no eventos",
-                trigger="Clicks relevantes sin eventos posteriores medidos.",
-                evidence=evidence,
-                priority="alta",
-                effort="medio",
-                expected_impact="Evitar decisiones a ciegas y separar problema de campaña vs problema de medición.",
-                verification_metric="Eventos GA4/Pixel/CAPI, WhatsApp clicks, formularios, llamadas y conversiones importadas.",
-                related_campaign=label,
-                funnel_stage=stage,
-                confidence="media-alta",
-            ))
-
-    return findings, performance_actions, budget_actions, tracking_actions
-
-
-def build_temperature_separation_action(request: CampaignPerformanceRequest) -> Optional[PerformanceAction]:
-    if not request.campaigns:
-        return make_action(
-            category="funnel",
-            action="Separar campañas por temperatura",
-            trigger="Todavía no hay campañas cargadas para clasificar por etapa.",
-            evidence="Acción preparada para cuando existan campañas: separar awareness, consideración, conversión y retargeting.",
-            priority="media",
-            effort="medio",
-            expected_impact="Mejor lectura del funnel y mensajes más coherentes por intención.",
-            verification_metric="Performance por etapa: alcance/CTR para frío, lead rate/CPL para templado-caliente, CPA para conversión.",
-            confidence="inferida",
-            data_required=True,
-        )
-
-    stages = set()
-    for campaign in request.campaigns:
-        if campaign.funnel_stage:
-            stages.add(campaign.funnel_stage.casefold())
-        if campaign.temperature:
-            stages.add(campaign.temperature.casefold())
-
-    mixed_or_missing = len(stages) <= 1 or any(not (campaign.funnel_stage or campaign.temperature) for campaign in request.campaigns)
-
-    if mixed_or_missing:
-        return make_action(
-            category="funnel",
-            action="Separar campañas por temperatura",
-            trigger="Las campañas no están claramente clasificadas por etapa/temperatura.",
-            evidence="Falta segmentar objetivos y mensajes entre frío, tibio, templado, caliente y retargeting.",
-            priority="media-alta",
-            effort="medio",
-            expected_impact="Mejor asignación de presupuesto y lectura más clara del rendimiento por intención.",
-            verification_metric="Reportes separados por etapa: CPM/CTR en awareness, CPL en consideración, CPA/ventas en conversión.",
-            confidence="media",
-            data_required=False,
-        )
-    return None
-
-
-def prioritize_actions(actions: List[PerformanceAction], limit: int = 12) -> List[PerformanceAction]:
-    priority_rank = {
-        "crítica": 0,
-        "critica": 0,
-        "alta": 1,
-        "media-alta": 2,
-        "media": 3,
-        "baja": 4,
-    }
-    return sorted(
-        actions,
-        key=lambda item: (
-            priority_rank.get(item.priority.casefold(), 9),
-            1 if item.data_required else 0,
-            item.category,
-        ),
-    )[:limit]
-
-
-def build_next_data_needed(request: CampaignPerformanceRequest) -> List[str]:
-    needed = []
-
-    if not request.campaigns:
-        return [
-            "Export de campañas con gasto, impresiones, clicks, CTR, CPC, CPM, leads y conversiones.",
-            "Datos de calidad de lead: calificados, no calificados, ventas o etapa CRM.",
-            "Eventos de landing: visitas, formularios, WhatsApp clicks, llamadas y conversiones.",
-            "Objetivos por campaña: awareness, consideración, conversión o retargeting.",
-            "Benchmarks internos: CPL objetivo, CPA objetivo y tasa mínima de lead calificado.",
-        ]
-
-    if request.target_cpl is None:
-        needed.append("CPL objetivo para decidir qué campañas pausar, escalar o revisar.")
-    if request.target_cpa is None:
-        needed.append("CPA objetivo o costo aceptable por oportunidad/venta.")
-    if not any(campaign.qualified_leads is not None or campaign.bad_leads is not None or campaign.lead_quality_score is not None for campaign in request.campaigns):
-        needed.append("Calidad de lead por campaña: calificados, malos leads o score comercial.")
-    if not any(campaign.landing_visits is not None or campaign.form_submits is not None or campaign.whatsapp_clicks is not None for campaign in request.campaigns):
-        needed.append("Eventos de landing/contacto: visitas, formularios, WhatsApp clicks o llamadas.")
-    if not any(campaign.conversions is not None or campaign.sales is not None or campaign.revenue is not None for campaign in request.campaigns):
-        needed.append("Conversiones finales, ventas o revenue para conectar marketing con negocio.")
-    if not needed:
-        needed.append("Datos históricos por semana/mes para detectar fatiga, tendencias y estacionalidad.")
-    return needed
-
-
-
-def calc_cpc_value(campaign: CampaignMetric) -> Optional[float]:
-    if campaign.cpc is not None:
-        return campaign.cpc
-    if campaign.spend is not None and campaign.clicks and campaign.clicks > 0:
-        return campaign.spend / campaign.clicks
-    return None
-
-
-def calc_cpm_value(campaign: CampaignMetric) -> Optional[float]:
-    if campaign.cpm is not None:
-        return campaign.cpm
-    if campaign.spend is not None and campaign.impressions and campaign.impressions > 0:
-        return (campaign.spend / campaign.impressions) * 1000
-    return None
-
-
-def calc_cvr_percent(campaign: CampaignMetric) -> Optional[float]:
-    leads = campaign.leads or campaign.form_submits or campaign.whatsapp_clicks or campaign.calls or campaign.conversions
-    if campaign.clicks and campaign.clicks > 0 and leads is not None:
-        return (leads / campaign.clicks) * 100
-    return None
-
-
-def median_or_none(values: List[Optional[float]]) -> Optional[float]:
-    clean = sorted([float(value) for value in values if value is not None])
-    if not clean:
-        return None
-    midpoint = len(clean) // 2
-    if len(clean) % 2:
-        return clean[midpoint]
-    return (clean[midpoint - 1] + clean[midpoint]) / 2
-
-
-def pct_delta(current: Optional[float], previous: Optional[float]) -> Optional[float]:
-    if current is None or previous is None or previous == 0:
-        return None
-    return ((current - previous) / abs(previous)) * 100
-
-
-def quality_score_from_campaign(campaign: CampaignMetric) -> Optional[float]:
-    if campaign.lead_quality_score is not None:
-        return max(0, min(float(campaign.lead_quality_score), 100))
-    rate = calc_lead_quality_rate(campaign)
-    if rate is not None:
-        return max(0, min(float(rate), 100))
-    notes = (campaign.notes or "").casefold()
-    if "alta" in notes or "calidad alta" in notes:
-        return 80
-    if "media-alta" in notes:
-        return 70
-    if "media" in notes:
-        return 55
-    if "baja" in notes or "poco calificado" in notes:
-        return 25
-    return None
-
-
-def quality_level(score: Optional[float]) -> str:
-    if score is None:
-        return "desconocida"
-    if score >= 75:
-        return "alta"
-    if score >= 55:
-        return "media"
-    if score >= 35:
-        return "baja-media"
-    return "baja"
-
-
-def sample_status(campaign: CampaignMetric) -> str:
-    clicks = campaign.clicks or 0
-    leads = campaign.leads or campaign.form_submits or campaign.whatsapp_clicks or campaign.calls or 0
-    if clicks < 100 and leads < 5:
-        return "muestra_insuficiente"
-    if clicks < 300 or leads < 10:
-        return "muestra_media"
-    return "muestra_suficiente"
-
-
-def tracking_reliability(campaign: CampaignMetric) -> str:
-    clicks = campaign.clicks or 0
-    leads = campaign.leads or campaign.form_submits or campaign.whatsapp_clicks or campaign.calls or 0
-    events = campaign.key_events or campaign.conversions or campaign.sales or 0
-    if campaign.events_configured is False or (clicks >= 100 and leads == 0 and events == 0):
-        return "crítica"
-    if campaign.utms_present is False or (clicks >= 100 and events == 0 and leads > 0):
-        return "media-baja"
-    if campaign.events_configured is True or events > 0 or leads > 0:
-        return "aceptable"
-    return "desconocida"
-
-
-def derive_campaign_metrics(request: CampaignPerformanceRequest) -> List[DerivedCampaignMetrics]:
-    derived = []
-    for campaign in request.campaigns:
-        derived.append(DerivedCampaignMetrics(
-            campaign_name=campaign_label(campaign),
-            channel=campaign.channel,
-            spend=campaign.spend,
-            impressions=campaign.impressions,
-            clicks=campaign.clicks,
-            leads=campaign.leads or campaign.form_submits or campaign.whatsapp_clicks or campaign.calls,
-            conversions=campaign.conversions or campaign.sales,
-            ctr_percent=calc_ctr_percent(campaign),
-            cpc=calc_cpc_value(campaign),
-            cpm=calc_cpm_value(campaign),
-            cpl=calc_cpl(campaign),
-            cpa=calc_cpa(campaign),
-            cvr_percent=calc_cvr_percent(campaign),
-            lead_quality_rate_percent=quality_score_from_campaign(campaign),
-            frequency=campaign.frequency,
-            sample_status=sample_status(campaign),
-            tracking_reliability=tracking_reliability(campaign),
-        ))
-    return derived
-
-
-def build_internal_benchmarks(derived: List[DerivedCampaignMetrics]) -> Dict[str, Optional[float]]:
+async def root() -> Dict[str, Any]:
     return {
-        "median_ctr_percent": median_or_none([item.ctr_percent for item in derived]),
-        "median_cpc": median_or_none([item.cpc for item in derived]),
-        "median_cpm": median_or_none([item.cpm for item in derived]),
-        "median_cpl": median_or_none([item.cpl for item in derived]),
-        "median_cpa": median_or_none([item.cpa for item in derived]),
-        "median_cvr_percent": median_or_none([item.cvr_percent for item in derived]),
-        "median_lead_quality_score": median_or_none([item.lead_quality_rate_percent for item in derived]),
+        "status": "ok",
+        "service": "marketing-auditor-public-presence-collector",
+        "version": APP_VERSION,
+        "endpoints": ["POST /collect/public-presence", "GET /deliverables/text/{report_id}.txt"],
     }
 
 
-def build_metric_deltas(request: CampaignPerformanceRequest) -> List[PerformanceMetricDelta]:
-    deltas: List[PerformanceMetricDelta] = []
-    for campaign in request.campaigns:
-        current_ctr = calc_ctr_percent(campaign)
-        current_cpc = calc_cpc_value(campaign)
-        current_cpm = calc_cpm_value(campaign)
-        current_cpl = calc_cpl(campaign)
-        current_cpa = calc_cpa(campaign)
-        current_quality = quality_score_from_campaign(campaign)
-
-        previous_ctr = campaign.previous_ctr_percent
-        if previous_ctr is None and campaign.previous_impressions and campaign.previous_clicks is not None and campaign.previous_impressions > 0:
-            previous_ctr = (campaign.previous_clicks / campaign.previous_impressions) * 100
-        previous_cpc = campaign.previous_cpc
-        if previous_cpc is None and campaign.previous_spend is not None and campaign.previous_clicks and campaign.previous_clicks > 0:
-            previous_cpc = campaign.previous_spend / campaign.previous_clicks
-        previous_cpm = campaign.previous_cpm
-        if previous_cpm is None and campaign.previous_spend is not None and campaign.previous_impressions and campaign.previous_impressions > 0:
-            previous_cpm = (campaign.previous_spend / campaign.previous_impressions) * 1000
-        previous_cpl = campaign.previous_cpl
-        if previous_cpl is None and campaign.previous_spend is not None and campaign.previous_leads and campaign.previous_leads > 0:
-            previous_cpl = campaign.previous_spend / campaign.previous_leads
-        previous_cpa = campaign.previous_cpa
-        if previous_cpa is None and campaign.previous_spend is not None and campaign.previous_conversions and campaign.previous_conversions > 0:
-            previous_cpa = campaign.previous_spend / campaign.previous_conversions
-
-        delta_ctr = pct_delta(current_ctr, previous_ctr)
-        delta_cpc = pct_delta(current_cpc, previous_cpc)
-        delta_cpl = pct_delta(current_cpl, previous_cpl)
-        interpretation = "Sin período anterior suficiente para interpretar tendencia."
-        if delta_ctr is not None and delta_cpc is not None and delta_cpl is not None:
-            if delta_ctr < -15 and delta_cpc > 15 and delta_cpl > 20:
-                interpretation = "La respuesta relativa empeoró: baja CTR, sube CPC y sube CPL. Posible fatiga creativa, audiencia deteriorada o pérdida de relevancia."
-            elif delta_ctr > 10 and delta_cpl < -10:
-                interpretation = "La campaña mejora eficiencia: sube CTR y baja CPL. Candidata a escalar con control si la calidad acompaña."
-            elif delta_cpc < -15 and delta_cpl > 20:
-                interpretation = "Clicks más baratos pero peor costo por lead. Posible caída de calidad o fricción posterior al click."
-
-        if any(value is not None for value in [campaign.previous_spend, campaign.previous_impressions, campaign.previous_clicks, previous_ctr, previous_cpl, previous_cpa]):
-            deltas.append(PerformanceMetricDelta(
-                campaign_name=campaign_label(campaign),
-                delta_spend_percent=pct_delta(campaign.spend, campaign.previous_spend),
-                delta_impressions_percent=pct_delta(campaign.impressions, campaign.previous_impressions),
-                delta_clicks_percent=pct_delta(campaign.clicks, campaign.previous_clicks),
-                delta_ctr_percent=delta_ctr,
-                delta_cpc_percent=delta_cpc,
-                delta_cpm_percent=pct_delta(current_cpm, previous_cpm),
-                delta_leads_percent=pct_delta(campaign.leads, campaign.previous_leads),
-                delta_cpl_percent=delta_cpl,
-                delta_cpa_percent=pct_delta(current_cpa, previous_cpa),
-                delta_frequency_percent=pct_delta(campaign.frequency, campaign.previous_frequency),
-                delta_lead_quality_percent=pct_delta(current_quality, campaign.previous_lead_quality_score),
-                interpretation=interpretation,
-            ))
-    return deltas
-
-
-def build_cross_metric_findings(request: CampaignPerformanceRequest, derived: List[DerivedCampaignMetrics], benchmarks: Dict[str, Optional[float]]) -> List[CrossMetricFinding]:
-    findings: List[CrossMetricFinding] = []
-    median_ctr = benchmarks.get("median_ctr_percent") or request.target_ctr_percent
-    median_cpl = benchmarks.get("median_cpl")
-    median_cpc = benchmarks.get("median_cpc")
-
-    for campaign, metrics in zip(request.campaigns, derived):
-        label = metrics.campaign_name
-        evidence = []
-        if metrics.ctr_percent is not None:
-            evidence.append(f"CTR={metrics.ctr_percent:.2f}%")
-        if metrics.cpc is not None:
-            evidence.append(f"CPC={metrics.cpc:.2f} {request.currency}")
-        if metrics.cpl is not None:
-            evidence.append(f"CPL={metrics.cpl:.2f} {request.currency}")
-        if metrics.cvr_percent is not None:
-            evidence.append(f"CVR={metrics.cvr_percent:.2f}%")
-        evidence_text = ", ".join(evidence) or "datos parciales"
-
-        if metrics.ctr_percent is not None and metrics.ctr_percent < request.target_ctr_percent and metrics.impressions and metrics.impressions >= 1000:
-            findings.append(CrossMetricFinding(
-                pattern="CTR bajo con volumen de impresiones",
-                evidence=evidence_text,
-                interpretation="Hay exposición, pero el anuncio no está generando respuesta proporcional. Posible problema de hook, creatividad, audiencia o promesa.",
-                affected_campaigns=[label],
-                severity="media-alta",
-                confidence="media" if metrics.sample_status != "muestra_insuficiente" else "baja",
-                recommended_action="Testear nuevos hooks, reformular promesa inicial o separar audiencia por temperatura.",
-            ))
-
-        if metrics.ctr_percent is not None and metrics.ctr_percent >= max(median_ctr, request.target_ctr_percent) and metrics.cvr_percent is not None and metrics.cvr_percent < request.target_landing_conversion_rate_percent:
-            findings.append(CrossMetricFinding(
-                pattern="CTR alto con conversión baja",
-                evidence=evidence_text,
-                interpretation="El anuncio genera interés, pero la landing, oferta, CTA o formulario no sostienen la promesa posterior al click.",
-                affected_campaigns=[label],
-                severity="alta",
-                confidence="media-alta",
-                recommended_action="Auditar message match anuncio→landing, prueba social, CTA, formulario y velocidad/fricción mobile.",
-            ))
-
-        if median_cpc and median_cpl and metrics.cpc is not None and metrics.cpl is not None and metrics.cpc < median_cpc * 0.75 and metrics.cpl > median_cpl * 1.25:
-            findings.append(CrossMetricFinding(
-                pattern="CPC bajo con CPL alto",
-                evidence=evidence_text,
-                interpretation="El tráfico es barato, pero no se transforma en oportunidad. Posible tráfico de baja intención, audiencia amplia o landing débil.",
-                affected_campaigns=[label],
-                severity="alta",
-                confidence="media",
-                recommended_action="No escalar por CPC barato; revisar audiencia, promesa, landing y filtros de calificación.",
-            ))
-
-        if campaign.frequency is not None and campaign.frequency >= 2.5 and metrics.ctr_percent is not None and metrics.ctr_percent < max(median_ctr * 0.85, request.target_ctr_percent):
-            findings.append(CrossMetricFinding(
-                pattern="Frecuencia alta con CTR débil",
-                evidence=evidence_text + f", frecuencia={campaign.frequency:.2f}",
-                interpretation="La audiencia puede estar saturada o la creatividad perdió novedad.",
-                affected_campaigns=[label],
-                severity="media",
-                confidence="media",
-                recommended_action="Rotar creativos, limitar frecuencia, ampliar audiencia o separar retargeting por ventanas.",
-            ))
-
-        clicks = metrics.clicks or 0
-        leads = metrics.leads or 0
-        events = campaign.key_events or campaign.conversions or campaign.sales or 0
-        if clicks >= 100 and leads == 0 and events == 0:
-            findings.append(CrossMetricFinding(
-                pattern="Clicks altos sin eventos ni leads",
-                evidence=evidence_text + f", clicks={clicks}",
-                interpretation="No se puede distinguir entre mala conversión real y tracking roto. La lectura de CPA/CPL queda contaminada.",
-                affected_campaigns=[label],
-                severity="crítica",
-                confidence="alta",
-                recommended_action="Corregir tracking antes de tomar decisiones de presupuesto.",
-            ))
-
-    return findings
-
-
-def build_tracking_health(request: CampaignPerformanceRequest) -> List[TrackingHealthFinding]:
-    findings: List[TrackingHealthFinding] = []
-    for campaign in request.campaigns:
-        label = campaign_label(campaign)
-        clicks = campaign.clicks or 0
-        leads = campaign.leads or campaign.form_submits or campaign.whatsapp_clicks or campaign.calls or 0
-        events = campaign.key_events or campaign.conversions or campaign.sales or 0
-        if campaign.events_configured is False or (clicks >= 100 and leads == 0 and events == 0):
-            findings.append(TrackingHealthFinding(
-                campaign_name=label,
-                issue="Tracking crítico o conversiones no registradas",
-                severity="crítica",
-                evidence=f"Clicks={clicks}, leads={leads}, eventos={events}, events_configured={campaign.events_configured}",
-                business_risk="Se pueden pausar campañas que sí funcionan o escalar campañas que no generan negocio real.",
-                recommended_fix="Auditar Pixel/CAPI/GA4, eventos de formulario, WhatsApp, llamadas, thank-you page y conversiones importadas.",
-                validation_metric="Eventos registrados correctamente y consistencia entre Ads, GA4 y CRM.",
-            ))
-        if campaign.utms_present is False:
-            findings.append(TrackingHealthFinding(
-                campaign_name=label,
-                issue="UTMs ausentes o inconsistentes",
-                severity="media-alta",
-                evidence="La campaña declara utms_present=false.",
-                business_risk="No se podrá conectar campaña, landing, CRM y calidad real de lead.",
-                recommended_fix="Estandarizar UTMs por canal, campaña, adset, anuncio, hook y etapa del funnel.",
-                validation_metric="100% de leads con fuente/medio/campaña/anuncio trazables.",
-            ))
-    if not request.campaigns:
-        findings.append(TrackingHealthFinding(
-            campaign_name=None,
-            issue="Tracking pendiente de validar",
-            severity="media",
-            evidence="No hay campañas cargadas.",
-            business_risk="Las decisiones de presupuesto no deben tomarse sin eventos y UTMs confiables.",
-            recommended_fix="Cargar export de Ads + GA4/Pixel/CRM con eventos de contacto y calidad.",
-            validation_metric="Data completeness y tracking readiness > 80/100.",
-        ))
-    return findings
-
-
-def build_lead_quality_assessment(request: CampaignPerformanceRequest) -> List[LeadQualityAssessment]:
-    results: List[LeadQualityAssessment] = []
-    for campaign in request.campaigns:
-        score = quality_score_from_campaign(campaign)
-        level = quality_level(score)
-        cpl = calc_cpl(campaign)
-        evidence = []
-        if score is not None:
-            evidence.append(f"score={score:.0f}/100")
-        if campaign.qualified_leads is not None:
-            evidence.append(f"calificados={campaign.qualified_leads}")
-        if campaign.bad_leads is not None:
-            evidence.append(f"malos={campaign.bad_leads}")
-        if cpl is not None:
-            evidence.append(f"CPL={cpl:.2f} {request.currency}")
-        recommendation = "Cargar calidad real de lead por CRM antes de decidir escalado." if score is None else "Mantener lectura de calidad en cada decisión de presupuesto."
-        if score is not None and score < 35:
-            recommendation = "No escalar por volumen barato: ajustar promesa, audiencia y filtros de calificación."
-        elif score is not None and score >= 75 and cpl is not None:
-            recommendation = "Evaluar escalado gradual si tracking y muestra son suficientes."
-        results.append(LeadQualityAssessment(
-            campaign_name=campaign_label(campaign),
-            lead_quality_score=score,
-            quality_level=level,
-            evidence=", ".join(evidence) or "calidad no cargada",
-            recommendation=recommendation,
-        ))
-    return results
-
-
-def build_cost_quality_matrix(request: CampaignPerformanceRequest, benchmarks: Dict[str, Optional[float]]) -> List[CostQualityQuadrant]:
-    matrix: List[CostQualityQuadrant] = []
-    median_cpl = benchmarks.get("median_cpl") or request.target_cpl
-    for campaign in request.campaigns:
-        cpl = calc_cpl(campaign)
-        score = quality_score_from_campaign(campaign)
-        if cpl is None and score is None:
-            continue
-        cost_high = cpl is not None and median_cpl is not None and cpl > median_cpl
-        cost_low = cpl is not None and median_cpl is not None and cpl <= median_cpl
-        quality_high = score is not None and score >= 60
-        quality_low = score is not None and score < 45
-        quadrant = "sin_clasificar"
-        recommendation = "Completar CPL y calidad para ubicar la campaña."
-        confidence = "baja"
-        if cost_low and quality_high:
-            quadrant = "barato_alta_calidad"
-            recommendation = "Escalar con incremento gradual y monitorear frecuencia/calidad."
-            confidence = "media-alta"
-        elif cost_low and quality_low:
-            quadrant = "barato_baja_calidad"
-            recommendation = "No escalar todavía; ajustar promesa, audiencia y filtro comercial."
-            confidence = "media"
-        elif cost_high and quality_high:
-            quadrant = "caro_alta_calidad"
-            recommendation = "Optimizar antes de pausar; puede valer la pena si genera oportunidades reales."
-            confidence = "media"
-        elif cost_high and quality_low:
-            quadrant = "caro_baja_calidad"
-            recommendation = "Pausar, rehacer o mover presupuesto a campañas más eficientes."
-            confidence = "alta"
-        matrix.append(CostQualityQuadrant(
-            campaign_name=campaign_label(campaign),
-            quadrant=quadrant,
-            cpl=cpl,
-            quality_score=score,
-            recommendation=recommendation,
-            confidence=confidence,
-        ))
-    return matrix
-
-
-def build_budget_reallocation(request: CampaignPerformanceRequest, matrix: List[CostQualityQuadrant]) -> List[BudgetReallocationRecommendation]:
-    recommendations: List[BudgetReallocationRecommendation] = []
-    for item in matrix:
-        if item.quadrant == "barato_alta_calidad":
-            recommendations.append(BudgetReallocationRecommendation(
-                campaign_name=item.campaign_name,
-                action="aumentar_presupuesto_gradual",
-                recommended_change_percent=20,
-                reason="CPL relativo favorable y calidad alta.",
-                risk="Escalar demasiado rápido puede saturar audiencia o bajar calidad.",
-                confidence=item.confidence,
-            ))
-        elif item.quadrant == "caro_baja_calidad":
-            recommendations.append(BudgetReallocationRecommendation(
-                campaign_name=item.campaign_name,
-                action="reducir_o_pausar",
-                recommended_change_percent=-50,
-                reason="CPL alto y calidad baja.",
-                risk="Si la muestra es chica, validar antes de pausar definitivamente.",
-                confidence=item.confidence,
-            ))
-        elif item.quadrant == "barato_baja_calidad":
-            recommendations.append(BudgetReallocationRecommendation(
-                campaign_name=item.campaign_name,
-                action="mantener_con_filtro",
-                recommended_change_percent=0,
-                reason="Costo bajo pero calidad débil; primero mejorar filtro y promesa.",
-                risk="Escalar puede llenar ventas de leads malos.",
-                confidence=item.confidence,
-            ))
-        elif item.quadrant == "caro_alta_calidad":
-            recommendations.append(BudgetReallocationRecommendation(
-                campaign_name=item.campaign_name,
-                action="optimizar_sin_pausar",
-                recommended_change_percent=0,
-                reason="La calidad justifica análisis; optimizar creativo, landing y segmentación antes de cortar.",
-                risk="Pausar puede eliminar una fuente de oportunidades valiosas.",
-                confidence=item.confidence,
-            ))
-    if not recommendations and not request.campaigns:
-        recommendations.append(BudgetReallocationRecommendation(
-            campaign_name="pendiente",
-            action="sin_reasignacion_hasta_cargar_datos",
-            recommended_change_percent=None,
-            reason="No hay campañas para comparar.",
-            risk="Reasignar presupuesto sin CPL, calidad y tracking puede aumentar desperdicio.",
-            confidence="preparada",
-        ))
-    return recommendations
-
-
-def infer_hook(campaign: CampaignMetric) -> str:
-    if campaign.hook:
-        return campaign.hook
-    if campaign.angle:
-        return campaign.angle
-    name = campaign.campaign_name.casefold()
-    notes = (campaign.notes or "").casefold()
-    combined = name + " " + notes
-    if "seguridad" in combined or "capital" in combined or "invers" in combined:
-        return "seguridad / inversión"
-    if "financi" in combined:
-        return "financiación"
-    if "amenit" in combined or "diseño" in combined or "estilo" in combined:
-        return "diseño / amenities"
-    if "retarget" in combined:
-        return "retargeting"
-    return campaign.campaign_name
-
-
-def build_creative_hook_insights(request: CampaignPerformanceRequest, derived: List[DerivedCampaignMetrics]) -> List[CreativeHookInsight]:
-    grouped: Dict[str, List[tuple[CampaignMetric, DerivedCampaignMetrics]]] = {}
-    for campaign, metrics in zip(request.campaigns, derived):
-        grouped.setdefault(infer_hook(campaign), []).append((campaign, metrics))
-    insights: List[CreativeHookInsight] = []
-    for hook, rows in grouped.items():
-        avg_ctr = median_or_none([metrics.ctr_percent for _, metrics in rows])
-        avg_cpl = median_or_none([metrics.cpl for _, metrics in rows])
-        avg_quality = median_or_none([metrics.lead_quality_rate_percent for _, metrics in rows])
-        campaigns = [metrics.campaign_name for _, metrics in rows]
-        signal = f"CTR mediano={avg_ctr:.2f}%" if avg_ctr is not None else "CTR no disponible"
-        if avg_cpl is not None:
-            signal += f", CPL mediano={avg_cpl:.2f} {request.currency}"
-        if avg_quality is not None:
-            signal += f", calidad mediana={avg_quality:.0f}/100"
-        interpretation = "Ángulo pendiente de validar."
-        next_test = "Probar variantes con promesas y objeciones distintas."
-        if avg_ctr is not None and avg_quality is not None and avg_ctr >= request.target_ctr_percent and avg_quality >= 60:
-            interpretation = "Ángulo con señales de respuesta y calidad. Puede ser base de nuevos tests."
-            next_test = "Crear 2-3 variantes del mismo ángulo con diferente prueba, CTA y objeción."
-        elif avg_ctr is not None and avg_ctr < request.target_ctr_percent:
-            interpretation = "Ángulo con baja respuesta inicial. Puede servir para awareness, pero no parece fuerte para conversión."
-            next_test = "Cambiar hook, promesa o primer frame antes de aumentar presupuesto."
-        insights.append(CreativeHookInsight(
-            hook=hook,
-            affected_campaigns=campaigns,
-            signal=signal,
-            interpretation=interpretation,
-            recommended_next_test=next_test,
-        ))
-    return insights
-
-
-def build_landing_friction(request: CampaignPerformanceRequest, derived: List[DerivedCampaignMetrics]) -> List[LandingFrictionAssessment]:
-    assessments: List[LandingFrictionAssessment] = []
-    for campaign, metrics in zip(request.campaigns, derived):
-        if metrics.clicks is None and metrics.ctr_percent is None:
-            continue
-        friction = 35
-        evidence = []
-        if metrics.ctr_percent is not None and metrics.ctr_percent >= request.target_ctr_percent:
-            friction += 15
-            evidence.append(f"CTR aceptable/alto={metrics.ctr_percent:.2f}%")
-        if metrics.cvr_percent is not None and metrics.cvr_percent < request.target_landing_conversion_rate_percent:
-            friction += 30
-            evidence.append(f"CVR bajo={metrics.cvr_percent:.2f}%")
-        if campaign.landing_visits and (campaign.leads or 0) == 0:
-            friction += 25
-            evidence.append(f"visitas landing={campaign.landing_visits}, leads=0")
-        if campaign.mobile_share_percent is not None and campaign.mobile_share_percent > 70 and metrics.cvr_percent is not None and metrics.cvr_percent < request.target_landing_conversion_rate_percent:
-            friction += 10
-            evidence.append("alto tráfico mobile con baja conversión")
-        if evidence:
-            assessments.append(LandingFrictionAssessment(
-                campaign_name=metrics.campaign_name,
-                friction_score=max(0, min(friction, 100)),
-                evidence=", ".join(evidence),
-                likely_issue="La landing, formulario, CTA o prueba de confianza no sostienen la promesa del anuncio.",
-                recommended_fix="Revisar message match, prueba social above the fold, CTA, formulario, velocidad y experiencia mobile.",
-            ))
-    return assessments
-
-
-def build_message_match(request: CampaignPerformanceRequest) -> List[MessageMatchAssessment]:
-    assessments: List[MessageMatchAssessment] = []
-    for campaign in request.campaigns:
-        promise = (campaign.ad_promise or campaign.hook or campaign.angle or "").casefold()
-        landing = (campaign.landing_message or "").casefold()
-        score = 70
-        mismatch = False
-        evidence = "No hay promesa/landing suficientes para evaluar message match."
-        if promise and landing:
-            overlap = set(promise.split()) & set(landing.split())
-            if len(overlap) < 2:
-                score = 35
-                mismatch = True
-                evidence = f"Promesa='{campaign.ad_promise or campaign.hook or campaign.angle}' vs landing='{campaign.landing_message}'."
-            else:
-                evidence = "Promesa y landing comparten términos principales."
-        elif promise and not landing:
-            score = 50
-            evidence = "Hay promesa de anuncio, pero no se cargó mensaje de landing."
-        if mismatch or score < 70:
-            assessments.append(MessageMatchAssessment(
-                campaign_name=campaign_label(campaign),
-                message_match_score=score,
-                mismatch_detected=mismatch,
-                evidence=evidence,
-                recommended_fix="Alinear headline, prueba social, CTA y oferta de la landing con el hook del anuncio.",
-            ))
-    return assessments
-
-
-def build_funnel_leaks(request: CampaignPerformanceRequest, derived: List[DerivedCampaignMetrics]) -> List[FunnelLeakFinding]:
-    leaks: List[FunnelLeakFinding] = []
-    for campaign, metrics in zip(request.campaigns, derived):
-        label = metrics.campaign_name
-        if metrics.impressions and metrics.impressions >= 1000 and metrics.ctr_percent is not None and metrics.ctr_percent < request.target_ctr_percent:
-            leaks.append(FunnelLeakFinding(
-                campaign_name=label,
-                leak_stage="Awareness",
-                evidence=f"Impresiones={metrics.impressions}, CTR={metrics.ctr_percent:.2f}%",
-                probable_cause="Hook, creatividad, audiencia o promesa inicial poco relevante.",
-                recommended_action="Testear hooks y separar mensajes por temperatura.",
-                metric_to_validate="CTR, CPC y engagement de calidad.",
-            ))
-        if metrics.ctr_percent is not None and metrics.ctr_percent >= request.target_ctr_percent and metrics.cvr_percent is not None and metrics.cvr_percent < request.target_landing_conversion_rate_percent:
-            leaks.append(FunnelLeakFinding(
-                campaign_name=label,
-                leak_stage="Consideration / Landing",
-                evidence=f"CTR={metrics.ctr_percent:.2f}%, CVR={metrics.cvr_percent:.2f}%",
-                probable_cause="La landing, CTA o prueba de confianza no convierte el interés.",
-                recommended_action="Rehacer bloque inicial de landing, CTA y prueba social.",
-                metric_to_validate="CVR landing→lead, CPL y calidad del lead.",
-            ))
-        if metrics.leads and campaign.meetings is not None and campaign.meetings < max(1, metrics.leads * 0.15):
-            leaks.append(FunnelLeakFinding(
-                campaign_name=label,
-                leak_stage="Sales / Follow-up",
-                evidence=f"Leads={metrics.leads}, reuniones={campaign.meetings}",
-                probable_cause="Lead follow-up, velocidad de contacto o calificación débil.",
-                recommended_action="Crear seguimiento comercial y SLA de contacto.",
-                metric_to_validate="tasa lead→reunión y tiempo de primera respuesta.",
-            ))
-    return leaks
-
-
-def build_experiment_recommendations(
-    request: CampaignPerformanceRequest,
-    cross_findings: List[CrossMetricFinding],
-    landing_friction: List[LandingFrictionAssessment],
-    hook_insights: List[CreativeHookInsight],
-) -> List[ExperimentRecommendation]:
-    experiments: List[ExperimentRecommendation] = []
-    if any("CTR bajo" in finding.pattern for finding in cross_findings):
-        experiments.append(ExperimentRecommendation(
-            title="Test de hooks para recuperar respuesta inicial",
-            hypothesis="Si cambiamos el hook principal hacia dolor, seguridad, prueba o beneficio concreto, subirá el CTR sin deteriorar calidad.",
-            change="Crear 3 variantes de hook para campañas con CTR bajo.",
-            primary_metric="CTR",
-            secondary_metric="CPC y calidad de lead",
-            success_criteria="+20% CTR sin caída de calidad respecto al control.",
-            minimum_duration="7–14 días o hasta alcanzar muestra mínima.",
-            risk="Confundir engagement superficial con intención real.",
-            do_not_touch="No cambiar audiencia, landing y presupuesto al mismo tiempo que el hook.",
-        ))
-    if landing_friction:
-        experiments.append(ExperimentRecommendation(
-            title="Test de landing para cerrar fuga post-click",
-            hypothesis="Si alineamos headline, prueba social y CTA con la promesa del anuncio, aumentará la tasa landing→lead.",
-            change="Crear variante de landing con mensaje específico, prueba social visible y CTA de menor fricción.",
-            primary_metric="CVR landing→lead",
-            secondary_metric="CPL y lead quality score",
-            success_criteria="+20% CVR sin caída de calidad.",
-            minimum_duration="7–14 días o hasta 300+ clicks.",
-            risk="Aumentar leads pero bajar calidad si el CTA es demasiado amplio.",
-            do_not_touch="No cambiar tracking ni evento primario durante el test.",
-        ))
-    if hook_insights:
-        best = next((item for item in hook_insights if "respuesta" in item.interpretation or "calidad" in item.interpretation), None)
-        if best:
-            experiments.append(ExperimentRecommendation(
-                title=f"Profundizar ángulo ganador: {best.hook}",
-                hypothesis="Si expandimos un ángulo con señal de calidad, podemos aumentar volumen manteniendo intención.",
-                change="Crear variantes del ángulo ganador con objeciones, prueba y CTA distintos.",
-                primary_metric="CPL de lead calificado",
-                secondary_metric="CTR, frecuencia y tasa de reunión",
-                success_criteria="Mantener CPL relativo y calidad mientras sube volumen.",
-                minimum_duration="14 días o muestra mínima de leads calificados.",
-                risk="Saturar un ángulo ganador si se escala demasiado rápido.",
-                do_not_touch="No duplicar presupuesto más de 20–30% sin monitoreo.",
-            ))
-    if not experiments:
-        experiments.append(ExperimentRecommendation(
-            title="Preparar primer ciclo de experimentos",
-            hypothesis="Con datos de campaña y tracking confiable se podrán aislar fugas por creativo, landing, audiencia o seguimiento.",
-            change="Cargar métricas completas y definir un control antes de modificar múltiples variables.",
-            primary_metric="CPL de lead calificado",
-            secondary_metric="CTR, CVR, reuniones y CPA",
-            success_criteria="Decisiones basadas en muestra suficiente y tracking confiable.",
-            minimum_duration="7–14 días por test.",
-            risk="Tomar decisiones con datos incompletos.",
-            do_not_touch="No mezclar cambios de creativo, audiencia, landing y tracking en el mismo test.",
-        ))
-    return experiments[:6]
-
-
-def build_data_completeness(request: CampaignPerformanceRequest) -> DataCompletenessScore:
-    checks = {
-        "gasto": any(c.spend is not None for c in request.campaigns),
-        "impresiones": any(c.impressions is not None for c in request.campaigns),
-        "clicks": any(c.clicks is not None for c in request.campaigns),
-        "leads": any(c.leads is not None or c.form_submits is not None or c.whatsapp_clicks is not None for c in request.campaigns),
-        "conversiones/ventas": any(c.conversions is not None or c.sales is not None or c.revenue is not None for c in request.campaigns),
-        "calidad de lead": any(c.qualified_leads is not None or c.bad_leads is not None or c.lead_quality_score is not None for c in request.campaigns),
-        "eventos/tracking": any(c.key_events is not None or c.events_configured is not None for c in request.campaigns),
-        "UTMs": any(c.utms_present is not None for c in request.campaigns),
-        "landing/formulario": any(c.landing_visits is not None or c.form_starts is not None or c.form_submits is not None for c in request.campaigns),
-        "CRM/reuniones": any(c.meetings is not None or c.opportunities is not None or c.crm_stage is not None for c in request.campaigns),
-        "período anterior": any(c.previous_spend is not None or c.previous_clicks is not None or c.previous_leads is not None for c in request.campaigns),
-    }
-    if not request.campaigns:
-        return DataCompletenessScore(
-            score=0,
-            missing_fields=list(checks.keys()),
-            impact_on_analysis="Sin campañas, el sistema solo puede devolver acciones preparadas e inferencias estratégicas.",
-            next_data_to_collect=build_next_data_needed(request),
-        )
-    present = sum(1 for value in checks.values() if value)
-    score = round((present / len(checks)) * 100)
-    missing = [name for name, ok in checks.items() if not ok]
-    impact = "Alta capacidad analítica." if score >= 80 else "Análisis útil pero todavía incompleto." if score >= 50 else "Alta incertidumbre: faltan datos clave para decisiones de presupuesto."
-    return DataCompletenessScore(
-        score=score,
-        missing_fields=missing,
-        impact_on_analysis=impact,
-        next_data_to_collect=missing[:8] or ["Datos históricos por período para detectar tendencia y fatiga."],
-    )
-
-
-def build_sample_size_warnings(request: CampaignPerformanceRequest) -> List[str]:
-    warnings = []
-    for campaign in request.campaigns:
-        clicks = campaign.clicks or 0
-        leads = campaign.leads or campaign.form_submits or campaign.whatsapp_clicks or campaign.calls or 0
-        if clicks < 100 and leads < 5:
-            warnings.append(f"{campaign_label(campaign)}: muestra insuficiente; evitar decisiones fuertes hasta superar 100–300 clicks o 5–10 leads.")
-        elif leads < 5:
-            warnings.append(f"{campaign_label(campaign)}: pocos leads; no concluir calidad todavía.")
-    return warnings
-
-
-def build_confidence_notes(cross_findings: List[CrossMetricFinding], tracking: List[TrackingHealthFinding], data_score: DataCompletenessScore) -> List[str]:
-    notes = []
-    if data_score.score < 50:
-        notes.append("Confianza general baja-media: faltan datos de tracking, calidad, CRM o histórico.")
-    elif data_score.score < 80:
-        notes.append("Confianza general media: hay datos suficientes para priorizar, pero conviene completar CRM/histórico.")
-    else:
-        notes.append("Confianza general alta: dataset suficientemente completo para decisiones accionables.")
-    if any(item.severity == "crítica" for item in tracking):
-        notes.append("Las conclusiones de CPA/CPL deben leerse con cautela hasta corregir tracking crítico.")
-    for finding in cross_findings[:5]:
-        notes.append(f"{finding.pattern}: confianza {finding.confidence}; severidad {finding.severity}.")
-    return notes
-
-
-def build_timed_action_plan(data_score: DataCompletenessScore, tracking: List[TrackingHealthFinding], budget: List[BudgetReallocationRecommendation], experiments: List[ExperimentRecommendation]) -> TimedActionPlan:
-    today = []
-    if any(item.severity == "crítica" for item in tracking):
-        today.append("Corregir tracking crítico antes de tomar decisiones de presupuesto.")
-    today.append("Identificar campañas con desperdicio evidente y bloquear escalado de campañas con baja calidad.")
-    if data_score.score < 70:
-        today.append("Completar datos mínimos: gasto, clicks, leads, eventos, calidad y CRM.")
-
-    seven = ["Reformular CTA y prueba social en puntos de contacto principales."]
-    if budget:
-        seven.append("Aplicar reasignación gradual: reducir desperdicio y escalar solo campañas con calidad suficiente.")
-    if experiments:
-        seven.append("Lanzar primer ciclo de tests con una variable por vez.")
-
-    thirty = ["Rediseñar landing o message match donde exista CTR alto con CVR bajo.", "Separar campañas por temperatura: frío, tibio, templado, caliente y retargeting."]
-    ninety = ["Crear sistema de seguimiento comercial y scoring de leads en CRM.", "Conectar campañas, GA4/Pixel/CAPI y CRM para reporting de calidad real."]
-    return TimedActionPlan(today_48h=today, next_7_days=seven, next_14_30_days=thirty, next_60_90_days=ninety)
-
-
-def build_discovery_questions() -> List[str]:
-    return [
-        "¿Qué porcentaje de leads agenda reunión?",
-        "¿Qué campañas generan clientes reales, no solo leads?",
-        "¿Qué objeciones aparecen con más frecuencia en ventas?",
-        "¿Cuál es el tiempo medio desde primer contacto hasta decisión?",
-        "¿Qué evento se usa como conversión principal y dónde se dispara?",
-        "¿Los leads tienen UTMs y fuente/campaña en CRM?",
-        "¿Cuál es la tasa de contacto, reunión, oportunidad y cierre por canal?",
-        "¿Qué lead se considera calificado y quién lo valida?",
-    ]
-
-
-def build_proposal_guidance(data_score: DataCompletenessScore) -> ProposalGuidance:
-    return ProposalGuidance(
-        what_to_sell=[
-            "Diagnóstico profundo de sistema comercial y performance.",
-            "Corrección de tracking, eventos, UTMs y reporting de calidad.",
-            "Rediseño de propuesta de valor, CTA, prueba social y ruta de conversión.",
-            "Plan de experimentos para hooks, landing, audiencias y retargeting.",
-        ],
-        what_not_to_sell_yet=[
-            "Calendario completo de contenidos antes de ordenar mensaje y medición.",
-            "Escalado agresivo de campañas sin tracking y calidad validados.",
-            "Implementación táctica completa sin discovery comercial.",
-        ],
-        what_to_show_in_meeting=[
-            "Heatmap de intención y zona bloqueada.",
-            "Blueprint con FAULT, DG, ruta verde y Support Layer.",
-            "Matriz costo/calidad y riesgos de presupuesto.",
-            "Preguntas de datos necesarias para pasar de inferencia a evidencia.",
-        ],
-        what_data_to_request=data_score.next_data_to_collect,
-        what_to_promise=[
-            "Mayor claridad diagnóstica y priorización de decisiones.",
-            "Mejor trazabilidad entre campañas, leads y oportunidades.",
-            "Sistema de pruebas para mejorar conversión y calidad.",
-        ],
-        what_not_to_promise=[
-            "Resultados garantizados sin datos ni control de implementación.",
-            "Bajar CPL sin considerar calidad de lead.",
-            "Escalar ventas solo aumentando presupuesto.",
-        ],
-        closing_angle="El problema no es solo publicar o invertir más; es construir un sistema medible que convierta intención en oportunidades calificadas.",
-    )
-
-
-def build_commercial_readiness_score(public_audit: ProspectWithResearchResponse, campaign_performance: CampaignPerformanceResponse) -> CommercialReadinessScore:
-    tracking_score = max(0, min(100, campaign_performance.data_completeness.score + 10))
-    if any(item.severity == "crítica" for item in campaign_performance.tracking_health):
-        tracking_score = min(tracking_score, 40)
-    offer_clarity = max(20, min(100, public_audit.commercial_score.value_proposition * 10))
-    funnel_continuity = max(20, min(100, public_audit.commercial_score.cta_strength * 10))
-    lead_quality = int(median_or_none([item.lead_quality_score for item in campaign_performance.lead_quality_assessment]) or 45)
-    budget_efficiency = 70 if any(item.action == "aumentar_presupuesto_gradual" for item in campaign_performance.budget_reallocation) else 45
-    message_match = 100 - int(median_or_none([100 - item.message_match_score for item in campaign_performance.message_match]) or 35)
-    landing_strength = 100 - int(median_or_none([item.friction_score for item in campaign_performance.landing_friction]) or 45)
-    creative_relevance = 70 if campaign_performance.creative_hook_insights else 45
-    cta_clarity = max(20, min(100, public_audit.commercial_score.cta_strength * 10))
-    sales_follow_up = 55 if any("seguimiento" in action.action.casefold() for action in campaign_performance.strategic_actions) else 40
-    components = [tracking_score, offer_clarity, message_match, funnel_continuity, lead_quality, creative_relevance, landing_strength, cta_clarity, sales_follow_up, budget_efficiency]
-    overall = round(sum(components) / len(components))
-    component_map = {
-        "tracking_readiness": tracking_score,
-        "offer_clarity": offer_clarity,
-        "message_match": message_match,
-        "funnel_continuity": funnel_continuity,
-        "lead_quality": lead_quality,
-        "creative_relevance": creative_relevance,
-        "landing_strength": landing_strength,
-        "cta_clarity": cta_clarity,
-        "sales_follow_up": sales_follow_up,
-        "budget_efficiency": budget_efficiency,
-    }
-    weakest = min(component_map, key=component_map.get)
-    strongest = max(component_map, key=component_map.get)
-    return CommercialReadinessScore(
-        overall=overall,
-        tracking_readiness=int(tracking_score),
-        offer_clarity=int(offer_clarity),
-        message_match=int(message_match),
-        funnel_continuity=int(funnel_continuity),
-        lead_quality=int(lead_quality),
-        creative_relevance=int(creative_relevance),
-        landing_strength=int(landing_strength),
-        cta_clarity=int(cta_clarity),
-        sales_follow_up=int(sales_follow_up),
-        budget_efficiency=int(budget_efficiency),
-        strongest_area=strongest,
-        weakest_area=weakest,
-        recommended_focus=f"Priorizar {weakest.replace('_', ' ')} antes de escalar el sistema.",
-    )
-
-
-def build_map_coherence_check(public_audit: ProspectWithResearchResponse, campaign_performance: CampaignPerformanceResponse) -> MapCoherenceCheck:
-    alignment = []
-    inconsistencies = []
-    corrections = []
-    density = public_audit.customer_intent_density_map
-    blocked = f"{density.blocked_zone.x} / {density.blocked_zone.y}"
-    alignment.append(f"Heatmap marca bloqueo en {blocked}; blueprint debe leerse desde FAULT hacia DG y ruta verde.")
-    if any("CTR alto con conversión baja" in item.pattern for item in campaign_performance.cross_metric_findings):
-        alignment.append("Performance detecta interés post-click con baja conversión; coincide con FAULT entre interés, confianza y acción.")
-    if any(item.issue.startswith("Tracking crítico") for item in campaign_performance.tracking_health):
-        inconsistencies.append("Hay tracking crítico: los mapas pueden ser estratégicamente coherentes, pero la evidencia de CPA/CPL no es confiable todavía.")
-        corrections.append("Corregir tracking antes de usar performance para confirmar el heatmap.")
-    if any("baja calidad" in item.quadrant for item in campaign_performance.cost_quality_matrix):
-        alignment.append("La matriz costo/calidad refuerza la necesidad del Support Layer: prueba, objeciones, CTA y follow-up.")
-    score = 85 - len(inconsistencies) * 15
-    return MapCoherenceCheck(
-        score=max(40, score),
-        alignment_detected=alignment,
-        inconsistencies=inconsistencies,
-        correction_needed=corrections or ["Mantener explicación separada: heatmap diagnostica intención; blueprint explica rediseño."],
-    )
-
-def run_campaign_performance_audit(request: CampaignPerformanceRequest) -> CampaignPerformanceResponse:
-    data_quality = infer_campaign_data_quality(request)
-    has_data = data_quality not in ["sin_datos", "baja"] or has_meaningful_campaign_data(request.campaigns)
-
-    strategic_actions = build_default_strategic_actions(
-        company_name=request.company_name,
-        has_data=has_data,
-    )
-
-    findings, performance_actions, budget_actions, tracking_actions = build_campaign_findings_and_actions(request)
-
-    temperature_action = build_temperature_separation_action(request)
-    if temperature_action:
-        performance_actions.append(temperature_action)
-
-    derived_metrics = derive_campaign_metrics(request)
-    internal_benchmarks = build_internal_benchmarks(derived_metrics)
-    metric_deltas = build_metric_deltas(request)
-    cross_metric_findings = build_cross_metric_findings(request, derived_metrics, internal_benchmarks)
-    tracking_health = build_tracking_health(request)
-    lead_quality_assessment = build_lead_quality_assessment(request)
-    cost_quality_matrix = build_cost_quality_matrix(request, internal_benchmarks)
-    budget_reallocation = build_budget_reallocation(request, cost_quality_matrix)
-    creative_hook_insights = build_creative_hook_insights(request, derived_metrics)
-    landing_friction = build_landing_friction(request, derived_metrics)
-    message_match = build_message_match(request)
-    funnel_leaks = build_funnel_leaks(request, derived_metrics)
-    experiment_recommendations = build_experiment_recommendations(request, cross_metric_findings, landing_friction, creative_hook_insights)
-    data_completeness = build_data_completeness(request)
-    sample_size_warnings = build_sample_size_warnings(request)
-    confidence_by_finding = build_confidence_notes(cross_metric_findings, tracking_health, data_completeness)
-    timed_action_plan = build_timed_action_plan(data_completeness, tracking_health, budget_reallocation, experiment_recommendations)
-    discovery_questions = build_discovery_questions()
-    proposal_guidance = build_proposal_guidance(data_completeness)
-
-    # Turn richer findings into actionable items so they appear in the prioritized list.
-    for finding in cross_metric_findings:
-        performance_actions.append(make_action(
-            category="cruce_metricas",
-            action=finding.recommended_action,
-            trigger=finding.pattern,
-            evidence=finding.evidence,
-            priority="crítica" if finding.severity == "crítica" else "alta" if finding.severity in ["alta", "media-alta"] else "media",
-            effort="medio",
-            expected_impact="Mejorar eficiencia del funnel y evitar decisiones basadas en métricas aisladas.",
-            verification_metric="CTR, CPC, CVR, CPL, calidad de lead y reuniones.",
-            related_campaign=", ".join(finding.affected_campaigns),
-            confidence=finding.confidence,
-            data_required=False,
-        ))
-
-    for item in tracking_health:
-        tracking_actions.append(make_action(
-            category="tracking",
-            action=item.recommended_fix,
-            trigger=item.issue,
-            evidence=item.evidence,
-            priority="crítica" if item.severity == "crítica" else "alta" if item.severity in ["alta", "media-alta"] else "media",
-            effort="medio",
-            expected_impact="Mejorar confiabilidad de CPA/CPL y atribución real de oportunidades.",
-            verification_metric=item.validation_metric,
-            related_campaign=item.campaign_name,
-            confidence="alta" if item.severity == "crítica" else "media",
-            data_required=False,
-        ))
-
-    for item in budget_reallocation:
-        budget_actions.append(make_action(
-            category="presupuesto",
-            action=item.action,
-            trigger="Matriz costo/calidad y benchmarks internos.",
-            evidence=item.reason,
-            priority="alta" if item.action in ["reducir_o_pausar", "aumentar_presupuesto_gradual"] else "media",
-            effort="bajo",
-            expected_impact="Asignar presupuesto según eficiencia y calidad, no solo volumen de leads.",
-            verification_metric="CPL, CPL calificado, CPA, frecuencia, calidad y reuniones.",
-            related_campaign=item.campaign_name,
-            confidence=item.confidence,
-            data_required=False,
-        ))
-
-    # Ensure the requested performance rules exist even before data is available.
-    if not request.campaigns:
-        performance_actions.extend([
-            make_action(
-                category="creativo",
-                action="Testear nuevos hooks en anuncios con CTR bajo",
-                trigger="Pendiente de CTR por campaña/anuncio.",
-                evidence="No hay campañas cargadas todavía.",
-                priority="media",
-                effort="medio",
-                expected_impact="Mejorar respuesta inicial cuando se detecten anuncios con bajo CTR.",
-                verification_metric="CTR, CPC y tasa de visita calificada.",
-                confidence="preparada",
-                data_required=True,
-            ),
-            make_action(
-                category="landing",
-                action="Rehacer landing si hay tráfico pero baja conversión",
-                trigger="Pendiente de clicks, visitas y conversiones por landing.",
-                evidence="No hay campañas cargadas todavía.",
-                priority="media",
-                effort="alto",
-                expected_impact="Mejorar conversión de tráfico existente cuando se detecte fuga landing→lead.",
-                verification_metric="Landing conversion rate, CPL y eventos de contacto.",
-                confidence="preparada",
-                data_required=True,
-            ),
-            make_action(
-                category="audiencia",
-                action="Cambiar audiencia si hay alto gasto y baja intención",
-                trigger="Pendiente de gasto, clicks y leads/conversiones.",
-                evidence="No hay campañas cargadas todavía.",
-                priority="media",
-                effort="medio",
-                expected_impact="Reducir gasto en tráfico poco calificado.",
-                verification_metric="CPL, CPA, tasa de lead calificado y engagement de calidad.",
-                confidence="preparada",
-                data_required=True,
-            ),
-            make_action(
-                category="retargeting",
-                action="Crear retargeting para usuarios con interés sin conversión",
-                trigger="Pendiente de eventos de visita, interacción y no conversión.",
-                evidence="No hay campañas cargadas todavía.",
-                priority="media",
-                effort="medio",
-                expected_impact="Recuperar usuarios tibios que no completan la acción.",
-                verification_metric="Conversiones asistidas, CPL retargeting y tasa de retorno.",
-                confidence="preparada",
-                data_required=True,
-            ),
-        ])
-        budget_actions.extend([
-            make_action(
-                category="presupuesto",
-                action="Pausar campañas con CPL alto y baja calidad",
-                trigger="Pendiente de CPL y calidad de lead.",
-                evidence="No hay campañas cargadas todavía.",
-                priority="media",
-                effort="bajo",
-                expected_impact="Evitar desperdicio cuando haya datos suficientes.",
-                verification_metric="CPL, calidad de lead y costo por oportunidad calificada.",
-                confidence="preparada",
-                data_required=True,
-            ),
-            make_action(
-                category="presupuesto",
-                action="Duplicar presupuesto en campañas con CPL bajo y buena conversión",
-                trigger="Pendiente de CPL, conversiones y calidad.",
-                evidence="No hay campañas cargadas todavía.",
-                priority="media",
-                effort="bajo",
-                expected_impact="Escalar lo que funcione cuando exista evidencia.",
-                verification_metric="CPL, CPA, frecuencia y volumen incremental.",
-                confidence="preparada",
-                data_required=True,
-            ),
-        ])
-
-    all_actions = strategic_actions + performance_actions + budget_actions + tracking_actions
-    prioritized_actions = prioritize_actions(all_actions, limit=20)
-
-    if data_quality == "sin_datos":
-        summary = (
-            "No hay campañas cargadas todavía. El endpoint queda preparado con reglas estratégicas, performance, tracking, calidad, presupuesto y experimentos; "
-            "las acciones tácticas aparecen como preparadas y requieren datos para activarse con evidencia."
-        )
-    elif cross_metric_findings or findings:
-        summary = (
-            f"Se analizaron {len(request.campaigns)} campañas. Además de hallazgos básicos, se detectaron {len(cross_metric_findings)} cruces métricos, "
-            f"{len(tracking_health)} alertas de tracking y {len(funnel_leaks)} fugas de funnel."
-        )
-    else:
-        summary = (
-            f"Se analizaron {len(request.campaigns)} campañas. No hay anomalías fuertes con los umbrales actuales, "
-            "pero se devuelven benchmarks internos, guardrails, experimentos y próximos datos necesarios."
-        )
-
-    return CampaignPerformanceResponse(
-        company_name=request.company_name,
-        audit_type="campaign_intelligence_rules_v2",
-        data_quality=data_quality,
-        campaigns_analyzed=len(request.campaigns),
-        findings=findings,
-        strategic_actions=strategic_actions,
-        performance_actions=performance_actions,
-        budget_actions=budget_actions,
-        tracking_actions=tracking_actions,
-        prioritized_actions=prioritized_actions,
-        derived_metrics=derived_metrics,
-        metric_deltas=metric_deltas,
-        internal_benchmarks=internal_benchmarks,
-        cross_metric_findings=cross_metric_findings,
-        tracking_health=tracking_health,
-        lead_quality_assessment=lead_quality_assessment,
-        cost_quality_matrix=cost_quality_matrix,
-        budget_reallocation=budget_reallocation,
-        creative_hook_insights=creative_hook_insights,
-        landing_friction=landing_friction,
-        message_match=message_match,
-        funnel_leaks=funnel_leaks,
-        experiment_recommendations=experiment_recommendations,
-        data_completeness=data_completeness,
-        sample_size_warnings=sample_size_warnings,
-        confidence_by_finding=confidence_by_finding,
-        timed_action_plan=timed_action_plan,
-        discovery_questions=discovery_questions,
-        proposal_guidance=proposal_guidance,
-        next_data_needed=build_next_data_needed(request),
-        summary=summary,
-    )
-
-
-
-
-def make_stable_hash(payload: Any) -> str:
-    try:
-        serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
-    except TypeError:
-        serialized = str(payload)
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
-
-
-def normalize_string_for_canonical(value: str) -> Optional[str]:
-    cleaned = " ".join(value.strip().split())
-    if not cleaned:
-        return None
-    return cleaned.casefold()
-
-
-def canonicalize_payload(value: Any) -> Any:
-    if isinstance(value, str):
-        return normalize_string_for_canonical(value)
-    if isinstance(value, (int, float, bool)) or value is None:
-        return value
-    if isinstance(value, list):
-        normalized_items = [canonicalize_payload(item) for item in value]
-        normalized_items = [item for item in normalized_items if item not in [None, "", [], {}]]
-        if all(isinstance(item, dict) for item in normalized_items):
-            return sorted(normalized_items, key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=False, default=str))
-        return normalized_items
-    if isinstance(value, dict):
-        ignored_keys = {"report_id", "report_url", "visual_report_url", "created_at", "timestamp"}
-        normalized: Dict[str, Any] = {}
-        for key, item in sorted(value.items(), key=lambda pair: pair[0]):
-            if key in ignored_keys:
-                continue
-            normalized_item = canonicalize_payload(item)
-            if normalized_item in [None, "", [], {}]:
-                continue
-            normalized[key] = normalized_item
-        return normalized
-    return str(value)
-
-
-def request_to_raw_payload(request: BaseModel) -> Dict[str, Any]:
-    if hasattr(request, "model_dump"):
-        return request.model_dump(mode="json")
-    return request.dict()
-
-
-def request_received_keys(request: BaseModel) -> List[str]:
-    keys = getattr(request, "model_fields_set", None)
-    if keys is None:
-        keys = getattr(request, "__fields_set__", set())
-    return sorted([str(key) for key in keys])
-
-
-def canonical_full_system_payload(request: FullCommercialSystemRequest) -> Dict[str, Any]:
-    raw_payload = request_to_raw_payload(request)
-    diagnosis_neutral_fields = {"num_results_per_query"}
-    reduced_payload = {key: value for key, value in raw_payload.items() if key not in diagnosis_neutral_fields}
-    return canonicalize_payload(reduced_payload) or {}
-
-
-def has_internal_social_evidence(request: Optional[FullCommercialSystemRequest]) -> bool:
-    if not request:
-        return False
-    samples = getattr(request, "social_content_samples", None) or []
-    if not samples:
-        return False
-    for sample in samples:
-        if (
-            getattr(sample, "retention_3s_percent", None) is not None
-            or getattr(sample, "completion_rate_percent", None) is not None
-            or getattr(sample, "average_watch_time_seconds", None) is not None
-            or getattr(sample, "views", None) is not None
-            or getattr(sample, "profile_clicks", None) is not None
-            or getattr(sample, "cta_clicks", None) is not None
-        ):
-            return True
-    return bool(samples)
-
-
-def social_overlay_can_override_base(request: Optional[FullCommercialSystemRequest], social_fit: Optional[SocialContentFitResponse]) -> bool:
-    if not social_fit:
-        return False
-    return bool(social_fit.overall_social_content_fit_score < 45 and has_internal_social_evidence(request))
-
-
-def build_diagnostic_gates(
-    request: FullCommercialSystemRequest,
-    social_fit: Optional[SocialContentFitResponse],
-    campaign_performance: Optional[CampaignPerformanceResponse],
-) -> Dict[str, Any]:
-    critical_tracking = False
-    if campaign_performance:
-        critical_tracking = any(item.severity == "crítica" for item in campaign_performance.tracking_health)
-
+@app.get("/debug/collector-config")
+async def collector_config(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
     return {
-        "social_overlay_can_override_base": social_overlay_can_override_base(request, social_fit),
-        "social_score": social_fit.overall_social_content_fit_score if social_fit else None,
-        "internal_social_evidence": has_internal_social_evidence(request),
-        "social_override_rule": "Solo puede reemplazar el diagnóstico base si score < 45 y hay muestras/métricas internas. Con notas o links públicos queda como overlay.",
-        "performance_overlay_can_override_base": critical_tracking,
-        "performance_override_rule": "Performance solo domina si hay campañas reales y tracking/performance crítico.",
-        "campaigns_present": bool(getattr(request, "campaigns", None)),
-        "tracking_critical": critical_tracking,
-    }
-
-
-def public_sources_payload(public_audit: ProspectWithResearchResponse) -> List[Dict[str, Any]]:
-    return [
-        {
-            "category": source.category,
-            "title": source.title,
-            "url": source.url,
-            "signal": source.signal,
-        }
-        for source in public_audit.public_sources_summary
-    ]
-
-
-def detect_analysis_mode(request: FullCommercialSystemRequest, campaign_performance: CampaignPerformanceResponse) -> str:
-    has_campaigns = bool(request.campaigns)
-    has_social = bool(
-        getattr(request, "social_content_notes", None)
-        or getattr(request, "social_content_samples", None)
-        or getattr(request, "tiktok", None)
-        or getattr(request, "instagram", None)
-        or getattr(request, "youtube", None)
-        or getattr(request, "facebook", None)
-    )
-    if has_campaigns and has_social:
-        return "full"
-    if has_campaigns:
-        return "performance"
-    if has_social:
-        return "social_content"
-    return "base_public"
-
-
-def build_diagnostic_integration(public_audit: ProspectWithResearchResponse, social_fit: SocialContentFitResponse, campaign_performance: CampaignPerformanceResponse, analysis_mode: str, request: Optional[FullCommercialSystemRequest] = None) -> Dict[str, str]:
-    base_diagnosis = public_audit.diagnosis_initial
-    social_overlay = None
-    performance_overlay = None
-    primary_source = "base_audit"
-    final_diagnosis = base_diagnosis
-    reason = "El diagnóstico surge del análisis base de presencia pública, propuesta de valor, awareness, CTA, confianza y funnel."
-
-    if social_fit and social_fit.overall_social_content_fit_score < 62:
-        can_override_social = social_overlay_can_override_base(request, social_fit)
-        social_overlay = (
-            f"Social Content Fit detecta {social_fit.primary_content_gap} "
-            f"con score {social_fit.overall_social_content_fit_score}/100. "
-            "Debe leerse como riesgo estructural si no hay métricas internas de retención."
-        )
-        if analysis_mode in ["social_content", "full"] and can_override_social:
-            primary_source = "social_overlay"
-            final_diagnosis = (
-                f"{base_diagnosis} + riesgo crítico de contenido social/plataforma ({social_fit.primary_content_gap})."
-            )
-            reason = (
-                "El diagnóstico base fue ajustado porque Social Content Fit tiene score crítico y existe evidencia interna/muestras suficientes. "
-                "El módulo social pasa de overlay a fuente primaria por regla de Stability Lock."
-            )
-        elif analysis_mode in ["social_content", "full"]:
-            reason = (
-                "Social Content Fit queda como overlay: hay riesgo estructural de contenido, pero no reemplaza el diagnóstico base porque "
-                "no hay evidencia interna suficiente o el score no es crítico según Stability Lock."
-            )
-
-    if campaign_performance and campaign_performance.data_quality != "sin_datos":
-        critical_tracking = any(item.severity == "crítica" for item in campaign_performance.tracking_health)
-        if critical_tracking:
-            performance_overlay = "Performance detecta tracking crítico; las métricas de conversión/CPA/CPL no deben tomarse como confiables hasta corregir medición."
-            primary_source = "performance_overlay"
-            final_diagnosis = f"{base_diagnosis} + problema crítico de tracking/performance."
-            reason = (
-                "El diagnóstico final prioriza performance/tracking porque existen campañas cargadas y se detectó un problema crítico de medición."
-            )
-        else:
-            performance_overlay = campaign_performance.summary
-
-    return {
-        "base_diagnosis": base_diagnosis,
-        "social_overlay": social_overlay or "No activo o sin peso suficiente para cambiar el diagnóstico base.",
-        "performance_overlay": performance_overlay or "No activo: no hay campañas suficientes o no se detectó bloqueo crítico de performance.",
-        "primary_source": primary_source,
-        "final_diagnosis": final_diagnosis,
-        "reason": reason,
-    }
-
-
-def build_analysis_trace(
-    request: FullCommercialSystemRequest,
-    public_audit: ProspectWithResearchResponse,
-    social_fit: SocialContentFitResponse,
-    campaign_performance: CampaignPerformanceResponse,
-    commercial_readiness_score: CommercialReadinessScore,
-) -> AnalysisTrace:
-    analysis_mode = detect_analysis_mode(request, campaign_performance)
-    modules_used = ["public_presence", "commercial_score", "awareness_funnel", "heatmap", "blueprint"]
-    if analysis_mode in ["social_content", "full"]:
-        modules_used.append("social_content_fit")
-    if campaign_performance.data_quality != "sin_datos" or request.campaigns:
-        modules_used.extend(["campaign_performance", "tracking_health", "lead_quality", "budget_reallocation"])
-
-    source_payload = public_sources_payload(public_audit)
-    integration = build_diagnostic_integration(public_audit, social_fit, campaign_performance, analysis_mode, request=request)
-
-    evidence_level = "public_links"
-    if request.social_content_samples:
-        evidence_level += " + social_samples"
-    elif request.social_content_notes:
-        evidence_level += " + user_social_notes"
-    if request.campaigns:
-        evidence_level += " + campaign_data"
-
-    confidence_level = "media"
-    if campaign_performance.data_quality == "sin_datos" and social_fit.overall_social_content_fit_score < 62 and not request.social_content_samples:
-        confidence_level = "baja-media"
-    elif request.campaigns and campaign_performance.data_quality != "sin_datos":
-        confidence_level = "media-alta"
-
-    score_breakdown = {
-        "commercial_score_overall": getattr(public_audit.commercial_score, "overall", None),
-        "social_content_fit_score": social_fit.overall_social_content_fit_score if social_fit else None,
-        "campaign_data_quality": campaign_performance.data_quality if campaign_performance else None,
-        "commercial_readiness_score": commercial_readiness_score.overall if commercial_readiness_score else None,
-    }
-
-    request_payload = request_to_raw_payload(request)
-    canonical_payload = canonical_full_system_payload(request)
-    raw_input_hash = make_stable_hash(request_payload)
-    canonical_input_hash = make_stable_hash(canonical_payload)
-    diagnostic_gates = build_diagnostic_gates(request, social_fit, campaign_performance)
-
-    return AnalysisTrace(
-        analysis_version=ANALYSIS_VERSION,
-        ruleset_version=RULESET_VERSION,
-        analysis_mode=analysis_mode,
-        research_mode=getattr(request, "research_mode", "live_public_search"),
-        input_hash=canonical_input_hash,
-        sources_hash=make_stable_hash(source_payload),
-        modules_used=list(dict.fromkeys(modules_used)),
-        primary_diagnosis_source=integration["primary_source"],
-        base_diagnosis=integration["base_diagnosis"],
-        social_overlay=integration["social_overlay"],
-        performance_overlay=integration["performance_overlay"],
-        final_diagnosis=integration["final_diagnosis"],
-        diagnosis_change_reason=integration["reason"],
-        confidence_level=confidence_level,
-        evidence_level=evidence_level,
-        comparability_note=(
-            "Dos reportes son comparables solo si coinciden input_hash, sources_hash, analysis_version, ruleset_version, analysis_mode y modules_used. "
-            "Si se agrega Social Content Fit, campañas, muestras, notas o cambia el modo de investigación, es esperable que cambien funnel, heatmap o blueprint."
-        ),
-        score_breakdown=score_breakdown,
-        raw_input_hash=raw_input_hash,
-        canonical_input_hash=canonical_input_hash,
-        received_input_keys=request_received_keys(request),
-        request_snapshot=canonical_payload,
-        stability_mode="canonical_locked",
-        diagnostic_gates=diagnostic_gates,
-    )
-
-
-def build_diagnostic_integration_summary(trace: AnalysisTrace) -> str:
-    return (
-        f"Modo: {trace.analysis_mode}. Fuente principal del diagnóstico: {trace.primary_diagnosis_source}. "
-        f"Diagnóstico base: {trace.base_diagnosis} "
-        f"Diagnóstico final: {trace.final_diagnosis} "
-        f"Motivo: {trace.diagnosis_change_reason} "
-        f"Nivel de evidencia: {trace.evidence_level}; confianza: {trace.confidence_level}."
-    )
-
-
-def clamp_score(value: float) -> int:
-    return max(0, min(100, int(round(value))))
-
-
-def normalize_platform(value: Optional[str]) -> str:
-    if not value:
-        return "general"
-    value_text = value.casefold()
-    if "tik" in value_text:
-        return "TikTok"
-    if "reel" in value_text or "insta" in value_text:
-        return "Instagram"
-    if "short" in value_text or "youtube" in value_text:
-        return "YouTube Shorts"
-    if "facebook" in value_text:
-        return "Facebook"
-    return value.strip().title()
-
-
-def social_contains(text: str, keywords: List[str]) -> bool:
-    return any(keyword.casefold() in text for keyword in keywords)
-
-
-def social_text_blob(request: SocialContentFitRequest, samples: List[SocialContentSample], sources: List[ReviewedPublicSource]) -> str:
-    parts = [request.company_name or "", request.industry or "", request.offer or "", request.target_audience or "", request.notes or ""]
-    for sample in samples:
-        parts.extend([sample.platform or "", sample.content_type or "", sample.caption or "", sample.opening_seconds_description or "", sample.visual_style or "", sample.notes or ""])
-    for source in sources:
-        parts.extend([source.title or "", source.url or "", source.signal or ""])
-    return " ".join(parts).casefold()
-
-
-def score_social_platform(platform: str, request: SocialContentFitRequest, samples: List[SocialContentSample], sources: List[ReviewedPublicSource]) -> SocialPlatformAudit:
-    profile_url = {
-        "TikTok": request.tiktok,
-        "Instagram": request.instagram,
-        "YouTube Shorts": request.youtube,
-        "Facebook": request.facebook,
-    }.get(platform)
-
-    platform_samples = [sample for sample in samples if normalize_platform(sample.platform) == platform or (platform == "Instagram" and normalize_platform(sample.content_type) == "Instagram")]
-    text = social_text_blob(request, platform_samples, sources)
-
-    native_format = 72
-    hook_quality = 68
-    retention_risk = 38
-    message_clarity = 66
-    cta_score = 58
-    proof_score = 50
-    offer_match = 62
-
-    issues: List[str] = []
-    improvements: List[str] = []
-    evidence: List[str] = []
-
-    if profile_url:
-        evidence.append(f"Perfil declarado: {profile_url}")
-    if platform_samples:
-        evidence.append(f"Se analizaron {len(platform_samples)} muestras cargadas para {platform}.")
-    else:
-        evidence.append("No se cargaron videos/posteos individuales; lectura basada en links, notas y señales públicas disponibles.")
-
-    if social_contains(text, ["baja calidad", "no retiene", "retención baja", "scroll", "aburrido", "lento", "sin ritmo"]):
-        hook_quality -= 22
-        retention_risk += 25
-        issues.append("Riesgo alto de baja retención por estructura, ritmo o arranque débil.")
-        improvements.append("Reestructurar las piezas con hook claro en 0-3 segundos y progresión visual más rápida.")
-
-    if social_contains(text, ["institucional", "logo", "presentación", "corporativo", "demasiado formal"]):
-        native_format -= 18
-        hook_quality -= 12
-        issues.append("El contenido parece más institucional que nativo para redes de consumo rápido.")
-        improvements.append("Adaptar el formato a lenguaje nativo de la plataforma: menos introducción institucional y más tensión/beneficio inmediato.")
-
-    if social_contains(text, ["sin hook", "no hay hook", "arranca lento", "primeros segundos", "inicio lento"]):
-        hook_quality -= 28
-        retention_risk += 22
-        issues.append("El hook inicial es débil o llega tarde.")
-        improvements.append("Abrir cada pieza con conflicto, pregunta, promesa, objeción o resultado antes de presentar marca/contexto.")
-
-    if social_contains(text, ["sin cta", "cta débil", "consultanos", "escribinos", "no guía", "sin próximo paso"]):
-        cta_score -= 22
-        issues.append("El CTA no guía suficientemente hacia una acción comercial concreta.")
-        improvements.append("Usar CTA contextual por temperatura: guardar, comentar, pedir diagnóstico, ver caso, agendar o consultar con criterio.")
-
-    if social_contains(text, ["sin prueba", "poca prueba", "testimonios", "casos", "reseñas", "confianza"]):
-        proof_score -= 15
-        issues.append("La prueba social o evidencia de confianza parece insuficiente.")
-        improvements.append("Agregar casos, testimonios, datos de resultados, procesos, garantías, behind the scenes o evidencia operativa.")
-
-    if social_contains(text, ["genérico", "parecido", "no diferencia", "diferenciación", "propuesta de valor"]):
-        message_clarity -= 18
-        offer_match -= 12
-        issues.append("El contenido puede estar comunicando temas genéricos sin una razón clara de elección.")
-        improvements.append("Convertir contenido en criterio de decisión: explicar por qué elegir, cuándo conviene, para quién y contra qué alternativa.")
-
-    for sample in platform_samples:
-        if sample.duration_seconds and platform in ["TikTok", "Instagram"] and sample.duration_seconds > 60:
-            retention_risk += 8
-            issues.append("Hay piezas largas para consumo rápido; pueden requerir mayor tensión narrativa.")
-        if sample.retention_3s_percent is not None:
-            evidence.append(f"Retención 3s declarada en una muestra: {sample.retention_3s_percent:.1f}%.")
-            if sample.retention_3s_percent < 50:
-                retention_risk += 25
-                hook_quality -= 18
-                issues.append("Retención a 3 segundos baja en muestra cargada.")
-        if sample.completion_rate_percent is not None:
-            evidence.append(f"Completion rate declarado en una muestra: {sample.completion_rate_percent:.1f}%.")
-            if sample.completion_rate_percent < 20:
-                retention_risk += 18
-                issues.append("Baja finalización del video en muestra cargada.")
-        if sample.cta_clicks is not None and sample.views and sample.views > 0:
-            rate = (sample.cta_clicks / sample.views) * 100
-            evidence.append(f"CTR a CTA aproximado en muestra: {rate:.2f}%.")
-            if rate < 0.5:
-                cta_score -= 12
-                issues.append("La pieza genera bajo avance hacia CTA en relación con visualizaciones.")
-
-    if platform == "TikTok" and not social_contains(text, ["hook", "tendencia", "ugc", "storytime", "problema", "mito", "error", "antes/después"]):
-        hook_quality -= 8
-        native_format -= 8
-        issues.append("No se observan señales suficientes de lenguaje nativo TikTok.")
-        improvements.append("Probar hooks tipo mito/error, objeción, historia breve, comparación o aprendizaje rápido.")
-
-    if platform == "Instagram" and not social_contains(text, ["reel", "carrusel", "guardar", "compartir", "educativo"]):
-        native_format -= 6
-        improvements.append("Separar Reels de retención rápida y carruseles guardables/educativos para consideración.")
-
-    if not issues:
-        issues.append("No hay evidencia suficiente de una falla crítica específica; se recomienda cargar muestras y métricas de retención para mayor precisión.")
-    if not improvements:
-        improvements.append("Cargar piezas recientes con métricas para convertir la lectura en auditoría de contenido comprobada.")
-
-    platform_fit = clamp_score((native_format + hook_quality + message_clarity + cta_score + proof_score + offer_match + (100 - retention_risk)) / 7)
-    confidence = "media-alta" if platform_samples and any(sample.retention_3s_percent is not None for sample in platform_samples) else ("media" if platform_samples else "baja-media")
-    limitation = "Lectura basada en muestras y métricas cargadas." if platform_samples else "Lectura inferida desde presencia pública/notas; para afirmar retención real hacen falta métricas de la plataforma."
-
-    return SocialPlatformAudit(
-        platform=platform,
-        profile_url=profile_url,
-        platform_fit_score=platform_fit,
-        native_format_score=clamp_score(native_format),
-        hook_quality_score=clamp_score(hook_quality),
-        retention_risk_score=clamp_score(retention_risk),
-        message_clarity_score=clamp_score(message_clarity),
-        cta_score=clamp_score(cta_score),
-        proof_score=clamp_score(proof_score),
-        content_to_offer_match_score=clamp_score(offer_match),
-        detected_issues=list(dict.fromkeys(issues))[:8],
-        recommended_improvements=list(dict.fromkeys(improvements))[:8],
-        evidence=list(dict.fromkeys(evidence))[:8],
-        confidence=confidence,
-        limitation=limitation,
-    )
-
-
-def build_social_content_actions(audits: List[SocialPlatformAudit]) -> List[SocialContentAction]:
-    actions: List[SocialContentAction] = []
-    for audit in audits:
-        if audit.hook_quality_score < 60 or audit.retention_risk_score > 55:
-            actions.append(SocialContentAction(
-                platform=audit.platform,
-                issue="Hook inicial débil o riesgo de baja retención",
-                evidence="; ".join(audit.detected_issues[:2]),
-                interpretation="La pieza puede perder atención antes de comunicar valor, especialmente en redes de consumo rápido.",
-                recommended_action="Rediseñar los primeros 0-3 segundos con tensión, beneficio, objeción o resultado antes de introducir marca/contexto.",
-                priority="alta",
-                effort="medio",
-                validation_metric="Retención a 3s, porcentaje visto, completion rate, shares y clicks al perfil/CTA.",
-                confidence=audit.confidence,
-                do_not_give_for_free="No entregar guiones finales ni calendario completo; vender auditoría/reestructura creativa.",
-            ))
-        if audit.native_format_score < 65:
-            actions.append(SocialContentAction(
-                platform=audit.platform,
-                issue="Baja adaptación nativa a la plataforma",
-                evidence="; ".join(audit.evidence[:2]),
-                interpretation="El contenido puede estar reciclado o construido con lógica institucional, no con lógica de consumo de la red.",
-                recommended_action="Separar formato por plataforma: TikTok/Reels con ritmo y hook; carruseles con valor guardable; piezas de prueba para consideración.",
-                priority="media-alta",
-                effort="medio",
-                validation_metric="Retención, engagement rate, saves/shares, clicks al perfil y tasa de avance a consulta.",
-                confidence=audit.confidence,
-                do_not_give_for_free="No entregar arquitectura completa de contenido; solo diagnóstico y dirección de mejora.",
-            ))
-        if audit.cta_score < 60:
-            actions.append(SocialContentAction(
-                platform=audit.platform,
-                issue="CTA débil o poco contextual",
-                evidence="El score de CTA es bajo para la plataforma analizada.",
-                interpretation="La audiencia puede consumir contenido sin avanzar hacia una acción comercial.",
-                recommended_action="Crear CTA por temperatura: guardar/comentar para frío, pedir caso/guía para templado y consulta/diagnóstico para caliente.",
-                priority="media",
-                effort="bajo",
-                validation_metric="Clicks al perfil, clicks a WhatsApp/link, formularios, mensajes y consultas calificadas.",
-                confidence=audit.confidence,
-                do_not_give_for_free="No entregar copys finales ni secuencias completas de CTA.",
-            ))
-        if audit.proof_score < 60:
-            actions.append(SocialContentAction(
-                platform=audit.platform,
-                issue="Falta de prueba social o confianza",
-                evidence="El contenido no demuestra suficiente evidencia, casos, testimonios o señales de autoridad.",
-                interpretation="El usuario puede interesarse, pero no acumula confianza suficiente para avanzar.",
-                recommended_action="Agregar pruebas visibles: casos, testimonios, procesos, resultados, comparativas, objeciones resueltas o evidencia operativa.",
-                priority="media-alta",
-                effort="medio",
-                validation_metric="Consultas calificadas, guardados, comentarios de intención y avance a reunión/diagnóstico.",
-                confidence=audit.confidence,
-                do_not_give_for_free="No entregar casos editados ni piezas finales listas para publicar.",
-            ))
-    return actions[:12]
-
-
-def build_social_content_fit_summary(audits: List[SocialPlatformAudit]) -> str:
-    if not audits:
-        return "No se pudo analizar contenido social porque no hay perfiles, fuentes ni muestras cargadas."
-    worst = sorted(audits, key=lambda item: item.platform_fit_score)[0]
-    best = sorted(audits, key=lambda item: item.platform_fit_score, reverse=True)[0]
-    return (
-        f"El mayor riesgo de contenido está en {worst.platform} (score {worst.platform_fit_score}/100). "
-        f"La lectura evalúa si el contenido retiene, se adapta a la red, comunica valor y guía hacia acción. "
-        f"La mejor señal relativa aparece en {best.platform} (score {best.platform_fit_score}/100)."
-    )
-
-
-def build_social_adapted_blueprint(current_blueprint: FunnelBlueprint, social_fit: SocialContentFitResponse, campaign_performance: CampaignPerformanceResponse, request: Optional[FullCommercialSystemRequest] = None) -> FunnelBlueprint:
-    if social_fit.overall_social_content_fit_score >= 62:
-        return current_blueprint
-    critical_tracking = any(item.severity == "crítica" for item in campaign_performance.tracking_health)
-    if critical_tracking:
-        return current_blueprint
-    if not social_overlay_can_override_base(request, social_fit):
-        return current_blueprint
-    return FunnelBlueprint(
-        current_flow=[
-            "Publicación / pieza social",
-            "Primeros 0-3 segundos",
-            "Atención inicial débil",
-            "Valor no percibido",
-            "Interacción sin avance",
-        ],
-        breakpoints=[
-            social_fit.primary_content_gap or "Contenido no adaptado a la plataforma",
-            "Riesgo de baja retención",
-            "Falta de CTA/prueba según red",
-        ],
-        missing_links=[
-            "Hook nativo",
-            "Ritmo / edición",
-            "Prueba social",
-            "CTA contextual",
-            "Métrica de retención",
-        ],
-        recommended_flow=[
-            "Hook por plataforma",
-            "Valor temprano",
-            "Prueba / objeción",
-            "CTA por temperatura",
-            "Medición y aprendizaje",
-        ],
-        summary=(
-            "El blueprint se adaptó a una brecha de contenido social: la ruta actual no solo necesita publicar, "
-            "sino captar atención rápido, demostrar valor y conectar la pieza con una acción comercial medible."
-        ),
-    )
-
-
-@app.post(
-    "/audit/social-content-fit",
-    response_model=SocialContentFitResponse,
-    operation_id="auditSocialContentFit",
-    summary="Audit social content fit by platform",
-    description="Audita si el contenido orgánico o público se adapta a TikTok, Instagram/Reels y otras redes. Funciona con links, notas o muestras de contenido.",
-    dependencies=[Security(verify_api_key)],
-)
-def audit_social_content_fit(request: SocialContentFitRequest):
-    public_sources: List[ReviewedPublicSource] = []
-    try:
-        presence_request = PublicPresenceRequest(
-            company_name=request.company_name,
-            industry=request.industry,
-            city=request.city,
-            country=request.country,
-            website=request.website,
-            instagram=request.instagram,
-            tiktok=request.tiktok,
-            facebook=request.facebook,
-            youtube=request.youtube,
-            linkedin=request.linkedin,
-            num_results_per_query=min(max(request.num_results_per_query, 1), 5),
-            research_mode=getattr(request, "research_mode", "live_public_search"),
-        )
-        research = research_company_public_presence(presence_request)
-        public_sources = summarize_public_sources(research.sources_found, max_sources=8)
-    except Exception:
-        public_sources = []
-
-    platforms: List[str] = []
-    if request.tiktok or any(normalize_platform(sample.platform) == "TikTok" for sample in request.recent_content_samples):
-        platforms.append("TikTok")
-    if request.instagram or any(normalize_platform(sample.platform) == "Instagram" for sample in request.recent_content_samples):
-        platforms.append("Instagram")
-    if request.youtube or any(normalize_platform(sample.platform) == "YouTube Shorts" for sample in request.recent_content_samples):
-        platforms.append("YouTube Shorts")
-    if request.facebook:
-        platforms.append("Facebook")
-    if not platforms:
-        platforms = ["TikTok", "Instagram"]
-
-    audits = [score_social_platform(platform, request, request.recent_content_samples, public_sources) for platform in list(dict.fromkeys(platforms))]
-    overall = clamp_score(sum(item.platform_fit_score for item in audits) / max(len(audits), 1))
-    worst = sorted(audits, key=lambda item: item.platform_fit_score)[0] if audits else None
-    primary_gap = "sin_datos_suficientes"
-    if worst:
-        if worst.hook_quality_score < 60 or worst.retention_risk_score > 55:
-            primary_gap = "content_retention_gap"
-        elif worst.native_format_score < 65:
-            primary_gap = "platform_native_fit_gap"
-        elif worst.cta_score < 60:
-            primary_gap = "social_cta_gap"
-        elif worst.proof_score < 60:
-            primary_gap = "trust_proof_gap"
-        else:
-            primary_gap = "social_content_fit_needs_validation"
-
-    return SocialContentFitResponse(
-        company_name=request.company_name,
-        audit_type="social_content_fit_audit_v1",
-        overall_social_content_fit_score=overall,
-        primary_content_gap=primary_gap,
-        platforms_analyzed=[audit.platform for audit in audits],
-        platform_audits=audits,
-        strategic_summary=build_social_content_fit_summary(audits),
-        public_sources_used=public_sources[:8],
-        recommended_actions=build_social_content_actions(audits),
-        next_data_needed=[
-            "Links de 5-10 TikToks/Reels recientes.",
-            "Views, likes, comentarios, shares y saves.",
-            "Retención a 3 segundos y porcentaje visto por video.",
-            "Completion rate por video.",
-            "Clicks al perfil, WhatsApp/link y formularios originados por contenido.",
-            "Notas de qué pieza trajo consultas reales o leads calificados.",
-        ],
-        response_note=(
-            "Este módulo separa riesgo estructural de baja retención de baja retención comprobada. "
-            "Para afirmar retención real hacen falta métricas internas de TikTok/Instagram/Meta."
-        ),
-    )
-
-
-def convert_corrective_to_performance_action(item: CorrectiveActionItem) -> PerformanceAction:
-    return make_action(
-        category="auditoria_comercial",
-        action=item.recommended_action,
-        trigger=item.issue,
-        evidence=item.evidence,
-        priority=item.priority,
-        effort=item.effort,
-        expected_impact=item.expected_impact,
-        verification_metric=item.verification_metric,
-        confidence="media",
-        data_required=False,
-    )
-
-
-@app.post(
-    "/audit/campaign-performance",
-    response_model=CampaignPerformanceCompactResponse,
-    operation_id="auditCampaignPerformance",
-    summary="Audit campaign performance",
-    description="Audita campañas con reglas de performance. Puede funcionar sin campañas cargadas devolviendo acciones preparadas y datos requeridos.",
-    dependencies=[Security(verify_api_key)],
-)
-def audit_campaign_performance(request: CampaignPerformanceRequest):
-    result = run_campaign_performance_audit(request)
-    return CampaignPerformanceCompactResponse(
-        company_name=result.company_name,
-        audit_type=result.audit_type,
-        data_quality=result.data_quality,
-        campaigns_analyzed=result.campaigns_analyzed,
-        summary=result.summary,
-        prioritized_actions=result.prioritized_actions[:12],
-        top_findings=result.findings[:10],
-        top_cross_metric_findings=result.cross_metric_findings[:10],
-        tracking_health=result.tracking_health[:8],
-        lead_quality_assessment=result.lead_quality_assessment[:8],
-        cost_quality_matrix=result.cost_quality_matrix[:10],
-        budget_reallocation=result.budget_reallocation[:10],
-        experiment_recommendations=result.experiment_recommendations[:8],
-        data_completeness=result.data_completeness,
-        sample_size_warnings=result.sample_size_warnings[:10],
-        discovery_questions=result.discovery_questions[:10],
-        proposal_guidance=result.proposal_guidance,
-        timed_action_plan=result.timed_action_plan,
-        next_data_needed=result.next_data_needed[:12],
-    )
-
-
-def _campaign_fixture_text(result: CampaignPerformanceResponse) -> str:
-    parts: List[str] = [result.summary or ""]
-    parts.extend([f"{item.title} {item.evidence} {item.interpretation} {item.severity}" for item in result.findings])
-    parts.extend([f"{item.pattern} {item.evidence} {item.interpretation} {item.recommended_action} {item.severity}" for item in result.cross_metric_findings])
-    parts.extend([f"{item.issue} {item.evidence} {item.business_risk} {item.recommended_fix} {item.severity}" for item in result.tracking_health])
-    parts.extend([f"{item.quality_level} {item.evidence} {item.recommendation}" for item in result.lead_quality_assessment])
-    parts.extend([f"{item.category} {item.action} {item.trigger} {item.evidence} {item.expected_impact} {item.verification_metric} {item.priority}" for item in result.prioritized_actions])
-    parts.extend(result.next_data_needed or [])
-    parts.extend(result.sample_size_warnings or [])
-    return " ".join(parts).casefold()
-
-
-def build_default_campaign_fixtures() -> List[CampaignFixtureDefinition]:
-    """Casos sintéticos de QA: no representan benchmarks universales; evalúan razonamiento del motor."""
-    return [
-        CampaignFixtureDefinition(
-            fixture_id="synthetic_lead_quality_bad",
-            description="CTR y CPL buenos, muchos leads, pocos calificados y sin ventas. El problema esperado es calidad de lead/segmentación/promesa, no volumen de tráfico.",
-            expected_primary_issue="lead_quality_problem",
-            campaigns=[CampaignMetric(
-                channel="Meta Ads",
-                campaign_name="Lead quality bad - control",
-                funnel_stage="conversion",
-                objective="leads",
-                spend=500,
-                impressions=50000,
-                clicks=2500,
-                leads=120,
-                qualified_leads=8,
-                bad_leads=112,
-                conversions=0,
-                sales=0,
-                ctr_percent=5.0,
-                cpc=0.20,
-                cpl=4.16,
-                lead_quality_score=7,
-                landing_visits=2300,
-                form_submits=120,
-                utms_present=True,
-                events_configured=True,
-                notes="Caso QA: muchos leads baratos, muy pocos calificados.",
-            )],
-            target_cpl=20,
-            target_ctr_percent=1.0,
-            target_landing_conversion_rate_percent=2.0,
-            min_lead_quality_rate_percent=50.0,
-            expected_diagnosis_keywords=["calidad", "lead", "calificado", "malos", "segment"],
-            expected_action_keywords=["calidad", "calificado", "segment", "crm", "lead"],
-            forbidden_recommendation_keywords=["escalar presupuesto", "aumentar presupuesto", "duplicar presupuesto"],
-        ),
-        CampaignFixtureDefinition(
-            fixture_id="synthetic_post_click_problem",
-            description="CTR alto y tráfico suficiente, pero baja conversión a lead. El problema esperado es landing/fricción post-click, no creatividad inicial.",
-            expected_primary_issue="post_click_landing_problem",
-            campaigns=[CampaignMetric(
-                channel="Meta Ads",
-                campaign_name="Post click problem - control",
-                funnel_stage="consideration",
-                objective="leads",
-                spend=800,
-                impressions=40000,
-                clicks=2400,
-                landing_visits=2200,
-                leads=20,
-                qualified_leads=12,
-                conversions=2,
-                ctr_percent=6.0,
-                cpc=0.33,
-                cpl=40.0,
-                utms_present=True,
-                events_configured=True,
-                landing_message="Landing genérica con formulario largo.",
-                ad_promise="Consulta rápida",
-                notes="Caso QA: buen interés inicial, caída después del click.",
-            )],
-            target_cpl=20,
-            target_ctr_percent=1.0,
-            target_landing_conversion_rate_percent=2.0,
-            min_lead_quality_rate_percent=50.0,
-            expected_diagnosis_keywords=["landing", "post", "click", "fricción", "baja conversión"],
-            expected_action_keywords=["landing", "formulario", "fricción", "mensaje", "conversión"],
-            forbidden_recommendation_keywords=["cambiar audiencia"],
-        ),
-        CampaignFixtureDefinition(
-            fixture_id="synthetic_creative_message_problem",
-            description="Bajo CTR, CPC alto y poco volumen de respuesta. El problema esperado es creatividad/hook/mensaje/segmentación inicial.",
-            expected_primary_issue="creative_message_problem",
-            campaigns=[CampaignMetric(
-                channel="Meta Ads",
-                campaign_name="Creative weak - control",
-                funnel_stage="awareness",
-                objective="traffic",
-                spend=600,
-                impressions=60000,
-                clicks=240,
-                leads=10,
-                ctr_percent=0.4,
-                cpc=2.5,
-                cpl=60.0,
-                hook="Texto institucional genérico",
-                angle="genérico",
-                creative_format="imagen",
-                utms_present=True,
-                events_configured=True,
-                notes="Caso QA: baja respuesta al anuncio.",
-            )],
-            target_cpl=30,
-            target_ctr_percent=1.0,
-            target_landing_conversion_rate_percent=2.0,
-            min_lead_quality_rate_percent=50.0,
-            expected_diagnosis_keywords=["ctr", "creativo", "hook", "atención", "cpc"],
-            expected_action_keywords=["hook", "creativo", "mensaje", "audiencia", "test"],
-            forbidden_recommendation_keywords=["rehacer landing"],
-        ),
-        CampaignFixtureDefinition(
-            fixture_id="synthetic_tracking_broken",
-            description="Hay clicks, pero no hay eventos posteriores ni conversiones informadas. El diagnóstico esperado es tracking/medición antes de optimizar performance.",
-            expected_primary_issue="tracking_problem",
-            campaigns=[CampaignMetric(
-                channel="Meta Ads",
-                campaign_name="Tracking broken - control",
-                funnel_stage="conversion",
-                objective="leads",
-                spend=700,
-                impressions=30000,
-                clicks=1500,
-                ctr_percent=5.0,
-                cpc=0.46,
-                utms_present=False,
-                events_configured=False,
-                notes="Caso QA: clicks sin eventos downstream medidos.",
-            )],
-            target_cpl=25,
-            target_ctr_percent=1.0,
-            target_landing_conversion_rate_percent=2.0,
-            min_lead_quality_rate_percent=50.0,
-            expected_diagnosis_keywords=["tracking", "eventos", "medición", "pixel", "utm"],
-            expected_action_keywords=["tracking", "eventos", "utm", "pixel", "capi"],
-            forbidden_recommendation_keywords=["escalar presupuesto", "optimizar roas", "bajo roas"],
-        ),
-        CampaignFixtureDefinition(
-            fixture_id="synthetic_high_spend_no_sales",
-            description="Hay gasto, clicks y leads, pero no ventas. El diagnóstico esperado es cierre/calidad/CRM o promesa, no afirmar ROAS sin revenue suficiente.",
-            expected_primary_issue="post_lead_sales_problem",
-            campaigns=[CampaignMetric(
-                channel="Meta Ads",
-                campaign_name="High spend no sales - control",
-                funnel_stage="conversion",
-                objective="sales",
-                spend=1500,
-                impressions=70000,
-                clicks=3500,
-                landing_visits=3200,
-                leads=160,
-                qualified_leads=20,
-                bad_leads=140,
-                sales=0,
-                revenue=0,
-                ctr_percent=5.0,
-                cpc=0.42,
-                cpl=9.37,
-                lead_quality_score=12,
-                utms_present=True,
-                events_configured=True,
-                crm_stage="sin ventas",
-                notes="Caso QA: lead volume existe, ventas no aparecen.",
-            )],
-            target_cpl=25,
-            target_cpa=200,
-            target_ctr_percent=1.0,
-            target_landing_conversion_rate_percent=2.0,
-            min_lead_quality_rate_percent=50.0,
-            expected_diagnosis_keywords=["calidad", "lead", "ventas", "crm", "cierre"],
-            expected_action_keywords=["crm", "calidad", "seguimiento", "ventas", "calificado"],
-            forbidden_recommendation_keywords=["escalar presupuesto", "aumentar presupuesto"],
-        ),
-    ]
-
-
-def _fixture_actual_snapshot(result: CampaignPerformanceResponse) -> CampaignFixtureActualSnapshot:
-    return CampaignFixtureActualSnapshot(
-        data_quality=result.data_quality,
-        campaigns_analyzed=result.campaigns_analyzed,
-        summary=result.summary,
-        findings=[f"{item.title}: {item.interpretation}" for item in result.findings[:8]],
-        cross_metric_findings=[f"{item.pattern}: {item.interpretation}" for item in result.cross_metric_findings[:8]],
-        tracking_health=[f"{item.issue}: {item.recommended_fix}" for item in result.tracking_health[:8]],
-        lead_quality_assessment=[f"{item.campaign_name}: {item.quality_level} - {item.recommendation}" for item in result.lead_quality_assessment[:8]],
-        prioritized_actions=[f"{item.priority} · {item.category}: {item.action}" for item in result.prioritized_actions[:10]],
-        next_data_needed=result.next_data_needed[:10],
-    )
-
-
-def evaluate_campaign_fixture(fixture: CampaignFixtureDefinition) -> CampaignFixtureEvaluation:
-    request = CampaignPerformanceRequest(
-        company_name=f"QA Fixture - {fixture.fixture_id}",
-        campaigns=fixture.campaigns,
-        target_cpl=fixture.target_cpl,
-        target_cpa=fixture.target_cpa,
-        target_ctr_percent=fixture.target_ctr_percent,
-        target_landing_conversion_rate_percent=fixture.target_landing_conversion_rate_percent,
-        min_lead_quality_rate_percent=fixture.min_lead_quality_rate_percent,
-        notes=f"Fixture QA: {fixture.description}",
-    )
-    result = run_campaign_performance_audit(request)
-    text = _campaign_fixture_text(result)
-
-    expected_hits = [kw for kw in fixture.expected_diagnosis_keywords if kw.casefold() in text]
-    expected_missing = [kw for kw in fixture.expected_diagnosis_keywords if kw.casefold() not in text]
-    action_hits = [kw for kw in fixture.expected_action_keywords if kw.casefold() in text]
-    action_missing = [kw for kw in fixture.expected_action_keywords if kw.casefold() not in text]
-    forbidden_hits = [kw for kw in fixture.forbidden_recommendation_keywords if kw.casefold() in text]
-
-    checks = {
-        "has_campaign_data": result.campaigns_analyzed > 0 and result.data_quality != "sin_datos",
-        "expected_diagnosis_detected": len(expected_hits) >= max(1, math.ceil(len(fixture.expected_diagnosis_keywords) * 0.4)),
-        "expected_action_detected": len(action_hits) >= max(1, math.ceil(len(fixture.expected_action_keywords) * 0.4)),
-        "no_forbidden_recommendation": len(forbidden_hits) == 0,
-        "next_data_needed_present": bool(result.next_data_needed),
-        "prioritized_actions_present": bool(result.prioritized_actions),
-        "not_overstated_as_complete": result.data_quality in ["parcial", "media", "alta", "alta_con_limitaciones"],
-    }
-
-    score = sum(1 for ok in checks.values() if ok)
-    if score >= 6 and not forbidden_hits:
-        status = "passed"
-    elif score >= 4:
-        status = "partial"
-    else:
-        status = "failed"
-
-    notes = []
-    if expected_missing:
-        notes.append(f"Faltaron keywords esperadas de diagnóstico: {', '.join(expected_missing[:8])}.")
-    if action_missing:
-        notes.append(f"Faltaron keywords esperadas de acción: {', '.join(action_missing[:8])}.")
-    if forbidden_hits:
-        notes.append(f"Aparecieron recomendaciones prohibidas para este fixture: {', '.join(forbidden_hits)}.")
-    if status != "passed":
-        notes.append("Revisar reglas del módulo de campañas antes de usar el diagnóstico como confiable en casos reales similares.")
-
-    return CampaignFixtureEvaluation(
-        fixture_id=fixture.fixture_id,
-        description=fixture.description,
-        expected_primary_issue=fixture.expected_primary_issue,
-        pass_status=status,
-        qa_score_0_to_7=score,
-        checks=checks,
-        expected_keyword_hits=expected_hits,
-        missing_expected_keywords=expected_missing,
-        expected_action_hits=action_hits,
-        missing_expected_action_keywords=action_missing,
-        forbidden_hits=forbidden_hits,
-        diagnostic_notes=notes,
-        actual_snapshot=_fixture_actual_snapshot(result),
-    )
-
-
-def run_campaign_fixture_tests() -> CampaignFixtureTestResponse:
-    fixtures = build_default_campaign_fixtures()
-    evaluations = [evaluate_campaign_fixture(fixture) for fixture in fixtures]
-    passed = len([item for item in evaluations if item.pass_status == "passed"])
-    partial = len([item for item in evaluations if item.pass_status == "partial"])
-    failed = len([item for item in evaluations if item.pass_status == "failed"])
-    if failed:
-        overall = "failed"
-    elif partial:
-        overall = "partial"
-    else:
-        overall = "passed"
-
-    next_fix = []
-    for ev in evaluations:
-        if ev.pass_status != "passed":
-            next_fix.append(f"{ev.fixture_id}: {('; '.join(ev.diagnostic_notes[:2]) or 'ajustar reglas de diagnóstico/acciones')}")
-    if not next_fix:
-        next_fix.append("Los fixtures base pasaron. Siguiente paso: agregar fixtures por industria real y comparar contra campañas reales anonimizadas.")
-
-    return CampaignFixtureTestResponse(
-        total_fixtures=len(evaluations),
-        passed=passed,
-        partial=partial,
-        failed=failed,
-        overall_status=overall,
-        evaluations=evaluations,
-        recommended_next_fix=next_fix[:10],
-    )
-
-
-@app.post(
-    "/debug/campaign-fixture-tests",
-    response_model=CampaignFixtureTestResponse,
-    operation_id="runCampaignFixtureTests",
-    summary="Run campaign fixture tests",
-    description="QA interno: corre campañas sintéticas con diagnóstico esperado para auditar si el motor de campañas razona correctamente.",
-    dependencies=[Security(verify_api_key)],
-)
-def debug_campaign_fixture_tests():
-    return run_campaign_fixture_tests()
-
-
-def bounded_score(value: int) -> int:
-    return max(1, min(10, int(value)))
-
-
-def make_variant(
-    name: str,
-    description: str,
-    score: int,
-    why: str,
-    feasibility: str,
-    impact: str,
-    risk: str,
-    use_case: str,
-    metric: str,
-    sequence_note: str,
-) -> ImplementationVariant:
-    return ImplementationVariant(
-        variant_name=name,
-        description=description,
-        score_1_to_10=bounded_score(score),
-        why_this_score=why,
-        feasibility=feasibility,
-        expected_impact=impact,
-        risk_level=risk,
-        best_use_case=use_case,
-        test_metric=metric,
-        can_be_tested_before_or_after=sequence_note,
-    )
-
-
-def build_measure(
-    measure_name: str,
-    area: str,
-    problem_addressed: str,
-    evidence_used: List[str],
-    data_considered: List[str],
-    decision_basis: str,
-    affected_area: List[str],
-    expected_impact: str,
-    priority: str,
-    confidence: str,
-    validation_metrics: List[str],
-    implementation_variants: List[ImplementationVariant],
-    recommended_testing_sequence: List[str],
-    dependencies: List[str],
-    risks: List[str],
-    what_not_to_give_for_free: str,
-) -> StrategicMeasure:
-    return StrategicMeasure(
-        measure_name=measure_name,
-        area=area,
-        problem_addressed=problem_addressed,
-        evidence_used=list(dict.fromkeys([item for item in evidence_used if item]))[:8],
-        data_considered=list(dict.fromkeys([item for item in data_considered if item]))[:10],
-        decision_basis=decision_basis,
-        affected_area=list(dict.fromkeys(affected_area))[:8],
-        expected_impact=expected_impact,
-        priority=priority,
-        confidence=confidence,
-        validation_metrics=list(dict.fromkeys(validation_metrics))[:8],
-        implementation_variants=implementation_variants[:3],
-        recommended_testing_sequence=recommended_testing_sequence[:4],
-        dependencies=list(dict.fromkeys(dependencies))[:6],
-        risks=list(dict.fromkeys(risks))[:6],
-        what_not_to_give_for_free=what_not_to_give_for_free,
-    )
-
-
-def request_text_for_decisions(request: FullCommercialSystemRequest, public_audit: ProspectWithResearchResponse) -> str:
-    parts = [
-        request.company_name,
-        request.industry,
-        request.city,
-        request.country,
-        request.website,
-        request.instagram,
-        getattr(request, "tiktok", None),
-        request.linkedin,
-        request.offer,
-        request.notes,
-        request.social_content_notes,
-        public_audit.diagnosis_initial,
-        public_audit.audit.primary_bottleneck if public_audit.audit else "",
-    ]
-    for source in public_audit.public_sources_summary:
-        parts.extend([source.category, source.title or "", source.url or "", source.signal])
-    return " ".join([str(part) for part in parts if part]).casefold()
-
-
-def build_strategic_measures_matrix(
-    request: FullCommercialSystemRequest,
-    public_audit: ProspectWithResearchResponse,
-    social_fit: SocialContentFitResponse,
-    campaign_performance: CampaignPerformanceResponse,
-    analysis_trace: AnalysisTrace,
-) -> StrategicMeasuresMatrix:
-    text = request_text_for_decisions(request, public_audit)
-    has_campaigns = campaign_performance.campaigns_analyzed > 0
-    measures: List[StrategicMeasure] = []
-
-    base_data = [
-        "links públicos declarados",
-        "fuentes públicas encontradas/declaradas",
-        "oferta principal",
-        "diagnóstico comercial",
-        "awareness funnel",
-        "heatmap de intención",
-        "blueprint dinámico",
-    ]
-
-    if social_fit:
-        base_data.extend(["social content fit", "adaptación por plataforma", "riesgo estructural de retención"])
-
-    if has_campaigns:
-        base_data.extend(["métricas de campaña", "tracking", "lead quality", "cost quality matrix", "budget reallocation"])
-    else:
-        base_data.append("sin datos reales de campañas: acciones de performance quedan preparadas")
-
-    if contains_any(text, ["diferencial", "no está claro", "genérico", "propuesta de valor", "posicionamiento"]) or public_audit.commercial_score.value_proposition < 70:
-        measures.append(build_measure(
-            measure_name="Clarificar propuesta de valor y posicionamiento",
-            area="Marca / posicionamiento / oferta",
-            problem_addressed="La marca puede comunicar qué hace, pero no necesariamente por qué elegirla frente a alternativas.",
-            evidence_used=[
-                f"Diagnóstico inicial: {public_audit.diagnosis_initial}",
-                f"Score de propuesta de valor: {public_audit.commercial_score.value_proposition}/100",
-                f"Diagnóstico base: {analysis_trace.base_diagnosis}",
-            ],
-            data_considered=base_data + ["propuesta de valor", "diferenciación", "posicionamiento"],
-            decision_basis="La medida se recomienda cuando el diferencial visible es débil o genérico. Sin un criterio claro de elección, el resto del funnel tiende a competir por disponibilidad, precio, urgencia o confianza mínima.",
-            affected_area=["marca", "bio/perfiles", "sitio web", "contenido", "speech comercial", "CTA", "campañas futuras"],
-            expected_impact="Mejorar claridad, recordación, confianza inicial y calidad de consultas.",
-            priority="alta",
-            confidence="media" if public_audit.research_confidence in ["baja", "media-baja"] else "media-alta",
-            validation_metrics=["consultas calificadas", "tasa de respuesta", "reuniones agendadas", "clicks a contacto", "comentarios de intención"],
-            implementation_variants=[
-                make_variant("Propuesta única de elección", "Definir una frase central que explique para quién es la oferta, qué problema resuelve y por qué elegirla.", 9, "Ataca la raíz del posicionamiento y ordena web, perfiles, contenido y campañas.", "media", "alto", "medio", "Cuando el diferencial no está claro o la marca suena genérica.", "consultas calificadas y tasa de avance a reunión", "Conviene testearla antes de escalar campañas."),
-                make_variant("Mensajes por dolor/objeción", "Reformular la comunicación alrededor de problemas concretos del cliente y objeciones frecuentes.", 8, "Hace que el valor sea más tangible y menos abstracto.", "media-alta", "medio-alto", "bajo-medio", "Cuando el público entiende el servicio pero no percibe urgencia o diferencia.", "comentarios de intención, guardados, consultas por tema", "Puede testearse después de definir la propuesta central."),
-                make_variant("Reposicionamiento por autoridad/prueba", "Apoyar el posicionamiento en experiencia, casos, proceso o evidencia operativa.", 7, "Mejora confianza, pero depende de contar con pruebas concretas.", "media", "medio", "medio", "Cuando hay baja confianza o poca prueba social visible.", "reuniones agendadas y objeciones de confianza", "Conviene implementarla junto con prueba social."),
-            ],
-            recommended_testing_sequence=["Primero propuesta única de elección.", "Luego mensajes por dolor/objeción.", "Después autoridad/prueba."],
-            dependencies=["claridad sobre cliente ideal", "servicios prioritarios", "casos o evidencia disponibles"],
-            risks=["quedar demasiado genérico", "prometer más de lo que puede probarse", "mezclar demasiadas audiencias"],
-            what_not_to_give_for_free="No entregar copy final completo ni arquitectura total de marca; entregar diagnóstico y dirección estratégica.",
-        ))
-
-    if contains_any(text, ["b2b", "empresa", "empleados", "trabajo", "postulante", "busca trabajo", "doble audiencia", "personas que buscan"]):
-        measures.append(build_measure(
-            measure_name="Separar rutas y mensajes por audiencia",
-            area="Audiencia / funnel / posicionamiento",
-            problem_addressed="La marca puede estar hablando simultáneamente a postulantes y empresas, dos públicos con motivaciones, objeciones y CTAs distintos.",
-            evidence_used=[
-                "Cliente ideal declarado incluye personas que buscan trabajo y empresas B2B.",
-                f"Oferta declarada: {request.offer or 'no especificada'}",
-                f"Blueprint actual: {' -> '.join(public_audit.funnel_blueprint.current_flow[:3])}",
-            ],
-            data_considered=base_data + ["audiencia", "B2C", "B2B", "CTA", "ruta de conversión"],
-            decision_basis="Cuando una misma comunicación intenta convertir a dos públicos con expectativas distintas, pierde precisión. La separación de rutas ayuda a que cada segmento reciba promesa, prueba y CTA adecuados.",
-            affected_area=["sitio web", "perfiles sociales", "contenido", "CTA", "formularios", "seguimiento", "campañas futuras"],
-            expected_impact="Mayor claridad, mejor calidad de consulta y mejor medición por tipo de lead.",
-            priority="alta",
-            confidence="media-alta",
-            validation_metrics=["consultas por tipo de público", "calidad de consulta", "tasa de reunión B2B", "aplicaciones/postulaciones", "fuente de consulta"],
-            implementation_variants=[
-                make_variant("Separar mensajes dentro del mismo ecosistema", "Mantener los mismos canales, pero ordenar piezas, bios, destacados y CTAs diferenciando postulantes de empresas.", 7, "Es rápido y reduce confusión, aunque no separa completamente la conversión.", "alta", "medio", "bajo", "Cuando se necesita una mejora rápida sin rediseñar activos grandes.", "mensajes/contactos segmentados por audiencia", "Puede probarse primero como corrección rápida."),
-                make_variant("Separar rutas de conversión B2C/B2B", "Crear caminos claros: uno para postulantes y otro para empresas, con CTA, formulario y prueba distinta.", 9, "Es la opción más fuerte porque separa intención, conversión y medición.", "media", "alto", "medio", "Cuando el objetivo es mejorar calidad de leads y preparar campañas.", "tasa de conversión por ruta y calidad de lead", "Conviene después de validar mensajes principales."),
-                make_variant("Separar campañas futuras por audiencia", "Cuando haya pauta, estructurar campañas y eventos diferenciados para postulantes y empresas.", 8, "Permite medir CPL/calidad por segmento y evitar mezclar audiencias en performance.", "media", "alto con datos", "medio", "Cuando existan campañas o presupuesto para adquisición.", "CPL, CPA, calidad de lead y tasa de reunión por audiencia", "Debe aplicarse después de tener tracking mínimo."),
-            ],
-            recommended_testing_sequence=["Primero ordenar mensajes por audiencia.", "Luego crear rutas/formularios diferenciados.", "Finalmente separar campañas y medición."],
-            dependencies=["definir prioridad comercial", "formularios o rutas separadas", "tracking por fuente"],
-            risks=["fragmentar demasiado si no hay volumen", "duplicar trabajo sin medición", "confundir más si las rutas no quedan claras"],
-            what_not_to_give_for_free="No entregar arquitectura completa del funnel B2B/B2C ni formularios finales; venderlo como fase de implementación.",
-        ))
-
-    if social_fit and social_fit.overall_social_content_fit_score < 65:
-        worst_platform = sorted(social_fit.platform_audits, key=lambda x: x.platform_fit_score)[0] if social_fit.platform_audits else None
-        measures.append(build_measure(
-            measure_name="Rediseñar contenido social por lógica de plataforma",
-            area="Contenido orgánico / social content fit / awareness",
-            problem_addressed="El contenido puede existir, pero no estar diseñado para captar atención rápido, retener, comunicar valor y empujar avance comercial en cada red.",
-            evidence_used=[
-                f"Social Content Fit Score: {social_fit.overall_social_content_fit_score}/100",
-                f"Brecha principal: {social_fit.primary_content_gap}",
-                f"Plataforma más débil: {worst_platform.platform if worst_platform else 'sin plataforma'}",
-                social_fit.strategic_summary,
-            ],
-            data_considered=base_data + ["TikTok", "Instagram", "LinkedIn", "hook", "retención potencial", "CTA social"],
-            decision_basis="La medida se recomienda cuando hay riesgo de que el usuario pierda atención antes de entender el valor de la marca. No se afirma baja retención real sin métricas; se trata como riesgo estructural salvo que existan datos internos.",
-            affected_area=["TikTok", "Instagram/Reels", "LinkedIn", "contenido de awareness", "contenido de consideración", "CTA social"],
-            expected_impact="Mejorar retención inicial, claridad del mensaje, avance a perfil/link y calidad de interacción.",
-            priority="alta" if social_fit.overall_social_content_fit_score < 50 else "media-alta",
-            confidence="media" if request.social_content_samples else "baja-media",
-            validation_metrics=["retención a 3s", "porcentaje visto", "completion rate", "shares", "saves", "clicks al perfil", "mensajes generados"],
-            implementation_variants=[
-                make_variant("Hooks por plataforma", "Rediseñar los primeros 0-3 segundos con tensión, objeción, resultado o problema específico.", 9, "Ataca la pérdida de atención inicial, especialmente en TikTok/Reels.", "media-alta", "alto", "bajo-medio", "Cuando el contenido arranca lento o institucional.", "retención a 3s y porcentaje visto", "Debe testearse antes de cambiar todo el calendario."),
-                make_variant("Piezas por etapa del funnel", "Separar piezas de awareness, consideración y conversión para no pedir la misma acción a todos.", 8, "Ordena contenido según intención y evita CTAs genéricos.", "media", "medio-alto", "medio", "Cuando hay mezcla de audiencias o niveles de intención.", "guardados, comentarios de intención, clicks al link", "Puede probarse después de mejorar hooks."),
-                make_variant("Prueba social integrada al contenido", "Incorporar casos, procesos, evidencia o señales de confianza dentro de piezas sociales.", 7, "Mejora confianza, pero depende de contar con evidencia real.", "media", "medio", "medio", "Cuando el problema es confianza o credibilidad.", "consultas calificadas y reducción de objeciones", "Conviene después de definir el mensaje central."),
-            ],
-            recommended_testing_sequence=["Primero testear hooks por plataforma.", "Luego separar piezas por etapa del funnel.", "Después sumar prueba social en piezas ganadoras."],
-            dependencies=["muestras de contenido", "métricas de retención", "definición de audiencia por plataforma"],
-            risks=["confundir riesgo estructural con dato real", "hacer cambios estéticos sin medir retención", "regalar guiones finales"],
-            what_not_to_give_for_free="No entregar guiones finales, calendario completo ni copies terminados; entregar diagnóstico, criterios y dirección de testing.",
-        ))
-
-    if public_audit.commercial_score.cta_strength < 75 or contains_any(text, ["cta", "consultanos", "escribinos", "contacto", "conversión"]):
-        measures.append(build_measure(
-            measure_name="Rediseñar CTA y ruta de conversión",
-            area="CTA / conversión / seguimiento",
-            problem_addressed="La audiencia puede mostrar atención o interés, pero no tener un próximo paso suficientemente claro, específico o adaptado a su temperatura.",
-            evidence_used=[
-                f"Score de CTA: {public_audit.commercial_score.cta_strength}/100",
-                f"Zona bloqueada del heatmap: {public_audit.customer_intent_density_map.blocked_zone}",
-                f"Blueprint breakpoints: {'; '.join(public_audit.funnel_blueprint.breakpoints[:3])}",
-            ],
-            data_considered=base_data + ["CTA", "ruta de conversión", "heatmap", "blueprint", "follow-up"],
-            decision_basis="El CTA no debe evaluarse aislado. Se recomienda rediseñarlo cuando cruza con propuesta de valor, audiencia, confianza y etapa de awareness. El objetivo es convertir interés en acción medible.",
-            affected_area=["web", "bio", "posts", "Reels/TikTok", "formularios", "WhatsApp", "seguimiento comercial"],
-            expected_impact="Aumentar avance desde atención/interés hacia consulta, diagnóstico, aplicación o reunión.",
-            priority="alta",
-            confidence="media",
-            validation_metrics=["clicks a contacto", "formularios", "mensajes", "tasa de reunión", "calidad de consulta", "fuente de consulta"],
-            implementation_variants=[
-                make_variant("CTA por temperatura", "Definir CTA para frío, templado y caliente: guardar/comentar, pedir recurso/caso, solicitar diagnóstico o reunión.", 9, "Respeta distintos niveles de intención y evita forzar una única acción.", "media", "alto", "bajo-medio", "Cuando hay públicos y niveles de awareness distintos.", "avance por etapa y tasa de consulta calificada", "Conviene como primera variante si el funnel es confuso."),
-                make_variant("CTA por audiencia", "Separar CTA para postulantes y empresas: aplicar/registrarse vs consultar/reunión/diagnóstico.", 8, "Reduce fricción y evita mezclar intenciones.", "media-alta", "alto", "medio", "Cuando existen B2C y B2B simultáneamente.", "consultas por tipo de público", "Puede ir junto con separación de rutas."),
-                make_variant("CTA de pre-calificación", "Usar un formulario o pregunta de filtro para mejorar calidad del lead antes de seguimiento.", 7, "Mejora calidad, pero puede bajar volumen si se aplica demasiado pronto.", "media", "medio-alto", "medio", "Cuando llegan consultas poco calificadas.", "calidad de lead, tasa de reunión y tasa de respuesta", "Conviene después de ordenar mensaje y audiencia."),
-            ],
-            recommended_testing_sequence=["Primero CTA por temperatura.", "Luego CTA por audiencia.", "Después pre-calificación si la calidad de consultas es baja."],
-            dependencies=["definición de rutas", "tracking de clicks/mensajes", "criterio de lead calificado"],
-            risks=["pedir demasiado pronto una reunión", "subir fricción antes de generar confianza", "medir solo volumen y no calidad"],
-            what_not_to_give_for_free="No entregar copies finales ni flujos completos de conversión; reservar implementación para propuesta.",
-        ))
-
-    if public_audit.commercial_score.trust_signals < 75 or contains_any(text, ["confianza", "prueba", "casos", "testimonio", "reseña", "autoridad"]):
-        measures.append(build_measure(
-            measure_name="Construir prueba social y evidencia de confianza",
-            area="Confianza / autoridad / conversión",
-            problem_addressed="Puede existir interés, pero faltar evidencia suficiente para que un usuario o empresa avance con confianza.",
-            evidence_used=[
-                f"Score de confianza: {public_audit.commercial_score.trust_signals}/100",
-                "Fuentes públicas declaradas/encontradas y contenido visible.",
-                f"Social proof score si aplica: {social_fit.platform_audits[0].proof_score if social_fit.platform_audits else 'sin dato'}",
-            ],
-            data_considered=base_data + ["confianza", "prueba social", "casos", "reputación", "objeciones"],
-            decision_basis="En servicios de recursos humanos, la confianza afecta decisión B2B, calidad percibida, objeciones y conversión.",
-            affected_area=["web", "LinkedIn", "Instagram", "propuesta comercial", "speech de reunión", "seguimiento"],
-            expected_impact="Aumentar credibilidad y reducir fricción antes de consulta/reunión.",
-            priority="media-alta",
-            confidence="media",
-            validation_metrics=["reuniones agendadas", "objeciones de confianza", "respuestas B2B", "consultas calificadas", "tiempo hasta respuesta"],
-            implementation_variants=[
-                make_variant("Prueba institucional mínima", "Agregar señales básicas: trayectoria, proceso, metodología, equipo, cobertura y formas de trabajo.", 7, "Es factible y mejora confianza base, aunque no reemplaza casos reales.", "alta", "medio", "bajo", "Cuando faltan evidencias visibles.", "tasa de contacto y tiempo de decisión", "Puede aplicarse rápido."),
-                make_variant("Casos / resultados / procesos", "Mostrar ejemplos concretos de procesos, resultados o aprendizajes sin revelar datos sensibles.", 9, "Es más potente para B2B porque transforma promesa en evidencia.", "media", "alto", "medio", "Cuando hay clientes, historias o procesos demostrables.", "reuniones B2B y objeciones reducidas", "Conviene después de definir posicionamiento."),
-                make_variant("Contenido de objeciones", "Crear piezas que respondan dudas frecuentes de empresas y postulantes.", 8, "Convierte contenido en soporte comercial y reduce fricción.", "media-alta", "medio-alto", "bajo-medio", "Cuando hay preguntas repetidas o barreras antes de avanzar.", "comentarios, guardados, respuestas y consultas por objeción", "Puede testearse en paralelo a prueba social."),
-            ],
-            recommended_testing_sequence=["Primero prueba institucional mínima.", "Luego casos/procesos si hay evidencia.", "Después contenido de objeciones."],
-            dependencies=["evidencias reales", "casos autorizados", "objeciones frecuentes"],
-            risks=["usar prueba genérica", "exponer datos sensibles", "hacer claims no demostrables"],
-            what_not_to_give_for_free="No entregar casos redactados completos ni piezas finales; usarlo como recomendación estratégica.",
-        ))
-
-    tracking_critical = any(item.severity == "crítica" for item in campaign_performance.tracking_health)
-    if tracking_critical or not has_campaigns:
-        measures.append(build_measure(
-            measure_name="Preparar tracking, CRM y medición de calidad",
-            area="Tracking / CRM / performance futuro",
-            problem_addressed="Sin medición mínima, futuras campañas pueden optimizar por volumen, no por calidad real de consulta o contratación.",
-            evidence_used=[
-                f"Data completeness: {campaign_performance.data_completeness.score}/100",
-                f"Campaign data quality: {campaign_performance.data_quality}",
-                "No hay campañas reales cargadas." if not has_campaigns else "Hay señales de tracking a revisar.",
-            ],
-            data_considered=base_data + ["eventos", "CRM", "fuente de consulta", "calidad de lead", "tracking"],
-            decision_basis="La medición debe prepararse antes de invertir o escalar. En un negocio con B2B/B2C, no alcanza con contar leads: hay que distinguir fuente, audiencia, calidad y avance comercial.",
-            affected_area=["formularios", "WhatsApp", "CRM", "GA4", "Meta/Google/TikTok Ads", "reporting", "seguimiento comercial"],
-            expected_impact="Mejorar confiabilidad de decisiones, calidad de optimización y atribución.",
-            priority="alta" if has_campaigns else "media-alta",
-            confidence="alta",
-            validation_metrics=["eventos activos", "fuente/campaña por lead", "lead quality", "tasa de contacto", "tasa de reunión", "tasa de cierre"],
-            implementation_variants=[
-                make_variant("Tracking mínimo viable", "Medir clicks a contacto, formularios, WhatsApp, fuente/medio/campaña y tipo de consulta.", 9, "Alta relación impacto/factibilidad antes de campañas.", "alta", "alto", "bajo", "Antes de invertir en pauta o comparar canales.", "porcentaje de leads con fuente y evento correcto", "Debe hacerse antes de performance avanzada."),
-                make_variant("CRM con scoring simple", "Registrar fuente, tipo de audiencia, calidad, estado, reunión y resultado.", 8, "Permite medir calidad real, no solo CPL.", "media", "alto", "medio", "Cuando hay consultas pero no se sabe cuáles sirven.", "lead quality rate y tasa de reunión", "Puede implementarse después del tracking mínimo."),
-                make_variant("Dashboard de campaña + comercial", "Unir campañas, eventos y CRM para ver CPL, calidad y avance por canal.", 7, "Muy útil, pero depende de tener datos y procesos estables.", "media-baja", "alto", "medio", "Cuando ya haya campañas y volumen de leads.", "CPA/calidad por canal y etapa CRM", "Conviene después de CRM mínimo."),
-            ],
-            recommended_testing_sequence=["Primero tracking mínimo viable.", "Luego CRM con scoring simple.", "Después dashboard integrado."],
-            dependencies=["accesos a sitio/formularios", "GA4/píxeles", "criterio de lead calificado", "proceso de seguimiento"],
-            risks=["optimizar campañas con datos incompletos", "confundir lead barato con lead bueno", "no poder atribuir consultas"],
-            what_not_to_give_for_free="No implementar setup técnico completo gratis; incluirlo como fase de medición.",
-        ))
-
-    if has_campaigns:
-        campaign_evidence = [finding.evidence for finding in campaign_performance.findings[:3]]
-        campaign_evidence.extend([finding.evidence for finding in campaign_performance.cross_metric_findings[:3]])
-        measures.append(build_measure(
-            measure_name="Optimizar campañas cruzando costo, calidad, tracking y funnel",
-            area="Performance / campañas / presupuesto",
-            problem_addressed="Las decisiones de pauta no deben tomarse solo por CPL/CPA: hay que cruzar CTR, CPC, CVR, calidad, tracking, etapa y fuente.",
-            evidence_used=campaign_evidence or ["Datos de campaña cargados."],
-            data_considered=base_data + ["CTR", "CPC", "CPM", "CPL/CPA", "CVR", "lead quality", "tracking", "presupuesto", "funnel stage"],
-            decision_basis="Con datos reales, la prioridad de medidas cambia: una campaña barata con mala calidad no se escala; una cara con alta calidad puede optimizarse; una con clicks y eventos cero primero requiere tracking.",
-            affected_area=["presupuesto", "creatividad", "audiencias", "landing", "tracking", "retargeting", "CRM"],
-            expected_impact="Reducir desperdicio, mejorar calidad de lead y priorizar inversión según evidencia.",
-            priority="alta",
-            confidence="media-alta" if campaign_performance.data_quality != "sin_datos" else "media",
-            validation_metrics=["CPL/CPA", "lead quality", "CVR", "tasa de reunión", "tracking reliability", "valor cerrado si existe"],
-            implementation_variants=[
-                make_variant("Pausar/reducir desperdicio evidente", "Reducir campañas con costo alto, baja calidad y muestra suficiente.", 8, "Protege presupuesto, pero requiere guardrails de muestra y tracking.", "media-alta", "alto", "medio", "Cuando hay CPL alto + calidad baja + muestra suficiente.", "ahorro de gasto y calidad de leads restantes", "No aplicar antes de revisar tracking."),
-                make_variant("Escalar ganadoras con cautela", "Aumentar gradualmente campañas con buen costo, buena calidad y tracking confiable.", 9, "Maximiza lo que funciona sin romper aprendizaje.", "media", "alto", "medio", "Cuando hay CPL/CPA bajo + calidad alta.", "CPL, calidad y tasa de reunión post-escalado", "Aplicar después de validar calidad."),
-                make_variant("Tests creativos por hipótesis", "Testear hooks, mensajes, landing o audiencias según patrón detectado.", 8, "Convierte hallazgos en aprendizaje controlado.", "media", "medio-alto", "medio", "Cuando hay CTR/CPC/CVR que señalan problema específico.", "CTR, CPC, CVR y lead quality por variante", "Puede ir en paralelo a ajuste de presupuesto."),
-            ],
-            recommended_testing_sequence=["Primero corregir tracking crítico.", "Luego reducir desperdicio evidente.", "Después escalar ganadoras y testear creatividad."],
-            dependencies=["tracking confiable", "muestra suficiente", "calidad de lead por campaña", "CRM o seguimiento"],
-            risks=["pausar por muestra chica", "escalar lead barato pero malo", "optimizar por métrica equivocada"],
-            what_not_to_give_for_free="No entregar estructura completa de campañas, segmentaciones detalladas ni plan de presupuesto final.",
-        ))
-
-    priority_order = {"crítica": 0, "alta": 1, "media-alta": 2, "media": 3, "baja": 4}
-    measures = sorted(
-        measures,
-        key=lambda item: (
-            priority_order.get(item.priority, 5),
-            -max([variant.score_1_to_10 for variant in item.implementation_variants] or [0]),
-        ),
-    )[:8]
-
-    if not measures:
-        measures.append(build_measure(
-            measure_name="Recolectar datos mínimos antes de decidir medidas fuertes",
-            area="Diagnóstico / datos",
-            problem_addressed="La información disponible no alcanza para proponer medidas con confianza suficiente.",
-            evidence_used=["Datos limitados en la auditoría actual."],
-            data_considered=base_data,
-            decision_basis="Antes de recomendar cambios profundos, conviene reunir evidencia mínima de contenido, consultas, fuentes y campañas.",
-            affected_area=["diagnóstico", "reporting", "speech comercial"],
-            expected_impact="Aumentar precisión y reducir riesgo de recomendar cambios prematuros.",
-            priority="media",
-            confidence="alta",
-            validation_metrics=["cantidad de fuentes", "muestras de contenido", "consultas por fuente", "métricas de retención"],
-            implementation_variants=[
-                make_variant("Brief de datos", "Completar brief comercial y checklist de datos.", 8, "Mejora precisión rápido.", "alta", "medio", "bajo", "Cuando falta información base.", "datos completos", "Primero."),
-                make_variant("Auditoría manual de piezas", "Cargar 5-10 piezas por red con métricas.", 9, "Permite validar contenido.", "media", "alto", "bajo", "Cuando el foco es redes.", "retención/engagement", "Después del brief."),
-            ],
-            recommended_testing_sequence=["Completar brief.", "Cargar muestras.", "Reejecutar auditoría."],
-            dependencies=["datos del cliente", "links/muestras"],
-            risks=["inferir demasiado con poca data"],
-            what_not_to_give_for_free="No resolver estrategia completa hasta tener evidencia mínima.",
-        ))
-
-    limitations = []
-    if not has_campaigns:
-        limitations.append("No hay campañas reales: presupuesto, escalado, pausa y performance quedan como medidas preparadas, no decisiones ejecutivas.")
-    if not request.social_content_samples:
-        limitations.append("No hay muestras/métricas internas de contenido: retención social se trata como riesgo estructural, no hecho comprobado.")
-    if public_audit.research_confidence in ["baja", "media-baja"]:
-        limitations.append("La investigación pública tiene confianza limitada: los links declarados valen como fuentes, pero la extracción automática puede ser parcial.")
-
-    next_measurement = [
-        "definir lead calificado por audiencia",
-        "medir fuente de consulta",
-        "registrar tasa de respuesta/reunión/cierre",
-        "capturar retención a 3s y completion rate de videos",
-        "configurar eventos de contacto/formulario/WhatsApp",
-    ]
-    if has_campaigns:
-        next_measurement.extend(["comparar CPL vs calidad", "controlar CVR landing", "registrar etapa CRM por campaña"])
-
-    return StrategicMeasuresMatrix(
-        summary=(
-            "La matriz prioriza medidas integrales basadas en marca, posicionamiento, audiencia, contenido, CTA, funnel y medición. "
-            "Cuando hay campañas, incorpora cruces de performance para ajustar prioridad. "
-            f"Se generaron {len(measures)} medidas con variantes puntuadas y secuencia de testing."
-        ),
-        measures=measures,
-        decision_logic=(
-            "Ninguna medida se recomienda por una sola variable aislada. Cada decisión cruza diagnóstico de marca, posicionamiento, "
-            "audiencia, contenido, CTA/funnel, confianza, tracking y, si existen, métricas de campaña y calidad de lead."
-        ),
-        data_limitations=limitations,
-        next_measurement_layer=list(dict.fromkeys(next_measurement))[:10],
-    )
-
-
-
-def build_stability_verdict(
-    request: FullCommercialSystemRequest,
-    public_audit: ProspectWithResearchResponse,
-    social_fit: Optional[SocialContentFitResponse],
-    campaign_performance: Optional[CampaignPerformanceResponse],
-    analysis_trace: AnalysisTrace,
-    visual_report_url: Optional[str],
-) -> Dict[str, Any]:
-    risks: List[str] = []
-
-    research_mode = getattr(analysis_trace, "research_mode", "live_public_search")
-    diagnostic_gates = analysis_trace.diagnostic_gates or {}
-    has_campaigns = bool(getattr(request, "campaigns", None))
-    has_social_samples = bool(getattr(request, "social_content_samples", None))
-    has_canonical_hash = bool(analysis_trace.canonical_input_hash or analysis_trace.input_hash)
-    has_sources_hash = bool(analysis_trace.sources_hash)
-    has_visual_report = bool(visual_report_url)
-
-    if not has_canonical_hash:
-        risks.append("Falta canonical_input_hash; no se puede comparar input de forma estable.")
-    if not has_sources_hash:
-        risks.append("Falta sources_hash; no se puede comparar evidencia pública de forma estable.")
-    if research_mode == "live_public_search":
-        risks.append("La búsqueda pública live puede variar entre corridas.")
-    if not has_visual_report:
-        risks.append("No se generó visual_report_url; el entregable visual debe regenerarse o revisarse.")
-    if social_fit and social_fit.overall_social_content_fit_score < 62 and not has_social_samples:
-        risks.append("Social Content Fit se basa en links/notas; es riesgo estructural, no retención comprobada.")
-    if has_campaigns and campaign_performance and campaign_performance.data_completeness.score < 70:
-        risks.append("Hay campañas, pero la completitud de datos es limitada.")
-    if has_campaigns and campaign_performance and any(item.severity == "crítica" for item in campaign_performance.tracking_health):
-        risks.append("Tracking crítico: CPA/CPL o conversiones pueden no ser confiables.")
-
-    # Status hierarchy
-    if not has_canonical_hash or not has_sources_hash:
-        status = "variable"
-    elif research_mode == "declared_only" and not has_campaigns and not diagnostic_gates.get("social_overlay_can_override_base", False):
-        status = "locked"
-    elif research_mode == "declared_only":
-        status = "comparable"
-    elif research_mode == "live_public_search" and has_canonical_hash and has_sources_hash:
-        status = "comparable"
-    else:
-        status = "preliminary"
-
-    # Preliminary is a usage label when evidence is limited, but it should not downgrade locked reproducibility.
-    evidence_is_preliminary = (
-        not has_campaigns
-        or public_audit.research_confidence in ["baja", "media-baja"]
-        or (social_fit is not None and social_fit.overall_social_content_fit_score < 62 and not has_social_samples)
-    )
-
-    if status == "locked":
-        needs_second_run = False
-        safe_to_present = True
-        report_use = "usable_for_preliminary_report"
-        reason = (
-            "Payload canónico presente, fuentes declaradas/estables, sin campañas reales variables y social overlay limitado por diagnostic gates."
-        )
-    elif status == "comparable":
-        needs_second_run = False
-        safe_to_present = True
-        report_use = "usable_if_hashes_are_saved"
-        reason = (
-            "El análisis tiene hashes y versiones comparables. Guardar canonical_input_hash, sources_hash, versions y modules_used."
-        )
-    elif status == "preliminary":
-        needs_second_run = False
-        safe_to_present = True
-        report_use = "exploratory_preliminary_report"
-        reason = (
-            "El análisis es útil como diagnóstico preliminar, pero requiere más evidencia para decisiones operativas fuertes."
-        )
-    else:
-        needs_second_run = True
-        safe_to_present = False
-        report_use = "needs_fixed_payload_or_second_run"
-        reason = (
-            "Faltan condiciones mínimas de estabilidad; conviene repetir con JSON fijo o declared_only."
-        )
-
-    if evidence_is_preliminary and status in ["locked", "comparable"]:
-        reason = reason + " Evidencia todavía preliminar: no equivale a comportamiento real comprobado."
-        if report_use == "usable_if_hashes_are_saved":
-            report_use = "usable_for_preliminary_report_with_hashes"
-
-    safe_to_execute_actions = bool(
-        has_campaigns
-        and campaign_performance is not None
-        and campaign_performance.data_completeness.score >= 75
-        and not any(item.severity == "crítica" for item in campaign_performance.tracking_health)
-    )
-
-    return {
-        "stability_status": status,
-        "needs_second_run": needs_second_run,
-        "report_use": report_use,
-        "safe_to_present": safe_to_present,
-        "safe_to_execute_actions": safe_to_execute_actions,
-        "instability_risks": list(dict.fromkeys(risks)),
-        "stability_reason": reason,
-        "comparison_rule": (
-            "Comparar auditorías por canonical_input_hash + sources_hash + analysis_version + "
-            "ruleset_version + analysis_mode + modules_used. raw_input_hash es diagnóstico, no criterio principal."
-        ),
-    }
-
-
-
-def build_stable_audit_output(
-    public_audit: ProspectWithResearchResponse,
-    social_fit: SocialContentFitResponse,
-    analysis_trace: AnalysisTrace,
-    visual_report_url: Optional[str],
-    request: FullCommercialSystemRequest,
-    campaign_performance: CampaignPerformanceResponse,
-) -> StableAuditOutput:
-    awareness_distribution = {
-        item.stage: item.weight
-        for item in public_audit.awareness_funnel_locator.stage_distribution
-    }
-    heatmap_dominant = f"{public_audit.customer_intent_density_map.dominant_zone.x} / {public_audit.customer_intent_density_map.dominant_zone.y}"
-    heatmap_blocked = f"{public_audit.customer_intent_density_map.blocked_zone.x} / {public_audit.customer_intent_density_map.blocked_zone.y}"
-    primary_bottleneck = public_audit.audit.primary_bottleneck if public_audit.audit else ""
-    stability_verdict = build_stability_verdict(
-        request=request,
-        public_audit=public_audit,
-        social_fit=social_fit,
-        campaign_performance=campaign_performance,
-        analysis_trace=analysis_trace,
-        visual_report_url=visual_report_url,
-    )
-
-    return StableAuditOutput(
-        canonical_input_hash=analysis_trace.canonical_input_hash or analysis_trace.input_hash,
-        raw_input_hash=analysis_trace.raw_input_hash or analysis_trace.input_hash,
-        sources_hash=analysis_trace.sources_hash,
-        analysis_version=analysis_trace.analysis_version,
-        ruleset_version=analysis_trace.ruleset_version,
-        analysis_mode=analysis_trace.analysis_mode,
-        modules_used=analysis_trace.modules_used,
-        primary_diagnosis_source=analysis_trace.primary_diagnosis_source,
-        awareness_dominant_stage=public_audit.awareness_funnel_locator.dominant_stage,
-        awareness_blocked_stage=public_audit.awareness_funnel_locator.blocked_stage,
-        awareness_distribution=awareness_distribution,
-        heatmap_dominant_zone=heatmap_dominant,
-        heatmap_blocked_zone=heatmap_blocked,
-        blueprint_current_flow=public_audit.funnel_blueprint.current_flow,
-        blueprint_breakpoints=public_audit.funnel_blueprint.breakpoints,
-        blueprint_recommended_flow=public_audit.funnel_blueprint.recommended_flow,
-        primary_bottleneck=primary_bottleneck,
-        commercial_score_overall=getattr(public_audit.commercial_score, "overall", None),
-        social_content_fit_score=social_fit.overall_social_content_fit_score if social_fit else None,
-        visual_report_url=visual_report_url,
-        stability_status=stability_verdict["stability_status"],
-        needs_second_run=stability_verdict["needs_second_run"],
-        report_use=stability_verdict["report_use"],
-        safe_to_present=stability_verdict["safe_to_present"],
-        safe_to_execute_actions=stability_verdict["safe_to_execute_actions"],
-        instability_risks=stability_verdict["instability_risks"],
-        stability_reason=stability_verdict["stability_reason"],
-        comparison_rule=stability_verdict["comparison_rule"],
-        stability_note=(
-            "Este bloque es la salida estable recomendada para comparación y decisión operativa. "
-            "Si stability_status es locked o comparable, no hace falta correr dos veces; guardá hashes y versión."
-        ),
-    )
-
-
-
-
-
-def sanitize_stable_output_for_analysis_only(
-    stable_output: StableAuditOutput,
-    analytical_core: AnalyticalCoreResult,
-    visual_report_status: str,
-) -> StableAuditOutput:
-    """Remove legacy visual claims from stable_output when strong visuals were not generated."""
-    if visual_report_status == "generated":
-        return stable_output
-    try:
-        data = stable_output.model_dump()
-    except AttributeError:
-        data = stable_output.dict()
-
-    if analytical_core.confidence_status in ["complete", "campaign_ready", "comparable"]:
-        stability_status = "comparable"
-        report_use = "usable_for_controlled_analytical_report_with_hashes"
-    elif analytical_core.confidence_status == "not_safe" or not analytical_core.pre_report_factuality_check.safe_to_write_report:
-        stability_status = "not_safe"
-        report_use = "not_safe_to_present"
-    else:
-        stability_status = "preliminary"
-        report_use = "usable_for_preliminary_website_observed_analysis_only"
-
-    data.update({
-        "modules_used": _unique_keep_order([
-            "website_observed_evidence",
-            "analytical_core",
-            "evidence_ledger",
-            "signal_vector",
-            "claim_registry",
-            "traceable_recommendation_engine",
-            "pre_report_factuality_check",
-        ]),
-        "primary_diagnosis_source": "analytical_core_website_observed",
-        "awareness_dominant_stage": "not_generated_analysis_only",
-        "awareness_blocked_stage": "not_generated_analysis_only",
-        "awareness_distribution": {},
-        "heatmap_dominant_zone": "not_generated_analysis_only",
-        "heatmap_blocked_zone": "not_generated_analysis_only",
-        "blueprint_current_flow": ["No generado: modo analysis_only; se prioriza analytical_core evidence-first."],
-        "blueprint_breakpoints": ["No generado: visual fuerte bloqueado para evitar genericidad o falsa precisión."],
-        "blueprint_recommended_flow": ["Usar analytical_core.claims y analytical_core.recommendations trazables."],
-        "primary_bottleneck": "not_generated_analysis_only",
-        "commercial_score_overall": None,
-        "stability_status": stability_status,
-        "needs_second_run": False,
-        "report_use": report_use,
-        "safe_to_present": bool(analytical_core.pre_report_factuality_check.safe_to_write_report and stability_status != "not_safe"),
-        "safe_to_execute_actions": False,
-        "instability_risks": _unique_keep_order([
-            *(data.get("instability_risks") or []),
-            "Visuales fuertes bloqueados: no usar heatmap/blueprint/awareness legacy como evidencia.",
-            "Análisis preliminar basado en evidencia observable del sitio; no equivale a performance real.",
-        ]),
-        "stability_reason": (
-            "Salida sanitizada en modo analysis_only: conserva hashes/versiones, pero elimina claims legacy "
-            "de heatmap/blueprint/awareness porque no se generaron visuales fuertes. "
-            f"confidence_status={analytical_core.confidence_status}; factuality_check={analytical_core.pre_report_factuality_check.status}."
-        ),
-        "stability_note": (
-            "Usar este bloque para trazabilidad del análisis preliminar. No interpretar campos visuales como módulos ejecutados "
-            "cuando visual_report_status no sea generated."
-        ),
-    })
-    return StableAuditOutput(**data)
-
-def get_request_declared_links(request: Any) -> List[str]:
-    links: List[str] = []
-    for attr in ["website", "instagram", "tiktok", "facebook", "youtube", "linkedin"]:
-        value = getattr(request, attr, None)
-        if value:
-            links.append(f"{attr}: {value}")
-    return links
-
-
-def build_evidence_cross_check_report(
-    request: FullCommercialSystemRequest,
-    public_audit: ProspectWithResearchResponse,
-    social_fit: Optional[SocialContentFitResponse],
-    campaign_performance: Optional[CampaignPerformanceResponse],
-    analysis_trace: AnalysisTrace,
-) -> EvidenceCrossCheckReport:
-    items: List[EvidenceCrossCheckItem] = []
-
-    def add(group: str, evidence_type: str, label: str, signal: str, used_for: List[str], confidence: str = "media"):
-        if signal:
-            items.append(
-                EvidenceCrossCheckItem(
-                    evidence_group=group,
-                    evidence_type=evidence_type,
-                    source_label=label,
-                    signal=" ".join(str(signal).split())[:420],
-                    used_for=used_for,
-                    confidence=confidence,
-                )
-            )
-
-    declared_links = get_request_declared_links(request)
-    declared_profile_parts = [
-        f"empresa={request.company_name}",
-        f"industria={request.industry}" if request.industry else "",
-        f"ciudad={request.city}" if request.city else "",
-        f"país={request.country}" if request.country else "",
-        f"oferta={request.offer}" if request.offer else "",
-        f"notas={request.notes}" if request.notes else "",
-    ] + declared_links
-    declared_profile = "; ".join([part for part in declared_profile_parts if part])
-    if declared_profile:
-        add(
-            "declared_profile",
-            "user_declared_input",
-            "Datos declarados por el usuario",
-            declared_profile,
-            ["diagnóstico base", "score comercial", "awareness", "heatmap", "blueprint"],
-            "media" if len(declared_profile_parts) >= 3 else "baja-media",
-        )
-
-    missing: List[str] = []
-    website_snapshot = fetch_website_evidence_snapshot(request.website)
-    if website_snapshot.get("status") == "observed":
-        facts = website_snapshot.get("facts") or []
-        website_summary = "; ".join([str(item.get("label", "")) for item in facts[:8] if item.get("label")])
-        add(
-            "website_observed",
-            "website_html_read",
-            "Sitio web leído por el backend",
-            (
-                f"url={website_snapshot.get('final_url') or website_snapshot.get('url')}; "
-                f"palabras_aprox={website_snapshot.get('word_count')}; "
-                f"señales_detectadas={website_summary or 'lectura básica sin señales fuertes'}"
-            ),
-            ["oferta", "CTA", "confianza", "contenido", "conversión", "evidence ledger"],
-            "media-alta" if len(facts) >= 3 else "media",
-        )
-    elif request.website:
-        missing.append(f"No se pudo leer el contenido del sitio declarado ({request.website}): {website_snapshot.get('error') or website_snapshot.get('status')}.")
-
-    for source in public_audit.public_sources_summary[:10]:
-        add(
-            "public_sources",
-            source.category or "public_source",
-            source.title or source.url or "Fuente pública",
-            source.signal or "Fuente pública encontrada/declarada.",
-            ["validación externa", "presencia pública", "confianza", "diferenciación"],
-            "media-alta" if source.url else "media",
-        )
-
-    has_social_declared_context = bool(
-        getattr(request, "social_content_samples", None)
-        or getattr(request, "social_content_notes", None)
-        or request.instagram
-        or getattr(request, "tiktok", None)
-        or getattr(request, "facebook", None)
-        or getattr(request, "youtube", None)
-    )
-    if social_fit and has_social_declared_context:
-        add(
-            "social_content",
-            "social_content_fit",
-            "Social Content Fit",
-            f"score={social_fit.overall_social_content_fit_score}/100; brecha={social_fit.primary_content_gap}; plataformas={', '.join(social_fit.platforms_analyzed[:5])}",
-            ["contenido", "retención probable", "CTA social", "blueprint"],
-            "media" if getattr(request, "social_content_samples", None) else "baja-media",
-        )
-    if getattr(request, "social_content_samples", None):
-        add(
-            "social_content",
-            "internal_or_manual_samples",
-            "Muestras de contenido cargadas",
-            f"samples={len(request.social_content_samples)}; métricas internas presentes={has_internal_social_evidence(request)}",
-            ["retención", "hook", "message fit", "CTA social"],
-            "media-alta" if has_internal_social_evidence(request) else "media",
-        )
-    elif getattr(request, "social_content_notes", None):
-        add(
-            "social_content",
-            "user_social_notes",
-            "Notas sociales del usuario",
-            request.social_content_notes or "",
-            ["riesgo social", "contenido", "CTA social"],
-            "baja-media",
-        )
-
-    if getattr(request, "campaigns", None):
-        add(
-            "campaign_data",
-            "campaign_metrics",
-            "Campañas cargadas",
-            f"campaigns={len(request.campaigns)}; data_quality={campaign_performance.data_quality if campaign_performance else 'n/d'}",
-            ["performance", "tracking", "lead quality", "presupuesto", "blueprint"],
-            "media-alta" if campaign_performance and campaign_performance.data_quality not in ["sin_datos", "mínima"] else "media",
-        )
-    if campaign_performance and campaign_performance.data_quality != "sin_datos":
-        tracking_critical = any(item.severity == "crítica" for item in campaign_performance.tracking_health)
-        add(
-            "performance_quality",
-            "computed_performance_audit",
-            "Auditoría de performance",
-            f"completitud={campaign_performance.data_completeness.score}/100; tracking_crítico={tracking_critical}; campañas_analizadas={campaign_performance.campaigns_analyzed}",
-            ["acciones operativas", "safe_to_execute_actions", "reallocación", "tracking"],
-            "media-alta" if campaign_performance.data_completeness.score >= 70 and not tracking_critical else "media",
-        )
-
-    add(
-        "generated_maps",
-        "cross_module_output",
-        "Mapas generados después del cruce",
-        (
-            f"awareness={public_audit.awareness_funnel_locator.dominant_stage}->{public_audit.awareness_funnel_locator.blocked_stage}; "
-            f"heatmap={public_audit.temperature_heatmap.average_temperature}; "
-            f"density={public_audit.customer_intent_density_map.dominant_zone.x}/{public_audit.customer_intent_density_map.dominant_zone.y}; "
-            f"blueprint_breaks={'; '.join(public_audit.funnel_blueprint.breakpoints[:3])}"
-        ),
-        ["visuales", "análisis escrito", "stability output"],
-        "media",
-    )
-
-    groups = sorted(set(item.evidence_group for item in items if item.evidence_group != "generated_maps"))
-    if not public_audit.public_sources_summary:
-        missing.append("No hay fuentes públicas suficientes para validar externamente el diagnóstico.")
-    if not request.offer:
-        missing.append("Falta oferta principal explícita; la propuesta de valor se infiere con menor precisión.")
-    if not request.campaigns:
-        missing.append("No hay campañas reales; no se pueden validar CPL, CPA, CTR, conversión ni calidad de lead.")
-    if not getattr(request, "social_content_samples", None):
-        missing.append("No hay muestras/métricas internas de contenido; retención social queda como inferencia.")
-
-    crossed_signals = [
-        f"Diagnóstico final construido desde {analysis_trace.primary_diagnosis_source} con modo {analysis_trace.analysis_mode}.",
-        f"Awareness y heatmap cruzan score comercial, fuentes, oferta, CTA, confianza y activos declarados.",
-        f"Blueprint usa ruptura principal + señales de score + overlays sociales/performance si existen.",
-    ]
-    if request.campaigns:
-        crossed_signals.append("Campañas cruzadas contra tracking, lead quality, data completeness y mapa comercial.")
-    if social_fit:
-        crossed_signals.append("Social Content Fit cruzado contra perfiles, notas, samples y oferta.")
-
-    has_minimum_business_context = bool(
-        request.industry
-        or request.offer
-        or request.website
-        or request.instagram
-        or getattr(request, "tiktok", None)
-        or getattr(request, "facebook", None)
-        or getattr(request, "youtube", None)
-        or request.linkedin
-        or request.notes
-        or request.campaigns
-        or getattr(request, "social_content_samples", None)
-        or getattr(request, "social_content_notes", None)
-    )
-
-    if not items or (not has_minimum_business_context and not public_audit.public_sources_summary):
-        status = "insufficient"
-    elif len(groups) >= 2:
-        status = "cross_checked"
-    else:
-        status = "limited"
-
-    if status == "cross_checked":
-        generic_risk = "bajo" if len(items) >= 5 else "medio"
-        explanation = "Se cruzaron múltiples grupos de evidencia antes de generar análisis y visuales."
-    elif status == "limited":
-        generic_risk = "medio-alto"
-        explanation = "Hay evidencia mínima utilizable, pero el análisis debe presentarse como preliminar y no como verdad operativa."
-    else:
-        generic_risk = "alto"
-        explanation = "La evidencia disponible no alcanza para generar visuales o análisis presentables sin riesgo alto de genericidad."
-
-    return EvidenceCrossCheckReport(
-        status=status,
-        evidence_groups=groups,
-        evidence_items=items,
-        crossed_signals=crossed_signals,
-        missing_data=list(dict.fromkeys(missing)),
-        visual_generation_allowed=status != "insufficient",
-        text_generation_allowed=status != "insufficient",
-        generic_output_risk=generic_risk,
-        explanation=explanation,
-    )
-
-
-def build_deliverable_reliability_report(
-    stable_output: StableAuditOutput,
-    evidence_cross_check: EvidenceCrossCheckReport,
-    drive_bundle: Optional[DriveBundleExport] = None,
-    analytical_core: Optional[AnalyticalCoreResult] = None,
-    visual_report_status: Optional[str] = None,
-) -> DeliverableReliabilityReport:
-    if analytical_core is not None:
-        core_status = analytical_core.confidence_status
-        factuality_safe = analytical_core.pre_report_factuality_check.safe_to_write_report
-        if not stable_output.safe_to_present or not factuality_safe or evidence_cross_check.status == "insufficient" or core_status == "not_safe":
-            reliability = "not_safe"
-        elif core_status in ["complete", "campaign_ready", "comparable"]:
-            reliability = "comparable"
-        else:
-            reliability = "preliminary"
-    elif not stable_output.safe_to_present or evidence_cross_check.status == "insufficient":
-        reliability = "not_safe"
-    elif stable_output.stability_status in ["locked", "comparable"]:
-        reliability = stable_output.stability_status
-    elif stable_output.stability_status == "preliminary":
-        reliability = "preliminary"
-    else:
-        reliability = "variable"
-
-    risks = list(stable_output.instability_risks or [])
-    if evidence_cross_check.generic_output_risk in ["medio-alto", "alto"]:
-        risks.append(f"Riesgo de salida genérica: {evidence_cross_check.generic_output_risk}.")
-    if analytical_core is not None and visual_report_status and visual_report_status != "generated":
-        risks.append("Visuales fuertes no generados: se entregó análisis preliminar evidence-first para evitar gráficos genéricos.")
-    if analytical_core is not None and analytical_core.confidence_status == "preliminary":
-        risks.append("Confiabilidad limitada a análisis preliminar: no hay campañas/CRM/Analytics suficientes para performance real.")
-    if drive_bundle and drive_bundle.status not in ["uploaded_to_google_drive", "not_requested", "partial_uploaded_legacy_single_file"]:
-        risks.append(f"Drive bundle no confirmado: {drive_bundle.status}.")
-
-    required = list(evidence_cross_check.missing_data)
-    if stable_output.needs_second_run:
-        required.append("Repetir auditoría con payload fijo/canónico antes de presentar.")
-    if not stable_output.safe_to_execute_actions:
-        required.append("No ejecutar decisiones operativas fuertes sin campañas, CRM/tracking y calidad de lead suficiente.")
-
-    if reliability == "locked":
-        summary = "Archivo confiable para diagnóstico preliminar reproducible: input canónico, fuentes, versión y módulos quedan fijados."
-    elif reliability == "comparable":
-        summary = "Archivo comparable si se guardan hashes, versión, ruleset, analysis_mode y módulos usados. Puede cambiar si cambia búsqueda live o evidencia."
-    elif reliability == "preliminary":
-        summary = "Archivo útil como análisis preliminar evidence-first: puede presentarse con límites claros, pero no como diagnóstico de performance ni como reporte completo."
-    elif reliability == "variable":
-        summary = "Archivo variable: no conviene compararlo ni presentarlo como estable sin repetir con payload fijo y fuentes controladas."
-    else:
-        summary = "No seguro para presentar como entregable: faltan condiciones mínimas de evidencia o estabilidad."
-
-    return DeliverableReliabilityReport(
-        reliability_status=reliability,
-        safe_to_present=bool(stable_output.safe_to_present and evidence_cross_check.text_generation_allowed),
-        safe_to_execute_actions=stable_output.safe_to_execute_actions,
-        file_confidence_summary=summary,
-        evidence_cross_check_status=evidence_cross_check.status,
-        evidence_basis=evidence_cross_check.evidence_groups,
-        risks=list(dict.fromkeys(risks)),
-        required_next_validation=list(dict.fromkeys(required)),
-        comparison_keys={
-            "canonical_input_hash": stable_output.canonical_input_hash,
-            "sources_hash": stable_output.sources_hash,
-            "analysis_version": stable_output.analysis_version,
-            "ruleset_version": stable_output.ruleset_version,
-            "analysis_mode": stable_output.analysis_mode,
-            "modules_used": stable_output.modules_used,
+        "version": APP_VERSION,
+        "configured_tools": {
+            "firecrawl": bool(FIRECRAWL_API_KEY),
+            "browserbase": bool(BROWSERBASE_API_KEY),
+            "composio": bool(COMPOSIO_API_KEY),
+            "youtube": bool(YOUTUBE_API_KEY),
         },
-    )
-
-
-
-def _normalized_text(value: Any) -> str:
-    return " ".join(str(value or "").strip().lower().split())
-
-
-def _contains_any(text: str, needles: List[str]) -> bool:
-    haystack = _normalized_text(text)
-    return any(n in haystack for n in needles)
-
-
-def _unique_keep_order(items: List[str]) -> List[str]:
-    seen = set()
-    out = []
-    for item in items:
-        value = str(item or "").strip()
-        if not value:
-            continue
-        key = value.lower()
-        if key not in seen:
-            out.append(value)
-            seen.add(key)
-    return out
-
-
-def _evidence_id(index: int) -> str:
-    return f"ev_{index:03d}"
-
-
-def build_analytical_evidence_ledger(
-    request: FullCommercialSystemRequest,
-    public_audit: ProspectWithResearchResponse,
-    social_fit: Optional[SocialContentFitResponse],
-    campaign_performance: Optional[CampaignPerformanceResponse],
-) -> List[AnalyticalEvidenceItem]:
-    ledger: List[AnalyticalEvidenceItem] = []
-
-    def add(
-        source_type: str,
-        source_label: str,
-        observed_fact: str,
-        supports: List[str],
-        reliability: str = "medium",
-        source_url: Optional[str] = None,
-        can_support_claims: bool = True,
-        extraction_note: str = "",
-    ):
-        observed = " ".join(str(observed_fact or "").split())
-        if not observed:
-            return
-        ledger.append(
-            AnalyticalEvidenceItem(
-                evidence_id=_evidence_id(len(ledger) + 1),
-                source_type=source_type,
-                source_label=source_label[:160],
-                source_url=source_url,
-                observed_fact=observed[:900],
-                supports_signals=_unique_keep_order(supports),
-                reliability=reliability,
-                can_support_claims=can_support_claims,
-                extraction_note=extraction_note[:500],
-            )
-        )
-
-    add(
-        "declared_input",
-        "Nombre de empresa",
-        f"Empresa informada por el usuario: {request.company_name}",
-        ["entity_identity"],
-        reliability="medium",
-        extraction_note="Dato declarado; identifica el objeto de auditoría, pero no prueba performance.",
-    )
-    if request.industry:
-        add("declared_input", "Rubro/industria", f"Industria declarada: {request.industry}", ["audience_specificity", "offer_context"], reliability="medium")
-    if request.offer:
-        add("declared_input", "Oferta declarada", f"Oferta declarada: {request.offer}", ["offer_clarity", "conversion_path"], reliability="medium")
-    if request.city or request.country:
-        add("declared_input", "Ubicación declarada", f"Mercado declarado: {request.city or 'n/d'}, {request.country or 'n/d'}", ["market_context"], reliability="medium")
-    if request.website:
-        add("declared_input", "Sitio web declarado", f"Website declarado: {request.website}", ["declared_asset", "conversion_path"], reliability="low", source_url=request.website, can_support_claims=False, extraction_note="Una URL declarada no alcanza por sí sola para afirmar que se revisó el contenido del sitio.")
-        website_snapshot = fetch_website_evidence_snapshot(request.website)
-        if website_snapshot.get("status") == "observed":
-            for fact in website_snapshot.get("facts") or []:
-                fact_label = fact.get("label") or "Evidencia observada en sitio"
-                fact_text = fact.get("observed_fact") or ""
-                fact_source_type = "website_observed"
-                fact_reliability = fact.get("reliability") or "medium"
-                fact_note = (
-                    f"Lectura directa del HTML público del sitio. status={website_snapshot.get('status_code')}; "
-                    f"word_count≈{website_snapshot.get('word_count')}. No equivale a Analytics/CRM."
-                )
-                if (
-                    fact_label.lower().startswith("prueba social")
-                    or re.search(r"\d+\s*(?:k|%|\+).*(?:clientes|satisfechos|premios|tasa|éxito|exito|reseñas|reviews)", fact_text, flags=re.I)
-                ):
-                    fact_source_type = "website_claim"
-                    fact_reliability = "medium"
-                    fact_note += " Señal clasificada como website_claim: es una afirmación visible del sitio y requiere verificación externa para tratarla como prueba social comprobada."
-                add(
-                    fact_source_type,
-                    fact_label,
-                    fact_text,
-                    fact.get("supports") or ["public_presence"],
-                    reliability=fact_reliability,
-                    source_url=website_snapshot.get("final_url") or website_snapshot.get("url") or request.website,
-                    can_support_claims=True,
-                    extraction_note=fact_note,
-                )
-        else:
-            add(
-                "website_fetch_failed",
-                "Lectura del sitio no completada",
-                f"No se pudo leer el contenido público del sitio declarado: {request.website}. Motivo: {website_snapshot.get('error') or website_snapshot.get('status')}",
-                ["missing_website_content", "public_presence"],
-                reliability="high",
-                source_url=request.website,
-                can_support_claims=True,
-                extraction_note="Fallo de lectura: permite explicar límites del análisis, no afirmar contenido del sitio.",
-            )
-    for attr, signal in [("instagram", "channel_consistency"), ("facebook", "channel_consistency"), ("tiktok", "channel_consistency"), ("youtube", "content_depth"), ("linkedin", "authority")]:
-        value = getattr(request, attr, None)
-        if value:
-            add("declared_input", f"Perfil {attr} declarado", f"Perfil {attr} declarado: {value}", ["declared_social_asset", signal], reliability="low", source_url=value, can_support_claims=False, extraction_note="Perfil declarado; requiere lectura de contenido o métricas para sostener claims.")
-    if request.notes and len(request.notes.strip()) >= 30:
-        add("declared_input", "Notas manuales del usuario", request.notes, ["manual_context", "objection_handling", "audience_specificity"], reliability="medium", extraction_note="Dato manual; útil para contexto, no para afirmar performance real.")
-
-    # Public sources are evidence only when they come from search/research, not from generated maps.
-    for idx, source in enumerate(public_audit.public_sources_summary or [], start=1):
-        label = source.title or source.category or f"fuente pública {idx}"
-        signal_text = source.signal or label
-        supports = ["public_presence"]
-        if _contains_any(signal_text + " " + label, ["whatsapp", "contacto", "consultar", "llamar", "formulario", "cotizar"]):
-            supports += ["cta_strength", "conversion_path"]
-        if _contains_any(signal_text + " " + label, ["reseña", "review", "testimonio", "cliente", "clientes", "caso", "trustindex", "google"]):
-            supports += ["social_proof", "trust_density"]
-        if _contains_any(signal_text + " " + label, ["blog", "noticia", "podcast", "newsletter", "guía", "faq", "preguntas", "metodología", "servicio", "servicios"]):
-            supports += ["content_depth", "objection_handling"]
-        if _contains_any(signal_text + " " + label, ["años", "experiencia", "miembro", "certificación", "asociación", "profesional", "equipo", "especialista"]):
-            supports += ["authority"]
-        if _contains_any(signal_text + " " + label, ["precio", "precios", "plan", "planes", "lote", "propiedad", "desarrollo", "servicio", "automatización", "ia", "roi"]):
-            supports += ["offer_clarity", "audience_specificity"]
-        add(
-            "public_source",
-            label,
-            f"{source.category}: {signal_text}",
-            supports,
-            reliability="medium" if source.url else "low",
-            source_url=source.url,
-            can_support_claims=True,
-            extraction_note="Fuente pública normalizada por el módulo de investigación. No equivale a métricas internas.",
-        )
-
-    if social_fit:
-        for idx, source in enumerate(social_fit.public_sources_used or [], start=1):
-            add(
-                "public_source",
-                source.title or f"fuente social pública {idx}",
-                f"{source.category}: {source.signal}",
-                ["channel_consistency", "content_depth", "public_presence"],
-                reliability="medium" if source.url else "low",
-                source_url=source.url,
-                can_support_claims=True,
-                extraction_note="Fuente usada por el módulo de contenido social; no reemplaza métricas nativas de plataforma.",
-            )
-
-    for idx, sample in enumerate(request.social_content_samples or [], start=1):
-        parts = [
-            f"platform={getattr(sample, 'platform', None) or 'n/d'}",
-            f"format={getattr(sample, 'format', None) or 'n/d'}",
-            f"hook={getattr(sample, 'hook', None) or 'n/d'}",
-            f"caption={getattr(sample, 'caption_summary', None) or 'n/d'}",
-            f"cta={getattr(sample, 'cta', None) or 'n/d'}",
-        ]
-        add(
-            "social_sample",
-            f"Muestra social #{idx}",
-            "; ".join(parts),
-            ["channel_consistency", "content_depth", "cta_strength", "creative_relevance"],
-            reliability="high",
-            source_url=getattr(sample, "url", None),
-            can_support_claims=True,
-            extraction_note="Muestra concreta aportada para auditar contenido; no equivale a performance si no trae métricas.",
-        )
-    if request.social_content_notes and len(request.social_content_notes.strip()) >= 20:
-        add("declared_input", "Notas de contenido social", request.social_content_notes, ["channel_consistency", "content_depth", "manual_context"], reliability="medium")
-
-    if request.campaigns:
-        for idx, campaign in enumerate(request.campaigns, start=1):
-            fields = campaign.dict(exclude_none=True)
-            metric_parts = [f"{k}={v}" for k, v in fields.items() if k not in ["campaign_name", "ad_name", "adset_name"]]
-            add(
-                "campaign_metric",
-                f"Campaña #{idx}: {campaign.campaign_name}",
-                "; ".join(metric_parts) or f"Campaña declarada: {campaign.campaign_name}",
-                ["campaign_evidence", "tracking_quality", "lead_quality_evidence", "conversion_path"],
-                reliability="high",
-                can_support_claims=True,
-                extraction_note="Métrica de campaña aportada; permite análisis de performance solo si hay volumen y campos suficientes.",
-            )
-    else:
-        add(
-            "missing_input",
-            "Campañas no recibidas",
-            "No se recibieron campañas, inversión, impresiones, clics, leads, conversiones ni calidad de lead.",
-            ["campaign_evidence", "tracking_quality", "lead_quality_evidence"],
-            reliability="high",
-            can_support_claims=True,
-            extraction_note="Ausencia de input: habilita pedir datos, pero bloquea claims de performance real.",
-        )
-    if request.campaign_notes and len(request.campaign_notes.strip()) >= 20:
-        add("declared_input", "Notas de campañas", request.campaign_notes, ["campaign_evidence", "manual_context"], reliability="medium")
-
-    return ledger
-
-
-def _evidence_for_signal(ledger: List[AnalyticalEvidenceItem], signal: str) -> List[AnalyticalEvidenceItem]:
-    return [item for item in ledger if item.can_support_claims and signal in (item.supports_signals or [])]
-
-
-def build_analytical_signal_vector(
-    ledger: List[AnalyticalEvidenceItem],
-    request: FullCommercialSystemRequest,
-    campaign_performance: Optional[CampaignPerformanceResponse],
-) -> Dict[str, AnalyticalSignalScore]:
-    signal_specs = {
-        "offer_clarity": "Claridad de oferta observable o declarada",
-        "audience_specificity": "Claridad de público/segmento",
-        "authority": "Autoridad, trayectoria, metodología o credenciales",
-        "social_proof": "Prueba social visible: reseñas, casos, clientes, testimonios",
-        "cta_strength": "Claridad y disponibilidad de CTA/contacto",
-        "conversion_path": "Continuidad observable hacia consulta/lead",
-        "content_depth": "Profundidad de contenido, educación y explicación",
-        "objection_handling": "Manejo de objeciones: FAQ, precios, garantías, metodología",
-        "trust_density": "Densidad de señales de confianza",
-        "channel_consistency": "Consistencia entre activos y canales declarados/observados",
-        "campaign_evidence": "Disponibilidad de datos de campaña",
-        "tracking_quality": "Disponibilidad de tracking/eventos/métricas útiles",
-        "lead_quality_evidence": "Evidencia de calidad de lead o resultado posterior",
+        "notes": {
+            "browserbase": "Reconocido, pero el collector renderizado queda marcado como no implementado en este MVP.",
+            "composio": "Reconocido, pero el enrichment por toolkits queda marcado como no implementado en este MVP.",
+        },
     }
-    result: Dict[str, AnalyticalSignalScore] = {}
-    source_count = len([item for item in ledger if item.source_type in ["public_source", "website_observed", "website_claim"] and item.can_support_claims])
-    declared_count = len([item for item in ledger if item.source_type == "declared_input"])
-    campaign_items = _evidence_for_signal(ledger, "campaign_evidence")
-    has_campaigns = bool(request.campaigns)
-
-    for signal, label in signal_specs.items():
-        ev = _evidence_for_signal(ledger, signal)
-        website_ev_count = len([item for item in ev if item.source_type in ["website_observed", "website_claim"]])
-        evidence_ids = [item.evidence_id for item in ev]
-        missing: List[str] = []
-        base = 0
-        confidence = "low"
-        rationale = "Sin evidencia suficiente para puntuar fuerte."
-
-        if signal == "offer_clarity":
-            base = 2
-            if request.offer and len(request.offer.strip()) >= 8:
-                base += 3
-            base += min(3, len(ev))
-            if source_count >= 2:
-                base += 1
-            missing = [] if base >= 6 else ["Oferta escrita con promesa, público, servicio y resultado esperado."]
-        elif signal == "audience_specificity":
-            base = 2 if request.industry else 0
-            if request.city or request.country:
-                base += 1
-            if request.notes and _contains_any(request.notes, ["público", "cliente", "segmento", "audiencia", "perfil"]):
-                base += 2
-            base += min(4, len(ev))
-            missing = [] if base >= 5 else ["Segmento objetivo, problema principal y criterio de compra."]
-        elif signal == "authority":
-            base = min(8, len(ev) * 2)
-            if website_ev_count:
-                base += 3
-            if _contains_any(" ".join(item.observed_fact for item in ev), ["años", "experiencia", "certificación", "miembro", "reseña", "cliente", "metodología", "association", "ingenieros"]):
-                base += 2
-            missing = [] if base >= 5 else ["Credenciales, trayectoria, casos, metodología o fuentes externas verificables."]
-        elif signal == "social_proof":
-            verified_proof_ev = [
-                item for item in ev
-                if item.source_type in ["public_source", "social_sample", "campaign_metric"]
-                or _contains_any(item.observed_fact + " " + item.extraction_note, ["trustindex", "google", "reseña", "review", "testimonio verificado"])
-            ]
-            website_claim_ev = [item for item in ev if item.source_type == "website_claim"]
-            base = min(8, len(verified_proof_ev) * 3 + len(website_claim_ev) * 2)
-            if verified_proof_ev:
-                base += 2
-            if _contains_any(" ".join(item.observed_fact for item in verified_proof_ev), ["121", "reseñas", "testimonios", "trustindex", "google", "casos"]):
-                base += 2
-            if website_claim_ev and not verified_proof_ev:
-                base = min(base, 5)
-            missing = [] if base >= 5 else ["Reseñas, casos, testimonios, logos de clientes o resultados verificables."]
-            if website_claim_ev and not verified_proof_ev:
-                missing.append("Verificación externa de la prueba social declarada en el sitio.")
-        elif signal == "cta_strength":
-            text = " ".join(item.observed_fact for item in ev) + " " + " ".join([str(getattr(request, a, '') or '') for a in ["website", "instagram", "facebook", "linkedin"]])
-            base = min(8, len(ev) * 3)
-            if website_ev_count:
-                base += 2
-            if _contains_any(text, ["whatsapp", "wa.me", "contacto", "consultar", "llamar", "teléfono", "formulario", "enviar", "cargar cv"]):
-                base += 3
-            missing = [] if base >= 5 else ["CTA principal observable, canal de contacto y formulario/WhatsApp verificado."]
-        elif signal == "conversion_path":
-            base = 1 if request.website else 0
-            base += min(4, len(_evidence_for_signal(ledger, "cta_strength")))
-            if has_campaigns:
-                base += 2
-            if request.offer:
-                base += 1
-            missing = [] if base >= 6 else ["Landing usada en campañas, pasos de contacto, seguimiento comercial y CRM."]
-        elif signal == "content_depth":
-            base = min(8, len(ev) * 2)
-            if website_ev_count:
-                base += 3
-            if request.notes and len(request.notes) > 120:
-                base += 1
-            if request.social_content_samples:
-                base += 1
-            missing = [] if base >= 5 else ["Páginas de servicio, blog/noticias/FAQ, muestras sociales o piezas educativas."]
-        elif signal == "objection_handling":
-            base = min(8, len(ev) * 2)
-            if website_ev_count:
-                base += 2
-            if _contains_any(" ".join(item.observed_fact for item in ev), ["faq", "preguntas", "precio", "precios", "garantía", "metodología", "incluye", "proceso"]):
-                base += 2
-            missing = [] if base >= 5 else ["FAQ, precios/planes, condiciones, garantías, metodología y objeciones frecuentes."]
-        elif signal == "trust_density":
-            auth_ev = _evidence_for_signal(ledger, "authority")
-            proof_ev = _evidence_for_signal(ledger, "social_proof")
-            base = min(8, len(auth_ev) * 2 + len(proof_ev) * 3)
-            if any(item.source_type in ["website_observed", "website_claim"] for item in auth_ev + proof_ev):
-                base += 2
-            if auth_ev and proof_ev and all(item.source_type in ["website_observed", "website_claim", "declared_input"] for item in auth_ev + proof_ev):
-                base = min(base, 7)
-            missing = [] if base >= 5 else ["Más señales verificables de confianza: reseñas, casos, clientes, prueba externa."]
-            if auth_ev and proof_ev and all(item.source_type in ["website_observed", "website_claim", "declared_input"] for item in auth_ev + proof_ev):
-                missing.append("Fuentes externas o datos propios para verificar señales de confianza declaradas en el sitio.")
-        elif signal == "channel_consistency":
-            declared_socials = len([getattr(request, a, None) for a in ["instagram", "facebook", "tiktok", "youtube", "linkedin"] if getattr(request, a, None)])
-            base = min(5, declared_socials) + min(4, len(ev))
-            missing = [] if base >= 5 else ["Links de redes, muestras recientes por plataforma y objetivo de cada canal."]
-        elif signal == "campaign_evidence":
-            if has_campaigns:
-                metric_fields = 0
-                rich_fields = ["spend", "impressions", "reach", "frequency", "clicks", "ctr_percent", "cpc", "cpm", "leads", "cpl", "cpa", "conversions", "conversion_rate_percent", "qualified_leads", "sales", "revenue", "lead_quality_rate_percent", "objective", "funnel_stage", "temperature"]
-                for c in request.campaigns:
-                    metric_fields += sum(1 for attr in rich_fields if getattr(c, attr, None) is not None)
-                avg_fields = metric_fields / max(1, len(request.campaigns))
-                base = min(10, 2 + int(avg_fields))
-                if campaign_performance and campaign_performance.data_quality not in ["sin_datos", "mínima"]:
-                    base = max(base, 6)
-                if campaign_performance and getattr(campaign_performance, "data_completeness", None):
-                    base = max(base, int(campaign_performance.data_completeness.score / 12))
-            else:
-                base = 0
-            missing = [] if base >= 6 else ["Export de campañas con inversión, impresiones, clics, leads, conversiones y período."]
-        elif signal == "tracking_quality":
-            if has_campaigns:
-                metrics_present = 0
-                for c in request.campaigns:
-                    metrics_present += sum(1 for attr in ["impressions", "clicks", "leads", "ctr_percent", "cpc", "cpl", "cpa"] if getattr(c, attr, None) is not None)
-                base = min(10, 2 + metrics_present // max(1, len(request.campaigns)))
-            else:
-                base = 0
-            missing = [] if base >= 6 else ["Eventos, conversiones, UTMs, landing, CRM y calidad de tracking."]
-        elif signal == "lead_quality_evidence":
-            if has_campaigns:
-                quality_fields = 0
-                for c in request.campaigns:
-                    quality_fields += sum(1 for attr in ["qualified_leads", "sales", "revenue", "lead_quality_rate_percent", "conversion_rate_percent"] if hasattr(c, attr) and getattr(c, attr, None) is not None)
-                base = min(10, quality_fields * 2)
-            else:
-                base = 0
-            missing = [] if base >= 5 else ["Calidad de lead, contacto efectivo, ventas, revenue, CRM o feedback comercial."]
-
-        base = max(0, min(10, int(base)))
-        if base >= 7 and evidence_ids:
-            confidence = "high" if any(item.reliability == "high" for item in ev) else "medium"
-            rationale = f"{label}: señal fuerte según {len(evidence_ids)} evidencia(s) utilizable(s)."
-        elif base >= 4 and evidence_ids:
-            confidence = "medium"
-            rationale = f"{label}: señal presente, pero todavía incompleta o parcialmente declarada."
-        elif evidence_ids:
-            confidence = "low"
-            rationale = f"{label}: señal débil; la evidencia existe pero no alcanza para afirmación fuerte."
-        else:
-            confidence = "low"
-            rationale = f"{label}: no hay evidencia utilizable suficiente; no se deben hacer afirmaciones fuertes."
-
-        result[signal] = AnalyticalSignalScore(
-            signal=signal,
-            score_0_to_10=base,
-            confidence=confidence,
-            evidence_ids=evidence_ids,
-            rationale=rationale,
-            missing_data=_unique_keep_order(missing),
-        )
-    return result
 
 
-def _claim_id(index: int) -> str:
-    return f"cl_{index:03d}"
+@app.post("/collect/public-presence")
+async def collect_public_presence(req: PublicPresenceCollectRequest, _: None = Depends(verify_api_key)) -> Dict[str, Any]:
+    created_at = now_iso()
+    assets = merge_assets(req)
+    if not any(assets.values()):
+        raise HTTPException(status_code=400, detail="Se requiere al menos un link público: sitio web o red social.")
 
+    evidence = EvidenceBuilder()
+    reports: List[Dict[str, Any]] = []
+    summaries: Dict[str, Any] = {}
 
-def build_claim_registry(
-    ledger: List[AnalyticalEvidenceItem],
-    signal_vector: Dict[str, AnalyticalSignalScore],
-    request: FullCommercialSystemRequest,
-    campaign_performance: Optional[CampaignPerformanceResponse],
-) -> (List[AnalyticalClaim], List[AnalyticalClaim]):
-    claims: List[AnalyticalClaim] = []
-    blocked: List[AnalyticalClaim] = []
+    # Declared input evidence, clearly separated from observed evidence.
+    if req.company_name:
+        evidence.add("declared_input", None, "input_parser", "company_name", req.company_name, "medium", evidence_type="declared_input")
+    for platform, url in assets.items():
+        if url:
+            evidence.add(platform, url, "input_parser", "asset_url_declared", url, "low", limitations=["Un link declarado no prueba que el contenido haya sido leído."], evidence_type="declared_input")
 
-    def add_claim(claim_type: str, statement: str, support_status: str, signals: List[str], confidence: str, allowed_language: str):
-        evidence_ids: List[str] = []
-        for sig in signals:
-            evidence_ids.extend(signal_vector.get(sig, AnalyticalSignalScore(signal=sig, score_0_to_10=0, confidence="low", rationale="")).evidence_ids)
-        evidence_ids = _unique_keep_order(evidence_ids)
-        if not evidence_ids and support_status not in ["blocked", "unsupported"]:
-            blocked.append(AnalyticalClaim(
-                claim_id=_claim_id(len(claims) + len(blocked) + 1),
-                claim_type=claim_type,
-                statement=statement,
-                support_status="blocked",
-                evidence_ids=[],
-                signal_refs=signals,
-                confidence="none",
-                allowed_language="No usar.",
-                blocked_reason="No existe evidencia asociada al claim.",
-            ))
-            return
-        claims.append(AnalyticalClaim(
-            claim_id=_claim_id(len(claims) + len(blocked) + 1),
-            claim_type=claim_type,
-            statement=statement,
-            support_status=support_status,
-            evidence_ids=evidence_ids,
-            signal_refs=signals,
-            confidence=confidence,
-            allowed_language=allowed_language,
-        ))
+    website_result = await collect_website_static(assets.get("website"), req.max_website_pages, evidence)
+    reports.extend(website_result["reports"])
+    summaries["website_static"] = website_result["summary"]
 
-    def score(sig: str) -> int:
-        return signal_vector.get(sig, AnalyticalSignalScore(signal=sig, score_0_to_10=0, confidence="low", rationale="")).score_0_to_10
+    firecrawl_result = await collect_firecrawl(assets.get("website"), evidence)
+    reports.extend(firecrawl_result["reports"])
+    summaries["firecrawl"] = firecrawl_result["summary"]
 
-    if score("offer_clarity") >= 6:
-        add_claim("diagnostic_inference", "La oferta tiene una base de claridad suficiente para análisis preliminar.", "partially_supported", ["offer_clarity"], signal_vector["offer_clarity"].confidence, "Usar como observación preliminar, no como validación de mercado.")
-    else:
-        add_claim("risk", "La oferta no cuenta con evidencia suficiente de claridad comercial en los datos disponibles.", "inferred", ["offer_clarity"], "low", "Usar 'en la evidencia disponible' y pedir definición de promesa/público/resultado.")
+    browserbase_result = await collect_browserbase_placeholder(assets.get("website"))
+    reports.extend(browserbase_result["reports"])
+    summaries["browserbase"] = browserbase_result["summary"]
 
-    if score("cta_strength") >= 6:
-        add_claim("diagnostic_inference", "Hay señales de CTA/contacto utilizables para lectura preliminar del recorrido comercial.", "partially_supported", ["cta_strength", "conversion_path"], "medium", "No afirmar tasa de conversión; solo hablar de disponibilidad observable de contacto.")
-    else:
-        add_claim("risk", "El CTA o recorrido a contacto no queda suficientemente probado con la evidencia disponible.", "inferred", ["cta_strength"], "low", "Usar como riesgo observable, no como problema confirmado.")
+    youtube_result = await collect_youtube(assets.get("youtube"), evidence)
+    reports.extend(youtube_result["reports"])
+    summaries["youtube"] = youtube_result["summary"]
 
-    if score("social_proof") >= 6:
-        add_claim("diagnostic_inference", "La prueba social visible aporta soporte de confianza preliminar.", "partially_supported", ["social_proof", "trust_density"], "medium", "Hablar de prueba social visible; no inferir ventas ni conversión.")
-    elif score("social_proof") <= 3:
-        add_claim("risk", "La evidencia disponible no muestra una capa fuerte de prueba social verificable.", "inferred", ["social_proof"], "low", "Usar 'no se observa en la evidencia disponible'; no afirmar que no exista fuera de las fuentes revisadas.")
+    for platform in ["instagram", "facebook", "linkedin", "tiktok", "x"]:
+        result = await collect_social_public(platform, assets.get(platform), evidence)
+        reports.extend(result["reports"])
+        summaries[platform] = result["summary"]
 
-    if score("authority") >= 6:
-        add_claim("diagnostic_inference", "Existen señales de autoridad o especialización aprovechables para el discurso comercial.", "partially_supported", ["authority"], "medium", "Usar como fortaleza preliminar si se citan evidencias.")
+    composio_result = await collect_composio_search_placeholder(req.company_name, assets.get("website"))
+    reports.extend(composio_result["reports"])
+    summaries["composio_search"] = composio_result["summary"]
 
-    if score("content_depth") >= 6:
-        add_claim("diagnostic_inference", "La profundidad de contenido visible puede ayudar al tramo de consideración/confianza.", "partially_supported", ["content_depth", "objection_handling"], "medium", "No afirmar retención real sin métricas de contenido.")
-    elif score("content_depth") <= 3:
-        add_claim("risk", "La profundidad de contenido no está suficientemente demostrada por los datos disponibles.", "inferred", ["content_depth"], "low", "Marcar como brecha de evidencia antes que como falla definitiva.")
-
-    if score("audience_specificity") >= 6:
-        add_claim("diagnostic_inference", "La comunicación visible permite inferir con mejor base a qué tipo de público o necesidad apunta la oferta.", "partially_supported", ["audience_specificity", "offer_clarity"], "medium", "Usar como lectura preliminar del posicionamiento, no como validación de mercado.")
-    if score("objection_handling") >= 6:
-        add_claim("diagnostic_inference", "Hay señales visibles de manejo de objeciones o explicación del proceso comercial.", "partially_supported", ["objection_handling", "content_depth"], "medium", "Hablar de señales visibles: FAQ, metodología, precios, proceso o condiciones; no afirmar cierre de ventas.")
-    if score("trust_density") >= 6:
-        add_claim("diagnostic_inference", "La densidad de señales de confianza es utilizable para sostener un análisis preliminar de credibilidad comercial.", "partially_supported", ["trust_density", "authority", "social_proof"], "medium", "No confundir confianza visible con performance real.")
-    if score("conversion_path") >= 6:
-        add_claim("diagnostic_inference", "El recorrido visible hacia consulta tiene elementos suficientes para análisis preliminar.", "partially_supported", ["conversion_path", "cta_strength"], "medium", "No afirmar tasa de conversión; solo evaluar existencia/claridad del camino observado.")
-
-    if request.campaigns and campaign_performance and campaign_performance.data_quality != "sin_datos":
-        add_claim("performance_claim", "Hay datos mínimos para iniciar lectura de performance de campañas.", "supported", ["campaign_evidence", "tracking_quality"], "medium", "Afirmar solo sobre métricas recibidas y período analizado.")
-    else:
-        claims.append(AnalyticalClaim(
-            claim_id=_claim_id(len(claims) + len(blocked) + 1),
-            claim_type="missing_data",
-            statement="No se recibieron datos suficientes para afirmar performance real de campañas, ROAS, CPA, CPL efectivo o calidad de leads.",
-            support_status="supported",
-            evidence_ids=[item.evidence_id for item in ledger if item.source_type == "missing_input"],
-            signal_refs=["campaign_evidence", "tracking_quality", "lead_quality_evidence"],
-            confidence="high",
-            allowed_language="Usar como límite metodológico obligatorio.",
-        ))
-        blocked.append(AnalyticalClaim(
-            claim_id=_claim_id(len(claims) + len(blocked) + 1),
-            claim_type="performance_claim",
-            statement="La empresa convierte mal, tiene bajo ROAS, mala calidad de lead o bajo rendimiento comercial.",
-            support_status="blocked",
-            evidence_ids=[],
-            signal_refs=["campaign_evidence", "tracking_quality", "lead_quality_evidence"],
-            confidence="none",
-            allowed_language="No usar.",
-            blocked_reason="No hay datos de campañas/CRM suficientes para sostener claims de performance real.",
-        ))
-
-    return claims, blocked
-
-
-def _recommendation_id(index: int) -> str:
-    return f"rec_{index:03d}"
-
-
-def build_traceable_recommendations(
-    signal_vector: Dict[str, AnalyticalSignalScore],
-    claims: List[AnalyticalClaim],
-    blocked_claims: List[AnalyticalClaim],
-    request: FullCommercialSystemRequest,
-) -> (List[AnalyticalRecommendation], List[AnalyticalRecommendation]):
-    recs: List[AnalyticalRecommendation] = []
-    blocked_recs: List[AnalyticalRecommendation] = []
-    claims_by_type = {claim.claim_id: claim for claim in claims}
-
-    def score(sig: str) -> int:
-        return signal_vector.get(sig, AnalyticalSignalScore(signal=sig, score_0_to_10=0, confidence="low", rationale="")).score_0_to_10
-
-    def supporting_claims(*keywords: str) -> List[AnalyticalClaim]:
-        out = []
-        for claim in claims:
-            joined = " ".join(claim.signal_refs + [claim.statement]).lower()
-            if any(k.lower() in joined for k in keywords):
-                out.append(claim)
-        return out
-
-    def add_rec(text: str, priority: str, related_claims: List[AnalyticalClaim], rationale: str, confidence: str, required: List[str], level: str = "preliminary"):
-        evidence_ids = _unique_keep_order([eid for claim in related_claims for eid in claim.evidence_ids])
-        claim_ids = [claim.claim_id for claim in related_claims]
-        if not evidence_ids or not claim_ids:
-            blocked_recs.append(AnalyticalRecommendation(
-                recommendation_id=_recommendation_id(len(recs) + len(blocked_recs) + 1),
-                recommendation=text,
-                priority=priority,
-                derived_from_claim_ids=claim_ids,
-                evidence_ids=evidence_ids,
-                rationale=rationale,
-                confidence="none",
-                implementation_level=level,
-                required_data_to_validate=required,
-                blocked_reason="No hay cadena completa evidencia → claim → recomendación.",
-            ))
-            return
-        recs.append(AnalyticalRecommendation(
-            recommendation_id=_recommendation_id(len(recs) + len(blocked_recs) + 1),
-            recommendation=text,
-            priority=priority,
-            derived_from_claim_ids=claim_ids,
-            evidence_ids=evidence_ids,
-            rationale=rationale,
-            confidence=confidence,
-            implementation_level=level,
-            required_data_to_validate=required,
-        ))
-
-    # Specific conditional rules. No generic recommendation without claims/evidence.
-    if score("offer_clarity") >= 5 and score("social_proof") <= 4:
-        add_rec(
-            "Antes de escalar pauta, reforzar la capa de confianza visible: reseñas, casos, logos de clientes, testimonios con contexto o evidencia verificable del resultado prometido.",
-            "alta",
-            supporting_claims("social_proof", "prueba social", "trust"),
-            "La oferta puede entenderse, pero la prueba social aparece débil o no suficientemente demostrada en la evidencia disponible.",
-            "medium" if score("offer_clarity") >= 6 else "low",
-            ["Capturas o links de reseñas", "casos/clientes verificables", "métricas de conversión antes/después"],
-        )
-    if score("cta_strength") <= 4:
-        add_rec(
-            "Auditar y explicitar el recorrido de contacto: CTA principal, alternativa secundaria, formulario/WhatsApp, tiempo de respuesta y criterio de calificación del lead.",
-            "alta",
-            supporting_claims("cta", "contacto", "conversion_path"),
-            "El motor no encontró evidencia suficiente para afirmar un recorrido de conversión claro.",
-            "low",
-            ["Landing real", "captura del formulario/WhatsApp", "flujo de seguimiento comercial"],
-        )
-    if score("content_depth") <= 4 and score("authority") <= 5:
-        add_rec(
-            "Construir una pieza de consideración específica: metodología, proceso, preguntas frecuentes y criterios para elegir proveedor, sin convertirla todavía en propuesta gratuita completa.",
-            "media",
-            supporting_claims("content_depth", "authority", "profundidad", "autoridad"),
-            "La evidencia disponible no sostiene suficiente profundidad educativa/autoridad para una venta consultiva fuerte.",
-            "low",
-            ["Páginas de servicio", "FAQ", "metodología", "material educativo existente"],
-        )
-    if score("authority") >= 7 and score("social_proof") >= 6 and score("content_depth") >= 6:
-        add_rec(
-            "Usar la autoridad, metodología y prueba social observadas como núcleo del mensaje de consideración: convertir reseñas/casos/metodología en piezas de landing, anuncios de retargeting y argumentos comerciales antes de pedir más presupuesto.",
-            "alta",
-            supporting_claims("authority", "social_proof", "content_depth", "confianza"),
-            "La evidencia del sitio muestra densidad alta en confianza/autoridad; el siguiente paso preliminar es empaquetarla para el tramo medio del funnel, no inventar performance.",
-            "medium-high",
-            ["Piezas actuales de retargeting", "landing usada", "métricas de interacción/consulta"],
-        )
-    if score("content_depth") >= 6 and score("cta_strength") <= 5:
-        add_rec(
-            "Agregar CTA contextual dentro de las secciones de mayor profundidad: metodología, servicios, noticias, FAQ o explicación del proceso. El objetivo preliminar no es cambiar toda la web, sino conectar contenido de consideración con consulta concreta.",
-            "media-alta",
-            supporting_claims("content_depth", "objection", "cta", "conversion_path"),
-            "Hay contenido suficiente para educar, pero el recorrido de contacto no queda igual de fuerte en la evidencia disponible.",
-            "medium",
-            ["Mapa de secciones con más tráfico", "eventos de click", "formularios/WhatsApp por sección"],
-        )
-    if score("offer_clarity") >= 7 and score("cta_strength") >= 7 and score("social_proof") <= 4:
-        add_rec(
-            "Mantener la claridad de oferta y el CTA directo, pero insertar prueba social verificable antes del punto de contacto: reseñas, logos, casos breves o resultados auditables. El riesgo visible no es falta de contacto, sino falta de soporte de confianza previo.",
-            "alta",
-            supporting_claims("offer_clarity", "cta", "social_proof", "trust"),
-            "El sitio permite entender y contactar, pero la evidencia de prueba social no acompaña con la misma fuerza.",
-            "medium",
-            ["Reseñas verificables", "casos/clientes", "métrica de consulta antes/después"],
-        )
-    if score("objection_handling") >= 6 and score("conversion_path") <= 5:
-        add_rec(
-            "Convertir las respuestas a objeciones visibles —FAQ, precios, proceso o metodología— en micro-conversiones: botones de consulta, formularios segmentados o WhatsApp con contexto según la objeción leída.",
-            "media",
-            supporting_claims("objection", "conversion_path", "cta"),
-            "El sitio contiene material útil para decisión, pero falta validar que ese material empuje a una acción concreta.",
-            "medium",
-            ["Clicks por sección", "eventos de scroll", "consultas iniciadas desde FAQ/metodología/precios"],
-        )
-    if score("campaign_evidence") == 0:
-        add_rec(
-            "Pedir export de campañas antes de cualquier diagnóstico de performance: inversión, impresiones, clics, CTR, CPC, leads, CPL, conversiones, período, landing y objetivo por campaña.",
-            "alta",
-            supporting_claims("campaign", "performance", "campañas"),
-            "No hay datos de campañas; cualquier recomendación de performance sería inventada.",
-            "high",
-            ["Meta Ads/Google Ads export", "período analizado", "landing usada", "objetivo de campaña"],
-        )
-    if score("tracking_quality") <= 4:
-        add_rec(
-            "Separar análisis preliminar de presencia digital del análisis de performance: validar primero eventos, UTMs, Pixel/API, formularios, CRM y contacto efectivo.",
-            "alta",
-            supporting_claims("tracking", "campaign", "lead"),
-            "La evidencia no alcanza para atribuir resultados ni medir calidad post-click.",
-            "medium" if request.campaigns else "low",
-            ["Eventos configurados", "UTMs", "CRM", "estado de Pixel/API", "leads calificados"],
-        )
-
-    # Block known generic recommendations if unsupported.
-    generic_candidates = [
-        "Optimizar el funnel completo para aumentar conversiones.",
-        "Mejorar la propuesta de valor para vender más.",
-        "Escalar campañas con mayor presupuesto.",
+    execution = summarize_execution(reports)
+    recovery = build_recovery_guide(reports)
+    metrics_summary = build_metrics_summary(evidence.items, reports)
+    unavailable_data = [
+        {"platform": g.get("platform"), "field": g.get("field"), "reason": g.get("why_not_collected")}
+        for g in recovery
+        if g.get("status") in {"not_collected", "requires_owner_access"}
     ]
-    for candidate in generic_candidates:
-        blocked_recs.append(AnalyticalRecommendation(
-            recommendation_id=_recommendation_id(len(recs) + len(blocked_recs) + 1),
-            recommendation=candidate,
-            priority="bloqueada",
-            derived_from_claim_ids=[],
-            evidence_ids=[],
-            rationale="Recomendación genérica bloqueada por no tener cadena evidencia → señal → claim.",
-            confidence="none",
-            implementation_level="blocked",
-            required_data_to_validate=["Evidencia específica que justifique esta acción."],
-            blocked_reason="No se permite recomendación comodín.",
-        ))
-    return recs, blocked_recs
+    requires_owner_access = [g for g in recovery if g.get("requires_client_permission")]
+
+    response_payload: Dict[str, Any] = {
+        "collection_status": execution["overall_status"],
+        "collector_version": APP_VERSION,
+        "created_at": created_at,
+        "company_name": req.company_name,
+        "assets_received": assets,
+        "collection_depth": req.collection_depth,
+        "collection_hash": "pending",
+        "collection_execution_report": execution,
+        "collector_reports": reports,
+        "evidence_registry": evidence.items,
+        "metrics_summary": metrics_summary,
+        "field_recovery_guide": recovery,
+        "unavailable_data": unavailable_data,
+        "requires_owner_access": requires_owner_access,
+        "tool_summaries": summaries,
+        "txt_report": {},
+        "non_analysis_guards": [
+            "Este endpoint solo recolecta presencia pública; no genera diagnóstico comercial.",
+            "No afirmar performance, ROAS, CPA, CPL, conversión, ventas ni calidad de lead con este output.",
+            "Los datos no recolectados deben explicarse mediante field_recovery_guide.",
+        ],
+    }
+    response_payload["collection_hash"] = hash_payload({"assets": assets, "evidence": evidence.items, "reports": reports, "version": APP_VERSION})
+
+    txt = build_txt_report(response_payload)
+    report_id = uuid.uuid4().hex
+    filename = f"public_presence_{(req.company_name or 'empresa').lower().replace(' ', '_')}_{report_id[:8]}.txt"
+    TEXT_REPORTS[report_id] = {"filename": filename, "content": txt, "created_at": created_at}
+    response_payload["txt_report"] = {
+        "status": "generated",
+        "language": "es",
+        "report_id": report_id,
+        "filename": filename,
+        "download_url": f"{PUBLIC_BASE_URL}/deliverables/text/{report_id}.txt",
+    }
+    return response_payload
 
 
-def build_missing_data_for_complete_analysis(signal_vector: Dict[str, AnalyticalSignalScore], request: FullCommercialSystemRequest) -> List[str]:
-    missing: List[str] = []
-    for sig, score in signal_vector.items():
-        if score.score_0_to_10 < 6:
-            missing.extend(score.missing_data)
-    if not request.campaigns:
-        missing.extend([
-            "Export de campañas con spend, alcance, impresiones, CTR, CPC, leads, CPL, conversiones y período.",
-            "Landing usada por campaña y objetivo de cada campaña.",
-            "CRM o registro de leads con estado: contactado, calificado, venta, perdido.",
-        ])
-    if not request.social_content_samples:
-        missing.append("Últimas 6 a 12 piezas por red social con formato, hook, CTA y métricas nativas si existen.")
-    return _unique_keep_order(missing)
-
-
-def build_pre_report_factuality_check(
-    claims: List[AnalyticalClaim],
-    blocked_claims: List[AnalyticalClaim],
-    recommendations: List[AnalyticalRecommendation],
-    blocked_recommendations: List[AnalyticalRecommendation],
-    evidence_cross_check: EvidenceCrossCheckReport,
-) -> PreReportFactualityCheck:
-    unsupported_removed = len([c for c in blocked_claims if c.support_status in ["blocked", "unsupported"]])
-    perf_blocked = len([c for c in blocked_claims if c.claim_type == "performance_claim"])
-    degraded = len([c for c in claims if c.support_status in ["inferred", "partially_supported"]])
-    constraints = [
-        "No afirmar ROAS, CPA, CPL efectivo, tasa de conversión real ni calidad de lead sin datos de campañas/CRM.",
-        "Distinguir siempre hecho observado, dato declarado e inferencia diagnóstica.",
-        "Usar 'en la evidencia disponible' cuando la señal dependa de fuentes públicas parciales.",
-        "No presentar visuales como prueba de performance; son representación de señales disponibles.",
-    ]
-    if evidence_cross_check.status != "cross_checked":
-        constraints.append("Presentar el informe como preliminar; no usar tono concluyente.")
-    status = "passed"
-    if unsupported_removed or blocked_recommendations or evidence_cross_check.status != "cross_checked":
-        status = "passed_with_limitations"
-    safe = bool(claims or recommendations)
-    return PreReportFactualityCheck(
-        status=status if safe else "failed",
-        safe_to_write_report=safe,
-        unsupported_claims_removed=unsupported_removed,
-        claims_degraded_to_inference=degraded,
-        performance_claims_blocked=perf_blocked,
-        visual_claims_checked=bool(evidence_cross_check.visual_generation_allowed),
-        report_language_constraints=constraints,
-        blocked_claim_examples=[c.statement for c in blocked_claims[:6]],
-    )
-
-
-def build_analytical_core_result(
-    request: FullCommercialSystemRequest,
-    public_audit: ProspectWithResearchResponse,
-    social_fit: Optional[SocialContentFitResponse],
-    campaign_performance: Optional[CampaignPerformanceResponse],
-    evidence_cross_check: EvidenceCrossCheckReport,
-) -> AnalyticalCoreResult:
-    ledger = build_analytical_evidence_ledger(request, public_audit, social_fit, campaign_performance)
-    signal_vector = build_analytical_signal_vector(ledger, request, campaign_performance)
-    claims, blocked_claims = build_claim_registry(ledger, signal_vector, request, campaign_performance)
-    recommendations, blocked_recommendations = build_traceable_recommendations(signal_vector, claims, blocked_claims, request)
-    missing = build_missing_data_for_complete_analysis(signal_vector, request)
-    factuality = build_pre_report_factuality_check(claims, blocked_claims, recommendations, blocked_recommendations, evidence_cross_check)
-    has_campaigns = bool(request.campaigns)
-    high_scores = len([s for s in signal_vector.values() if s.score_0_to_10 >= 7])
-    website_observed_count = len([item for item in ledger if item.source_type in ["website_observed", "website_claim"] and item.can_support_claims])
-    external_public_evidence_count = len([
-        item for item in ledger
-        if item.source_type == "public_source"
-        and item.can_support_claims
-        and "declared_website" not in (item.observed_fact or "")
-        and (not request.website or (item.source_url or "").rstrip("/").lower() != request.website.rstrip("/").lower())
-    ])
-    has_social_samples = bool(request.social_content_samples)
-    if not factuality.safe_to_write_report:
-        confidence = "not_safe"
-    elif has_campaigns and signal_vector["campaign_evidence"].score_0_to_10 >= 6 and signal_vector["tracking_quality"].score_0_to_10 >= 6:
-        confidence = "campaign_ready"
-    elif (
-        external_public_evidence_count >= 2
-        and website_observed_count >= 2
-        and high_scores >= 3
-        and evidence_cross_check.status == "cross_checked"
-    ) or (has_social_samples and website_observed_count >= 2 and high_scores >= 3):
-        confidence = "comparable"
-    else:
-        # A single website read can produce useful preliminary analysis, but it is not enough
-        # to label the deliverable comparable without external sources, campaign data or samples.
-        confidence = "preliminary"
-
-    if confidence == "not_safe":
-        interpretation = "No hay evidencia suficiente para escribir un diagnóstico útil sin riesgo de invención."
-    elif confidence == "preliminary":
-        interpretation = "El motor produjo diagnóstico preliminar: separa evidencia observada/declarada de inferencias y bloquea claims de performance real."
-    elif confidence == "comparable":
-        interpretation = "Hay evidencia pública suficiente para comparar señales comerciales visibles, sin afirmar performance real."
-    else:
-        interpretation = "Hay datos de campaña suficientes para iniciar análisis de performance, manteniendo límites de atribución y calidad de datos."
-
-    next_data = missing[:8]
-    return AnalyticalCoreResult(
-        evidence_ledger=ledger,
-        signal_vector=signal_vector,
-        claims=claims,
-        blocked_claims=blocked_claims,
-        recommendations=recommendations,
-        blocked_recommendations=blocked_recommendations,
-        missing_data_for_complete_analysis=missing,
-        not_allowed_claims=[c.statement for c in blocked_claims],
-        pre_report_factuality_check=factuality,
-        executive_interpretation=interpretation,
-        next_best_data_request=next_data,
-        confidence_status=confidence,
-    )
-
-def adapt_blueprint_to_public_evidence(
-    public_audit: ProspectWithResearchResponse,
-    request: FullCommercialSystemRequest,
-) -> FunnelBlueprint:
-    score = public_audit.commercial_score
-    source_count = len(public_audit.public_sources_summary or [])
-    declared_links = get_request_declared_links(request)
-    base = public_audit.funnel_blueprint
-
-    weakest_metric, weakest_value = min(
-        {
-            "presencia pública": score.public_presence,
-            "propuesta de valor": score.value_proposition,
-            "diferenciación": score.differentiation,
-            "CTA/conversión": score.cta_strength,
-            "confianza": score.trust_signals,
-        }.items(),
-        key=lambda pair: pair[1],
-    )
-
-    first_asset = "Sitio web declarado" if request.website else ("Perfiles sociales declarados" if declared_links else "Nombre/rubro declarado")
-    offer_node = f"Oferta: {request.offer[:52]}" if request.offer else "Oferta no explicitada"
-    source_node = f"{source_count} señales/fuentes públicas" if source_count else "Sin validación pública suficiente"
-    cta_node = "CTA visible / consulta" if score.cta_strength >= 6 else "CTA débil o poco verificable"
-    trust_node = "Confianza/proof visible" if score.trust_signals >= 6 else "Confianza insuficiente"
-
-    breakpoints = [
-        f"Ruptura principal: {weakest_metric} ({weakest_value}/10)",
-    ]
-    if not request.offer:
-        breakpoints.append("La oferta no está suficientemente explícita para defender propuesta de valor.")
-    if score.cta_strength < 6:
-        breakpoints.append("El siguiente paso comercial no reduce suficiente fricción.")
-    if score.trust_signals < 6:
-        breakpoints.append("Faltan pruebas o señales de confianza para sostener decisión.")
-    if source_count < 2:
-        breakpoints.append("Pocas fuentes públicas para validar presencia y reputación.")
-    breakpoints.extend(base.breakpoints[:2])
-
-    if weakest_metric == "presencia pública":
-        recommended = ["Clarificar presencia mínima verificable", "Ordenar activos públicos", "Mensaje por problema", "CTA simple", "Medición básica"]
-    elif weakest_metric == "propuesta de valor":
-        recommended = ["Problema específico", "Promesa verificable", "Diferenciador", "Prueba", "CTA de diagnóstico"]
-    elif weakest_metric == "diferenciación":
-        recommended = ["Categoría", "Alternativas", "Contraste", "Razón para elegir", "Consulta calificada"]
-    elif weakest_metric == "confianza":
-        recommended = ["Prueba social", "Casos/evidencia", "Objeciones", "Garantías o proceso", "CTA con menor riesgo"]
-    else:
-        recommended = ["CTA principal", "Ruta de contacto", "Formulario/WhatsApp", "Follow-up", "Medición de conversión"]
-
-    missing_links = list(dict.fromkeys([
-        "Matriz de evidencia antes de escribir conclusiones",
-        "Mensaje conectado a oferta y dolor real",
-        "Prueba de confianza verificable",
-        "CTA con próximo paso inequívoco",
-        "Métrica para validar si el bloqueo se mueve",
-    ] + base.missing_links))[:7]
-
-    current_flow = list(dict.fromkeys([
-        first_asset,
-        offer_node,
-        source_node,
-        cta_node,
-        trust_node,
-    ]))[:5]
-
-    summary = (
-        f"Blueprint recalculado con cruce de evidencia: activos declarados={len(declared_links)}, fuentes públicas={source_count}, "
-        f"score general={score.overall}/10 y métrica más débil={weakest_metric} ({weakest_value}/10). "
-        "La ruta recomendada evita una plantilla genérica y prioriza el eslabón que limita el avance comercial."
-    )
-
-    return FunnelBlueprint(
-        current_flow=current_flow,
-        missing_links=missing_links,
-        breakpoints=list(dict.fromkeys(breakpoints))[:6],
-        recommended_flow=list(dict.fromkeys(recommended))[:5],
-        summary=summary,
-    )
-
-
-def build_preliminary_analytical_report_html(
-    request: FullCommercialSystemRequest,
-    analytical_core: AnalyticalCoreResult,
-    evidence_cross_check: EvidenceCrossCheckReport,
-    stable_output: StableAuditOutput,
-    public_audit: ProspectWithResearchResponse,
-    social_fit: Optional[SocialContentFitResponse],
-    campaign_performance: CampaignPerformanceResponse,
-) -> str:
-    """Reporte HTML preliminar sin visuales cuando el motor sí analizó evidencia, pero no habilita gráficos fuertes."""
-    top_signals = sorted(analytical_core.signal_vector.values(), key=lambda item: item.score_0_to_10, reverse=True)
-    signals_rows = "".join(
-        f"<tr><td>{h(sig.signal)}</td><td>{sig.score_0_to_10}/10</td><td>{h(sig.confidence)}</td><td>{h(sig.rationale)}</td></tr>"
-        for sig in top_signals
-    )
-    evidence_rows = "".join(
-        f"<tr><td>{h(item.evidence_id)}</td><td>{h(item.source_type)}</td><td>{h(item.source_label)}</td><td>{h(item.observed_fact)}</td><td>{h(', '.join(item.supports_signals))}</td></tr>"
-        for item in analytical_core.evidence_ledger[:30]
-    )
-    claim_rows = "".join(
-        f"<tr><td>{h(claim.claim_id)}</td><td>{h(claim.claim_type)}</td><td>{h(claim.support_status)}</td><td>{h(claim.statement)}</td><td>{h(', '.join(claim.evidence_ids))}</td></tr>"
-        for claim in analytical_core.claims[:20]
-    )
-    blocked_claim_rows = "".join(
-        f"<tr><td>{h(claim.claim_id)}</td><td>{h(claim.claim_type)}</td><td>{h(claim.statement)}</td><td>{h(claim.blocked_reason or 'Sin soporte suficiente')}</td></tr>"
-        for claim in analytical_core.blocked_claims[:12]
-    )
-    rec_cards = "".join(
-        f"<div class='card'><h3>{h(rec.priority)} · {h(rec.recommendation_id)}</h3><p>{h(rec.recommendation)}</p><p><strong>Base:</strong> {h(rec.rationale)}</p><p><strong>Evidencia:</strong> {h(', '.join(rec.evidence_ids) or 'n/d')}</p><p><strong>Validar con:</strong> {h('; '.join(rec.required_data_to_validate))}</p></div>"
-        for rec in analytical_core.recommendations[:10]
-    )
-    missing_items = "".join(f"<li>{h(item)}</li>" for item in analytical_core.missing_data_for_complete_analysis[:18])
-    constraints = "".join(f"<li>{h(item)}</li>" for item in analytical_core.pre_report_factuality_check.report_language_constraints)
-    return f"""
-<!doctype html>
-<html lang="es">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Auditor preliminar - {h(request.company_name)}</title>
-<style>
-body {{ font-family: Inter, Arial, sans-serif; color:#111827; background:#f8fafc; margin:0; padding:32px; }}
-main {{ max-width:1180px; margin:auto; background:white; padding:34px; border-radius:22px; box-shadow:0 20px 60px rgba(15,23,42,.08); }}
-h1 {{ margin:0 0 8px; font-size:32px; }}
-h2 {{ margin-top:34px; border-top:1px solid #e5e7eb; padding-top:24px; }}
-.badge {{ display:inline-block; padding:7px 12px; border-radius:999px; background:#eef2ff; color:#3730a3; font-weight:700; margin:4px 8px 4px 0; }}
-.warn {{ background:#fff7ed; color:#9a3412; }}
-.ok {{ background:#ecfdf5; color:#065f46; }}
-table {{ width:100%; border-collapse:collapse; margin-top:12px; font-size:13px; }}
-th, td {{ border-bottom:1px solid #e5e7eb; padding:10px; text-align:left; vertical-align:top; }}
-th {{ background:#f9fafb; }}
-.card {{ border:1px solid #e5e7eb; border-radius:16px; padding:16px; margin:12px 0; background:#fbfdff; }}
-.small {{ color:#6b7280; font-size:13px; }}
-</style>
-</head>
-<body><main>
-<h1>Auditor preliminar evidence-first</h1>
-<p class="small">Empresa: <strong>{h(request.company_name)}</strong> · Website: {h(request.website or 'n/d')}</p>
-<span class="badge">confidence_status: {h(analytical_core.confidence_status)}</span>
-<span class="badge">stability: {h(stable_output.stability_status)}</span>
-<span class="badge warn">visuales: bloqueados o no priorizados</span>
-<span class="badge ok">no_invention_rule: {h(str(analytical_core.no_invention_rule_applied))}</span>
-<h2>1. Interpretación ejecutiva</h2>
-<p>{h(analytical_core.executive_interpretation)}</p>
-<p><strong>Estado del cruce de evidencia:</strong> {h(evidence_cross_check.status)} · {h(evidence_cross_check.explanation)}</p>
-<h2>2. Evidencia leída/considerada</h2>
-<table><thead><tr><th>ID</th><th>Tipo</th><th>Fuente</th><th>Hecho observado</th><th>Señales soportadas</th></tr></thead><tbody>{evidence_rows}</tbody></table>
-<h2>3. Vector de señales comerciales</h2>
-<table><thead><tr><th>Señal</th><th>Score</th><th>Confianza</th><th>Racional</th></tr></thead><tbody>{signals_rows}</tbody></table>
-<h2>4. Claims permitidos</h2>
-<table><thead><tr><th>ID</th><th>Tipo</th><th>Soporte</th><th>Claim</th><th>Evidencia</th></tr></thead><tbody>{claim_rows}</tbody></table>
-<h2>5. Claims bloqueados</h2>
-<table><thead><tr><th>ID</th><th>Tipo</th><th>Claim no permitido</th><th>Motivo</th></tr></thead><tbody>{blocked_claim_rows}</tbody></table>
-<h2>6. Recomendaciones trazables preliminares</h2>
-{rec_cards or '<p>No se generaron recomendaciones porque no había cadena evidencia → claim → recomendación suficiente.</p>'}
-<h2>7. Datos faltantes para análisis completo</h2>
-<ul>{missing_items}</ul>
-<h2>8. Restricciones de lenguaje / anti-invención</h2>
-<ul>{constraints}</ul>
-<p class="small">Este reporte es preliminar. No afirma ROAS, CPA, CPL efectivo, conversión real ni calidad de leads sin datos de campaña/CRM.</p>
-</main></body></html>
-"""
-
-@app.post(
-    "/audit/full-commercial-system",
-    response_model=FullCommercialSystemResponse,
-    operation_id="auditFullCommercialSystem",
-    summary="Audit full commercial system",
-    description="Une investigación pública, auditoría comercial, blueprint, heatmap y auditoría de campañas en un sistema único.",
-    dependencies=[Security(verify_api_key)],
-)
-
-
-def audit_full_commercial_system(request: FullCommercialSystemRequest):
-    public_audit_request = ProspectWithResearchRequest(
-        company_name=request.company_name,
-        industry=request.industry,
-        city=request.city,
-        country=request.country,
-        website=request.website,
-        instagram=request.instagram,
-        tiktok=getattr(request, "tiktok", None),
-        facebook=getattr(request, "facebook", None),
-        youtube=getattr(request, "youtube", None),
-        linkedin=request.linkedin,
-        offer=request.offer,
-        notes=request.notes,
-        num_results_per_query=request.num_results_per_query,
-        research_mode=getattr(request, "research_mode", "live_public_search"),
-    )
-
-    public_audit = audit_prospect_with_research(public_audit_request)
-
-    campaign_request = CampaignPerformanceRequest(
-        company_name=request.company_name,
-        campaigns=request.campaigns,
-        notes=request.campaign_notes or request.notes,
-        target_cpl=request.target_cpl,
-        target_cpa=request.target_cpa,
-        target_ctr_percent=request.target_ctr_percent,
-        target_landing_conversion_rate_percent=request.target_landing_conversion_rate_percent,
-        min_lead_quality_rate_percent=request.min_lead_quality_rate_percent,
-    )
-
-    campaign_performance = run_campaign_performance_audit(campaign_request)
-
-    social_request = SocialContentFitRequest(
-        company_name=request.company_name,
-        industry=request.industry,
-        city=request.city,
-        country=request.country,
-        website=request.website,
-        instagram=request.instagram,
-        tiktok=getattr(request, "tiktok", None),
-        facebook=getattr(request, "facebook", None),
-        youtube=getattr(request, "youtube", None),
-        linkedin=request.linkedin,
-        offer=request.offer,
-        target_audience=None,
-        notes=request.social_content_notes or request.notes,
-        recent_content_samples=request.social_content_samples,
-        num_results_per_query=request.num_results_per_query,
-        research_mode=getattr(request, "research_mode", "live_public_search"),
-    )
-    social_content_fit = audit_social_content_fit(social_request)
-
-    # Rebuild every visual map only after all reachable evidence layers are available.
-    # This prevents generic/duplicated funnels, heatmaps and blueprints when two clients share the same bottleneck label.
-    public_audit.awareness_funnel_locator = build_awareness_funnel_locator(
-        audit=public_audit.audit,
-        score=public_audit.commercial_score,
-        request=request,
-    )
-    public_audit.temperature_heatmap = build_temperature_heatmap(
-        audit=public_audit.audit,
-        score=public_audit.commercial_score,
-        request=request,
-        social_fit=social_content_fit,
-        campaign_performance=campaign_performance,
-    )
-    public_audit.customer_intent_density_map = build_customer_intent_density_map(
-        awareness_funnel_locator=public_audit.awareness_funnel_locator,
-        heatmap=public_audit.temperature_heatmap,
-        audit=public_audit.audit,
-    )
-    public_audit.funnel_blueprint = adapt_blueprint_to_public_evidence(public_audit, request)
-
-    # Adapt blueprint to campaign/social evidence when those layers reveal a specific rupture.
-    adapted_blueprint = build_campaign_adapted_blueprint(public_audit, campaign_performance)
-    adapted_blueprint = build_social_adapted_blueprint(adapted_blueprint, social_content_fit, campaign_performance, request=request)
-    public_audit.funnel_blueprint = adapted_blueprint
-
-    strategic_from_public_audit = [
-        convert_corrective_to_performance_action(action)
-        for action in public_audit.corrective_action_plan[:5]
-    ]
-
-    unified_priorities = prioritize_actions(
-        strategic_from_public_audit + campaign_performance.prioritized_actions,
-        limit=18,
-    )
-
-    if campaign_performance.data_quality == "sin_datos":
-        system_summary = (
-            "El sistema comercial ya puede unir investigación pública, diagnóstico estratégico y estructura visual. "
-            "La capa de campañas está preparada, pero todavía necesita datos reales para activar decisiones de presupuesto, creatividad, landing, audiencia, retargeting y tracking."
-        )
-    else:
-        system_summary = (
-            "El sistema comercial combina señales públicas con datos de campaña. Las prioridades deben leerse como una secuencia: "
-            "primero corregir mensaje/CTA/confianza, luego presupuesto/tracking, y después escalar o pausar según evidencia."
-        )
-
-    commercial_readiness_score = build_commercial_readiness_score(public_audit, campaign_performance)
-    map_coherence_check = build_map_coherence_check(public_audit, campaign_performance)
-    analysis_trace = build_analysis_trace(
-        request=request,
-        public_audit=public_audit,
-        social_fit=social_content_fit,
-        campaign_performance=campaign_performance,
-        commercial_readiness_score=commercial_readiness_score,
-    )
-    diagnostic_integration_summary = build_diagnostic_integration_summary(analysis_trace)
-    strategic_measures_matrix = build_strategic_measures_matrix(
-        request=request,
-        public_audit=public_audit,
-        social_fit=social_content_fit,
-        campaign_performance=campaign_performance,
-        analysis_trace=analysis_trace,
-    )
-
-    evidence_cross_check = build_evidence_cross_check_report(
-        request=request,
-        public_audit=public_audit,
-        social_fit=social_content_fit,
-        campaign_performance=campaign_performance,
-        analysis_trace=analysis_trace,
-    )
-    analytical_core = build_analytical_core_result(
-        request=request,
-        public_audit=public_audit,
-        social_fit=social_content_fit,
-        campaign_performance=campaign_performance,
-        evidence_cross_check=evidence_cross_check,
-    )
-    analytical_visual_allowed = (
-        ANALYTICAL_STRONG_VISUALS_ENABLED
-        and evidence_cross_check.visual_generation_allowed
-        and analytical_core.pre_report_factuality_check.safe_to_write_report
-        and analytical_core.confidence_status in ["campaign_ready", "complete"]
-    )
-    generation_gate_status = "allowed" if analytical_visual_allowed else "blocked"
-    generation_gate_reason = (
-        evidence_cross_check.explanation
-        if analytical_visual_allowed
-        else f"Visuales bloqueados por analytical_core: confidence_status={analytical_core.confidence_status}. Se prioriza análisis trazable sobre gráficos potencialmente genéricos."
-    )
-
-    visual_report_url = None
-    visual_report_status = "not_generated"
-    clean_visual_assets: List[VisualAssetLink] = []
-    drive_bundle = DriveBundleExport()
-    stable_output: Optional[StableAuditOutput] = None
-    deliverable_reliability: Optional[DeliverableReliabilityReport] = None
-
-    if analytical_visual_allowed:
-        try:
-            awareness_svg = render_awareness_funnel_svg(public_audit.awareness_funnel_locator)
-            temperature_svg = render_temperature_heatmap_svg(public_audit.temperature_heatmap)
-            density_svg = render_customer_intent_density_svg(public_audit.customer_intent_density_map)
-            blueprint_svg = render_funnel_blueprint_svg(public_audit.funnel_blueprint)
-            score_svg = render_score_chart_svg(public_audit.commercial_score)
-            report_id = uuid.uuid4().hex
-            visual_report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
-            clean_visual_assets = build_clean_visual_asset_links(public_audit, report_id=report_id)
-            stable_output = build_stable_audit_output(
-                public_audit=public_audit,
-                social_fit=social_content_fit,
-                analysis_trace=analysis_trace,
-                visual_report_url=visual_report_url,
-                request=request,
-                campaign_performance=campaign_performance,
-            )
-            deliverable_reliability = build_deliverable_reliability_report(
-                stable_output=stable_output,
-                evidence_cross_check=evidence_cross_check,
-                drive_bundle=drive_bundle,
-                analytical_core=analytical_core,
-                visual_report_status="generated",
-            )
-            report_html = build_visual_report_html(
-                result=public_audit,
-                awareness_svg=awareness_svg,
-                temperature_svg=temperature_svg,
-                density_svg=density_svg,
-                blueprint_svg=blueprint_svg,
-                score_svg=score_svg,
-                social_content_fit=social_content_fit,
-                analysis_trace=analysis_trace,
-                strategic_measures_matrix=strategic_measures_matrix,
-                clean_visual_assets=clean_visual_assets,
-                stable_output=stable_output,
-                evidence_cross_check=evidence_cross_check,
-                deliverable_reliability=deliverable_reliability,
-                analytical_core=analytical_core,
-            )
-            save_visual_report_html(report_id, report_html)
-            visual_report_status = "generated"
-        except Exception as exc:
-            visual_report_url = None
-            visual_report_status = f"visual_report_generation_failed: {str(exc)}"
-    else:
-        # No se bloquea el análisis preliminar: se bloquean solo los visuales fuertes.
-        # Aun así se genera un HTML analítico evidence-first con evidencia, señales, claims y recomendaciones trazables.
-        try:
-            report_id = uuid.uuid4().hex
-            visual_report_url = f"{PUBLIC_BASE_URL.rstrip('/')}/deliverables/report/{report_id}"
-            stable_output = build_stable_audit_output(
-                public_audit=public_audit,
-                social_fit=social_content_fit,
-                analysis_trace=analysis_trace,
-                visual_report_url=visual_report_url,
-                request=request,
-                campaign_performance=campaign_performance,
-            )
-            stable_output = sanitize_stable_output_for_analysis_only(stable_output, analytical_core, "analytical_report_generated_no_visual_assets")
-            report_html = build_preliminary_analytical_report_html(
-                request=request,
-                analytical_core=analytical_core,
-                evidence_cross_check=evidence_cross_check,
-                stable_output=stable_output,
-                public_audit=public_audit,
-                social_fit=social_content_fit,
-                campaign_performance=campaign_performance,
-            )
-            save_visual_report_html(report_id, report_html)
-            visual_report_status = "analytical_report_generated_no_visual_assets"
-            generation_gate_status = "analysis_only"
-            generation_gate_reason = (
-                "Se generó análisis preliminar evidence-first con lectura del sitio y claims trazables. "
-                f"Los visuales fuertes no se generaron porque confidence_status={analytical_core.confidence_status}; "
-                "se evita convertir evidencia preliminar en gráficos concluyentes."
-            )
-        except Exception as exc:
-            visual_report_status = f"preliminary_analytical_report_generation_failed: {str(exc)}"
-            visual_report_url = None
-
-    if stable_output is None:
-        stable_output = build_stable_audit_output(
-            public_audit=public_audit,
-            social_fit=social_content_fit,
-            analysis_trace=analysis_trace,
-            visual_report_url=visual_report_url,
-            request=request,
-            campaign_performance=campaign_performance,
-        )
-        if visual_report_status != "generated":
-            stable_output = sanitize_stable_output_for_analysis_only(stable_output, analytical_core, visual_report_status)
-
-    if deliverable_reliability is None:
-        deliverable_reliability = build_deliverable_reliability_report(
-            stable_output=stable_output,
-            evidence_cross_check=evidence_cross_check,
-            drive_bundle=drive_bundle,
-            analytical_core=analytical_core,
-            visual_report_status=visual_report_status,
-        )
-
-    if visual_report_url:
-        try:
-            written_report_markdown = build_written_audit_report_markdown(
-                request=request,
-                public_audit=public_audit,
-                social_fit=social_content_fit,
-                campaign_performance=campaign_performance,
-                analysis_trace=analysis_trace,
-                stable_output=stable_output,
-                strategic_measures_matrix=strategic_measures_matrix,
-                visual_report_url=visual_report_url,
-                evidence_cross_check=evidence_cross_check,
-                deliverable_reliability=deliverable_reliability,
-                analytical_core=analytical_core,
-            )
-            report_id_for_bundle = visual_report_url.rstrip("/").rsplit("/", 1)[-1]
-            report_html_for_bundle = load_visual_report_html(report_id_for_bundle) or ""
-            drive_bundle = export_audit_bundle_to_drive(
-                company_name=request.company_name,
-                report_id=report_id_for_bundle,
-                report_html=report_html_for_bundle,
-                clean_visual_assets=clean_visual_assets,
-                written_report_markdown=written_report_markdown,
-                stable_output=stable_output,
-                evidence_cross_check=evidence_cross_check,
-                deliverable_reliability=deliverable_reliability,
-            )
-            clean_visual_assets = update_visual_asset_links_from_drive_bundle(clean_visual_assets, drive_bundle)
-            deliverable_reliability = build_deliverable_reliability_report(
-                stable_output=stable_output,
-                evidence_cross_check=evidence_cross_check,
-                drive_bundle=drive_bundle,
-                analytical_core=analytical_core,
-                visual_report_status=visual_report_status,
-            )
-        except Exception as exc:
-            drive_bundle = DriveBundleExport(
-                status="failed",
-                storage_provider="render_temp",
-                error=f"drive_bundle_generation_failed: {str(exc)}",
-                note="El reporte visual se generó, pero el bundle de Drive falló.",
-            )
-
-    deliverable_reliability = build_deliverable_reliability_report(
-        stable_output=stable_output,
-        evidence_cross_check=evidence_cross_check,
-        drive_bundle=drive_bundle,
-        analytical_core=analytical_core,
-        visual_report_status=visual_report_status,
-    )
-
-    return FullCommercialSystemResponse(
-        company_name=request.company_name,
-        audit_type="full_commercial_system_audit_v3_compact",
-        response_mode="compact",
-        analysis_trace=analysis_trace,
-        diagnostic_integration_summary=diagnostic_integration_summary,
-        strategic_measures_matrix=strategic_measures_matrix,
-        stable_output=stable_output,
-        system_summary=system_summary,
-        recommended_next_step=(
-            analytical_core.next_best_data_request[0]
-            if analytical_core.next_best_data_request
-            else (
-                "Revisar primero claims permitidos, recomendaciones trazables y límites del pre_report_factuality_check."
-            )
-        ),
-        visual_report_url=visual_report_url,
-        visual_report_status=visual_report_status,
-        visual_asset_urls=clean_visual_assets,
-        drive_bundle=drive_bundle,
-        evidence_cross_check=evidence_cross_check,
-        deliverable_reliability=deliverable_reliability,
-        analytical_core=analytical_core,
-        generation_gate_status=generation_gate_status,
-        generation_gate_reason=generation_gate_reason,
-        research_confidence=public_audit.research_confidence,
-        diagnosis_initial=public_audit.diagnosis_initial,
-        public_sources_summary=public_audit.public_sources_summary[:8],
-        awareness_funnel_locator=public_audit.awareness_funnel_locator,
-        customer_intent_density_map=public_audit.customer_intent_density_map,
-        funnel_blueprint=public_audit.funnel_blueprint,
-        corrective_action_plan=public_audit.corrective_action_plan[:8],
-        campaign_data_quality=campaign_performance.data_quality,
-        campaigns_analyzed=campaign_performance.campaigns_analyzed,
-        campaign_summary=campaign_performance.summary,
-        social_content_fit_summary=social_content_fit.strategic_summary,
-        social_content_fit_score=social_content_fit.overall_social_content_fit_score,
-        social_content_primary_gap=social_content_fit.primary_content_gap,
-        platform_content_fit=social_content_fit.platform_audits[:4],
-        social_content_actions=social_content_fit.recommended_actions[:8],
-        top_campaign_findings=campaign_performance.findings[:10],
-        top_cross_metric_findings=campaign_performance.cross_metric_findings[:10],
-        tracking_health=campaign_performance.tracking_health[:8],
-        lead_quality_assessment=campaign_performance.lead_quality_assessment[:8],
-        cost_quality_matrix=campaign_performance.cost_quality_matrix[:10],
-        budget_reallocation=campaign_performance.budget_reallocation[:10],
-        experiment_recommendations=campaign_performance.experiment_recommendations[:8],
-        unified_priorities=unified_priorities[:12],
-        commercial_readiness_score=commercial_readiness_score,
-        data_completeness_score=campaign_performance.data_completeness,
-        map_coherence_check=map_coherence_check,
-        discovery_questions=campaign_performance.discovery_questions[:10],
-        proposal_guidance=campaign_performance.proposal_guidance,
-        timed_action_plan=campaign_performance.timed_action_plan,
-        response_note=(
-            "Respuesta compacta para evitar response_too_large en Custom GPT Actions. "
-            "Los visuales completos no viajan en JSON; usar visual_report_url o /deliverables/visual-report."
-        ),
-    )
+@app.get("/deliverables/text/{report_id}.txt")
+async def get_text_report(report_id: str) -> Response:
+    item = TEXT_REPORTS.get(report_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Text report not found or expired")
+    headers = {"Content-Disposition": f"attachment; filename={item['filename']}"}
+    return Response(content=item["content"], media_type="text/plain; charset=utf-8", headers=headers)
