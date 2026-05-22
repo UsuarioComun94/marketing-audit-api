@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 .env
+main.py.bak_*
+main.py.bak_status_*
+main.py.broken_*
+uvicorn_local_*.log
