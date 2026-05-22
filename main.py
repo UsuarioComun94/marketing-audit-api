@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import hashlib
@@ -53,7 +53,7 @@ except Exception:  # pragma: no cover
     tldextract = None
 
 
-APP_VERSION = "public-presence-collector-mvp-0.1"
+APP_VERSION = "public-presence-collector-mvp-0.2"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -1474,9 +1474,62 @@ async def root() -> Dict[str, Any]:
         "status": "ok",
         "service": "marketing-auditor-public-presence-collector",
         "version": APP_VERSION,
-        "endpoints": ["POST /collect/public-presence", "GET /deliverables/text/{report_id}.txt"],
+        "endpoints": [
+            "GET /api/status",
+            "POST /collect/public-presence",
+            "GET /deliverables/text/{report_id}.txt",
+        ],
     }
 
+
+@app.get("/api/status")
+async def api_status(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "service": "marketing-auditor-public-presence-collector",
+        "version": APP_VERSION,
+        "public_base_url": PUBLIC_BASE_URL,
+        "configured_tools": {
+            "firecrawl": bool(FIRECRAWL_API_KEY),
+            "browserbase": bool(BROWSERBASE_API_KEY),
+            "composio": bool(COMPOSIO_API_KEY),
+            "youtube": bool(YOUTUBE_API_KEY),
+        },
+        "capabilities": {
+            "current_scope": "public_presence_collection",
+            "implemented": {
+                "website_static": True,
+                "firecrawl_website": bool(FIRECRAWL_API_KEY),
+                "youtube_data_api": bool(YOUTUBE_API_KEY),
+                "text_report": True,
+                "public_social_limited": True
+            },
+            "configured_but_not_implemented": {
+                "browserbase_render": bool(BROWSERBASE_API_KEY),
+                "composio_search_enrichment": bool(COMPOSIO_API_KEY)
+            },
+            "not_implemented": {
+                "visual_report_url": True,
+                "analysis_trace": True,
+                "commercial_score": True,
+                "funnel_blueprint": True,
+                "private_performance_audit": True,
+                "automatic_mercado_libre_scraping": True
+            },
+            "guards": [
+                "No afirmar ventas, ROAS, CPA, CPL, trafico, conversion, margen ni calidad de lead sin evidencia privada.",
+                "Detectar scripts de tracking no prueba medicion correcta.",
+                "Mercado Libre no esta integrado automaticamente en este backend."
+            ]
+        },
+        "endpoints": [
+            "GET /",
+            "GET /api/status",
+            "GET /debug/collector-config",
+            "POST /collect/public-presence",
+            "GET /deliverables/text/{report_id}.txt"
+        ]
+    }
 
 @app.get("/debug/collector-config")
 async def collector_config(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
@@ -1594,3 +1647,4 @@ async def get_text_report(report_id: str) -> Response:
         raise HTTPException(status_code=404, detail="Text report not found or expired")
     headers = {"Content-Disposition": f"attachment; filename={item['filename']}"}
     return Response(content=item["content"], media_type="text/plain; charset=utf-8", headers=headers)
+
