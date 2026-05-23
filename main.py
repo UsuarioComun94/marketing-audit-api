@@ -297,7 +297,7 @@ class BrowserRenderRequest(BaseModel):
     viewport: str = Field(default="desktop", description="desktop | mobile")
     wait_ms: int = Field(default=1500, ge=0, le=8000)
     timeout_ms: int = Field(default=30000, ge=5000, le=90000)
-    full_page: bool = Field(default=False, description="Si true, captura full page; si false, captura viewport.")
+    full_page: bool = Field(default=True, description="Si true, captura full page; si false, captura viewport.")
 
 
 
@@ -1933,5 +1933,6 @@ async def get_text_report(report_id: str) -> Response:
         raise HTTPException(status_code=404, detail="Text report not found or expired")
     headers = {"Content-Disposition": f"attachment; filename={item['filename']}"}
     return Response(content=item["content"], media_type="text/plain; charset=utf-8", headers=headers)
+
 
 
