@@ -1719,6 +1719,48 @@ def build_txt_report(payload: Dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+
+def build_api_capabilities() -> Dict[str, Any]:
+    return {
+        "current_scope": "public_presence_collection",
+        "implemented": {
+            "website_static": True,
+            "firecrawl_website": bool(FIRECRAWL_API_KEY),
+            "browserbase_visual_debug": bool(BROWSERBASE_API_KEY),
+            "youtube_data_api": bool(YOUTUBE_API_KEY),
+            "text_report": True,
+            "public_social_limited": True,
+        },
+        "configured_but_not_implemented": {
+            "browserbase_collect_integration": False,
+            "composio_search_enrichment": bool(COMPOSIO_API_KEY),
+        },
+        "not_implemented": {
+            "visual_report_url": False,
+            "visual_quality_summary_integrated": False,
+            "analysis_trace": True,
+            "commercial_score": True,
+            "funnel_blueprint": True,
+            "private_performance_audit": True,
+            "automatic_mercado_libre_scraping": True,
+        },
+        "guards": [
+            "No afirmar ventas, ROAS, CPA, CPL, trafico, conversion, margen ni calidad de lead sin evidencia privada.",
+            "Detectar scripts de tracking no prueba medicion correcta.",
+            "Browserbase visual debug permite screenshot/render, pero no reemplaza test de UX, PageSpeed ni datos de conversion.",
+            "Mercado Libre no esta integrado automaticamente en este backend.",
+        ],
+    }
+
+
+def build_collector_notes() -> Dict[str, str]:
+    return {
+        "browserbase": "Browserbase visual debug implementado en POST /debug/browser-render. Todavia no esta integrado automaticamente dentro de collectPublicPresence.",
+        "composio": "Reconocido, pero el enrichment por toolkits queda marcado como no implementado en este MVP.",
+        "visual": "GET /deliverables/screenshot/{screenshot_id}.png devuelve screenshots generados por debugBrowserRender.",
+    }
+
+
 @app.get("/")
 async def root() -> Dict[str, Any]:
     return {
@@ -1748,33 +1790,7 @@ async def api_status(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
             "composio": bool(COMPOSIO_API_KEY),
             "youtube": bool(YOUTUBE_API_KEY),
         },
-        "capabilities": {
-            "current_scope": "public_presence_collection",
-            "implemented": {
-                "website_static": True,
-                "firecrawl_website": bool(FIRECRAWL_API_KEY),
-                "youtube_data_api": bool(YOUTUBE_API_KEY),
-                "text_report": True,
-                "public_social_limited": True
-            },
-            "configured_but_not_implemented": {
-                "browserbase_render": bool(BROWSERBASE_API_KEY),
-                "composio_search_enrichment": bool(COMPOSIO_API_KEY)
-            },
-            "not_implemented": {
-                "visual_report_url": True,
-                "analysis_trace": True,
-                "commercial_score": True,
-                "funnel_blueprint": True,
-                "private_performance_audit": True,
-                "automatic_mercado_libre_scraping": True
-            },
-            "guards": [
-                "No afirmar ventas, ROAS, CPA, CPL, trafico, conversion, margen ni calidad de lead sin evidencia privada.",
-                "Detectar scripts de tracking no prueba medicion correcta.",
-                "Mercado Libre no esta integrado automaticamente en este backend."
-            ]
-        },
+        "capabilities": build_api_capabilities(),
         "endpoints": [
             "GET /",
             "GET /api/status",
@@ -1802,10 +1818,7 @@ async def collector_config(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
             "composio": bool(COMPOSIO_API_KEY),
             "youtube": bool(YOUTUBE_API_KEY),
         },
-        "notes": {
-            "browserbase": "Reconocido, pero el collector renderizado queda marcado como no implementado en este MVP.",
-            "composio": "Reconocido, pero el enrichment por toolkits queda marcado como no implementado en este MVP.",
-        },
+        "notes": build_collector_notes(),
     }
 
 
