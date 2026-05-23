@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import html
 import json
@@ -53,6 +54,16 @@ except Exception:  # pragma: no cover
     tldextract = None
 
 
+try:
+    from browserbase import Browserbase  # type: ignore
+except Exception:  # pragma: no cover
+    Browserbase = None
+
+try:
+    from playwright.async_api import async_playwright  # type: ignore
+except Exception:  # pragma: no cover
+    async_playwright = None
+
 APP_VERSION = "public-presence-collector-mvp-0.2"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
@@ -62,6 +73,7 @@ COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY", "").strip()
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
 
 TEXT_REPORTS: Dict[str, Dict[str, Any]] = {}
+SCREENSHOTS: Dict[str, Dict[str, Any]] = {}
 
 USER_AGENT = (
     "Mozilla/5.0 (compatible; MarketingAuditorPublicCollector/0.1; "
@@ -278,6 +290,15 @@ class PublicPresenceCollectRequest(BaseModel):
     assets: Optional[AssetsInput] = None
     collection_depth: str = Field(default="basic", description="basic | standard")
     max_website_pages: int = Field(default=5, ge=1, le=10)
+
+
+class BrowserRenderRequest(BaseModel):
+    url: str
+    viewport: str = Field(default="desktop", description="desktop | mobile")
+    wait_ms: int = Field(default=1500, ge=0, le=8000)
+    timeout_ms: int = Field(default=30000, ge=5000, le=90000)
+    full_page: bool = Field(default=False, description="Si true, captura full page; si false, captura viewport.")
+
 
 
 async def verify_api_key(
@@ -1044,6 +1065,236 @@ async def collect_firecrawl(url: Optional[str], evidence: EvidenceBuilder) -> Di
         return {"reports": [collector_report(collector, platform, "failed_runtime", "firecrawl_api", normalized, reason=str(exc), confidence="none")], "summary": {}}
 
 
+
+def _session_value(session: Any, key: str) -> Optional[str]:
+    if isinstance(session, dict):
+        return session.get(key)
+    value = getattr(session, key, None)
+    if value is not None:
+        return value
+    camel = key.replace("_", "")
+    value = getattr(session, camel, None)
+    if value is not None:
+        return value
+    return None
+
+
+def _viewport_size(viewport: str) -> Dict[str, int]:
+    v = (viewport or "desktop").lower().strip()
+    if v == "mobile":
+        return {"width": 390, "height": 844}
+    return {"width": 1366, "height": 900}
+
+
+def _detect_cta_texts(texts: List[str]) -> List[str]:
+    cta_keywords = [
+        "comprar",
+        "agregar",
+        "carrito",
+        "ver",
+        "consultar",
+        "contactar",
+        "whatsapp",
+        "cotizar",
+        "registrarme",
+        "iniciar sesión",
+        "login",
+        "mayorista",
+        "pedir",
+        "enviar",
+        "suscribirme",
+        "finalizar",
+        "checkout",
+    ]
+    out: List[str] = []
+    for t in texts:
+        clean = collapse_ws(str(t or ""))
+        if not clean or len(clean) > 120:
+            continue
+        low = clean.lower()
+        if any(k in low for k in cta_keywords):
+            out.append(clean)
+    return list(dict.fromkeys(out))[:30]
+
+
+async def render_browserbase_visual(req: BrowserRenderRequest) -> Dict[str, Any]:
+    normalized = normalize_url(req.url)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="URL inválida.")
+
+    if not BROWSERBASE_API_KEY:
+        return {
+            "status": "skipped_missing_api_key",
+            "collector": "browserbase_visual_debug",
+            "url": normalized,
+            "reason": "BROWSERBASE_API_KEY no está configurada.",
+            "confidence": "none",
+        }
+
+    if Browserbase is None or async_playwright is None:
+        return {
+            "status": "missing_dependency",
+            "collector": "browserbase_visual_debug",
+            "url": normalized,
+            "reason": "Faltan dependencias browserbase/playwright en el entorno.",
+            "required_dependencies": ["browserbase", "playwright"],
+            "confidence": "none",
+        }
+
+    viewport_size = _viewport_size(req.viewport)
+    browser = None
+    page = None
+    session_id = None
+
+    try:
+        bb = Browserbase(api_key=BROWSERBASE_API_KEY)
+
+        def _create_session() -> Any:
+            return bb.sessions.create()
+
+        session = await asyncio.to_thread(_create_session)
+        session_id = _session_value(session, "id")
+        connect_url = _session_value(session, "connect_url") or _session_value(session, "connectUrl")
+
+        if not connect_url:
+            return {
+                "status": "failed_runtime",
+                "collector": "browserbase_visual_debug",
+                "url": normalized,
+                "reason": "Browserbase no devolvió connect_url.",
+                "session_id": session_id,
+                "confidence": "none",
+            }
+
+        async with async_playwright() as pw:
+            browser = await pw.chromium.connect_over_cdp(connect_url)
+            context = browser.contexts[0] if browser.contexts else await browser.new_context(viewport=viewport_size)
+            page = context.pages[0] if context.pages else await context.new_page()
+
+            try:
+                await page.set_viewport_size(viewport_size)
+            except Exception:
+                pass
+
+            response = await page.goto(normalized, wait_until="domcontentloaded", timeout=req.timeout_ms)
+
+            try:
+                await page.wait_for_load_state("networkidle", timeout=6000)
+            except Exception:
+                pass
+
+            if req.wait_ms:
+                await page.wait_for_timeout(req.wait_ms)
+
+            final_url = page.url
+            page_title = await page.title()
+            rendered_html = await page.content()
+
+            try:
+                body_text = await page.locator("body").inner_text(timeout=5000)
+            except Exception:
+                body_text = extract_visible_text(rendered_html)
+
+            buttons_text = await page.locator("button, a, input[type='button'], input[type='submit']").evaluate_all(
+                """els => els.map(e => (e.innerText || e.value || e.getAttribute('aria-label') || e.getAttribute('title') || '').trim()).filter(Boolean).slice(0, 150)"""
+            )
+
+            images = await page.locator("img").evaluate_all(
+                """els => els.map(e => ({
+                    alt: e.getAttribute('alt') || '',
+                    src: e.currentSrc || e.src || '',
+                    width: e.naturalWidth || 0,
+                    height: e.naturalHeight || 0
+                })).slice(0, 150)"""
+            )
+
+            forms_count = await page.locator("form").count()
+            links_count = await page.locator("a").count()
+
+            screenshot_bytes = await page.screenshot(full_page=bool(req.full_page), type="png")
+            screenshot_id = uuid.uuid4().hex
+            SCREENSHOTS[screenshot_id] = {
+                "content": screenshot_bytes,
+                "created_at": now_iso(),
+                "url": final_url,
+                "viewport": req.viewport,
+                "filename": f"browser_render_{screenshot_id[:8]}.png",
+            }
+
+            meta = extract_meta_and_links(rendered_html, final_url)
+            visible_ctas = _detect_cta_texts([str(x) for x in buttons_text])
+            images_without_alt = [
+                img for img in images
+                if not str(img.get("alt") or "").strip()
+            ]
+
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+            return {
+                "status": "completed",
+                "collector": "browserbase_visual_debug",
+                "url_requested": normalized,
+                "final_url": final_url,
+                "http_status": response.status if response else None,
+                "page_title": page_title,
+                "session_id": session_id,
+                "viewport": {
+                    "name": req.viewport,
+                    "width": viewport_size["width"],
+                    "height": viewport_size["height"],
+                    "full_page": bool(req.full_page),
+                },
+                "screenshot": {
+                    "available": True,
+                    "screenshot_id": screenshot_id,
+                    "screenshot_url": f"{PUBLIC_BASE_URL}/deliverables/screenshot/{screenshot_id}.png",
+                    "media_type": "image/png",
+                },
+                "visual_dom_summary": {
+                    "text_sample": truncate(collapse_ws(body_text), 1800),
+                    "buttons_text": [collapse_ws(str(x)) for x in buttons_text[:80]],
+                    "visible_ctas": visible_ctas,
+                    "links_count": links_count,
+                    "forms_count": forms_count,
+                    "images_count": len(images),
+                    "images_without_alt_count": len(images_without_alt),
+                    "image_alt_samples": [str(img.get("alt") or "") for img in images if str(img.get("alt") or "").strip()][:30],
+                    "headings": meta.get("headings", [])[:30],
+                    "meta_description": meta.get("meta_description"),
+                    "structured_data_count": meta.get("structured_data_count"),
+                    "open_graph": meta.get("open_graph", {}),
+                },
+                "confidence": "medium-high",
+                "limitations": [
+                    "El screenshot permite evaluar evidencia visual, pero no reemplaza test de UX con usuarios.",
+                    "No afirma conversión, ventas, velocidad, Core Web Vitals ni performance.",
+                    "Las plataformas con login o bloqueo pueden devolver contenido parcial.",
+                ],
+                "retrieved_at": now_iso(),
+            }
+
+    except Exception as exc:
+        try:
+            if browser:
+                await browser.close()
+        except Exception:
+            pass
+
+        return {
+            "status": "failed_runtime",
+            "collector": "browserbase_visual_debug",
+            "url": normalized,
+            "session_id": session_id,
+            "reason": str(exc),
+            "confidence": "none",
+            "retrieved_at": now_iso(),
+        }
+
+
+
 async def collect_browserbase_placeholder(url: Optional[str]) -> Dict[str, Any]:
     platform = "website"
     collector = "browserbase_render_collector"
@@ -1476,7 +1727,9 @@ async def root() -> Dict[str, Any]:
         "version": APP_VERSION,
         "endpoints": [
             "GET /api/status",
+            "POST /debug/browser-render",
             "POST /collect/public-presence",
+            "GET /deliverables/screenshot/{screenshot_id}.png",
             "GET /deliverables/text/{report_id}.txt",
         ],
     }
@@ -1526,10 +1779,18 @@ async def api_status(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
             "GET /",
             "GET /api/status",
             "GET /debug/collector-config",
+            "POST /debug/browser-render",
             "POST /collect/public-presence",
+            "GET /deliverables/screenshot/{screenshot_id}.png",
             "GET /deliverables/text/{report_id}.txt"
         ]
     }
+
+
+@app.post("/debug/browser-render")
+async def debug_browser_render(req: BrowserRenderRequest, _: None = Depends(verify_api_key)) -> Dict[str, Any]:
+    return await render_browserbase_visual(req)
+
 
 @app.get("/debug/collector-config")
 async def collector_config(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
@@ -1638,6 +1899,18 @@ async def collect_public_presence(req: PublicPresenceCollectRequest, _: None = D
         "download_url": f"{PUBLIC_BASE_URL}/deliverables/text/{report_id}.txt",
     }
     return response_payload
+
+
+
+@app.get("/deliverables/screenshot/{screenshot_id}.png")
+async def get_screenshot(screenshot_id: str) -> Response:
+    item = SCREENSHOTS.get(screenshot_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Screenshot not found or expired")
+    headers = {
+        "Content-Disposition": f"inline; filename={item.get('filename', 'browser_render.png')}"
+    }
+    return Response(content=item["content"], media_type="image/png", headers=headers)
 
 
 @app.get("/deliverables/text/{report_id}.txt")
