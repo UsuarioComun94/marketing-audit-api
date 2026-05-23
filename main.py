@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.2"
+APP_VERSION = "public-presence-collector-mvp-0.3"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -1920,4 +1920,5 @@ async def get_text_report(report_id: str) -> Response:
         raise HTTPException(status_code=404, detail="Text report not found or expired")
     headers = {"Content-Disposition": f"attachment; filename={item['filename']}"}
     return Response(content=item["content"], media_type="text/plain; charset=utf-8", headers=headers)
+
 
