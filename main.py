@@ -70,6 +70,10 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onre
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
 BROWSERBASE_API_KEY = os.getenv("BROWSERBASE_API_KEY", "").strip()
 COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY", "").strip()
+COMPOSIO_API_BASE = os.getenv("COMPOSIO_API_BASE", "https://backend.composio.dev/api/v3.1").rstrip("/")
+COMPOSIO_DEFAULT_USER_ID = os.getenv("COMPOSIO_DEFAULT_USER_ID", "default").strip() or "default"
+COMPOSIO_CONNECTED_ACCOUNT_ID = os.getenv("COMPOSIO_CONNECTED_ACCOUNT_ID", "").strip()
+COMPOSIO_SEARCH_TOOL_SLUG = os.getenv("COMPOSIO_SEARCH_TOOL_SLUG", "").strip()
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
 
 TEXT_REPORTS: Dict[str, Dict[str, Any]] = {}
@@ -1518,32 +1522,221 @@ async def collect_youtube(url: Optional[str], evidence: EvidenceBuilder) -> Dict
         return {"reports": [collector_report(collector, platform, "failed_runtime", "youtube_data_api", normalized, reason=str(exc), confidence="none")], "summary": {}}
 
 
+async def composio_api_request(
+    method: str,
+    path: str,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+    timeout_seconds: float = 45.0,
+) -> Dict[str, Any]:
+    if httpx is None:
+        return {
+            "ok": False,
+            "status_code": None,
+            "error": "missing_dependency_httpx",
+            "data": None,
+        }
+
+    if not COMPOSIO_API_KEY:
+        return {
+            "ok": False,
+            "status_code": None,
+            "error": "missing_composio_api_key",
+            "data": None,
+        }
+
+    url = f"{COMPOSIO_API_BASE}{path}"
+    headers = {
+        "x-api-key": COMPOSIO_API_KEY,
+        "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
+            resp = await client.request(
+                method.upper(),
+                url,
+                headers=headers,
+                params=params,
+                json=json_body,
+            )
+
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"raw_text": resp.text[:5000]}
+
+        return {
+            "ok": 200 <= resp.status_code < 300,
+            "status_code": resp.status_code,
+            "error": None if 200 <= resp.status_code < 300 else "composio_http_error",
+            "data": data,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status_code": None,
+            "error": f"composio_request_exception: {exc}",
+            "data": None,
+        }
+
+
+async def composio_list_tools(toolkit_slug: str = "search_api", query: str = "search") -> Dict[str, Any]:
+    params = {
+        "toolkit_versions": "latest",
+        "limit": 50,
+    }
+    if toolkit_slug:
+        params["toolkit_slug"] = toolkit_slug
+    if query:
+        params["query"] = query
+
+    return await composio_api_request("GET", "/tools", params=params)
+
+
+async def composio_execute_tool(
+    tool_slug: str,
+    text: Optional[str] = None,
+    arguments: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
+    connected_account_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    body: Dict[str, Any] = {
+        "user_id": user_id or COMPOSIO_DEFAULT_USER_ID,
+    }
+
+    account_id = connected_account_id or COMPOSIO_CONNECTED_ACCOUNT_ID
+    if account_id:
+        body["connected_account_id"] = account_id
+
+    if arguments:
+        body["arguments"] = arguments
+    else:
+        body["text"] = text or "Search public web and return relevant public URLs."
+
+    return await composio_api_request("POST", f"/tools/execute/{tool_slug}", json_body=body, timeout_seconds=60.0)
+
+
 async def collect_composio_search_placeholder(company_name: Optional[str], website: Optional[str]) -> Dict[str, Any]:
     collector = "composio_search_enrichment_collector"
     platform = "search"
+
     if not company_name and not website:
-        return {"reports": [collector_report(collector, platform, "skipped_missing_input", "composio_search", None, intended_data=["public_search_results", "possible_profiles", "mentions"], reason_code="missing_input", confidence="none")], "summary": {}}
+        return {
+            "reports": [
+                collector_report(
+                    collector,
+                    platform,
+                    "skipped_missing_input",
+                    "composio_search",
+                    None,
+                    intended_data=["public_search_results", "possible_profiles", "mentions"],
+                    reason_code="missing_input",
+                    confidence="none",
+                )
+            ],
+            "summary": {},
+        }
+
     if not COMPOSIO_API_KEY:
-        return {"reports": [collector_report(collector, platform, "skipped_missing_api_key", "composio_search", website, intended_data=["public_search_results", "possible_profiles", "mentions"], reason_code="missing_api_key", confidence="none")], "summary": {}}
+        return {
+            "reports": [
+                collector_report(
+                    collector,
+                    platform,
+                    "skipped_missing_api_key",
+                    "composio_search",
+                    website,
+                    intended_data=["public_search_results", "possible_profiles", "mentions"],
+                    reason_code="missing_api_key",
+                    confidence="none",
+                )
+            ],
+            "summary": {},
+        }
+
+    if not COMPOSIO_SEARCH_TOOL_SLUG:
+        tools_result = await composio_list_tools("search_api", "search")
+        return {
+            "reports": [
+                collector_report(
+                    collector,
+                    platform,
+                    "collector_not_configured",
+                    "composio_search",
+                    website,
+                    intended_data=["public_search_results", "possible_profiles", "mentions"],
+                    collected_fields=["composio_tools_lookup"] if tools_result.get("ok") else [],
+                    missing_fields=["public_search_results", "possible_profiles", "mentions"],
+                    reason_code="missing_composio_search_tool_slug",
+                    confidence="none",
+                    details={
+                        "message": "COMPOSIO_SEARCH_TOOL_SLUG no esta configurado. Usar /debug/composio-tools para descubrir el slug correcto.",
+                        "tools_lookup_status_code": tools_result.get("status_code"),
+                        "tools_lookup_ok": tools_result.get("ok"),
+                        "tools_lookup_sample": tools_result.get("data"),
+                    },
+                )
+            ],
+            "summary": {
+                "configured": False,
+                "reason": "missing_composio_search_tool_slug",
+                "tools_lookup": tools_result,
+            },
+        }
+
+    query_parts = []
+    if company_name:
+        query_parts.append(company_name)
+    if website:
+        query_parts.append(website)
+
+    query = " ".join(query_parts).strip()
+    task_text = (
+        "Search public web for this company/site and return public URLs, social profiles, mentions, "
+        f"and relevant public evidence only. Query: {query}"
+    )
+
+    result = await composio_execute_tool(
+        tool_slug=COMPOSIO_SEARCH_TOOL_SLUG,
+        text=task_text,
+        user_id=COMPOSIO_DEFAULT_USER_ID,
+    )
+
+    summary = {
+        "query": query,
+        "tool_slug": COMPOSIO_SEARCH_TOOL_SLUG,
+        "user_id": COMPOSIO_DEFAULT_USER_ID,
+        "connected_account_id": COMPOSIO_CONNECTED_ACCOUNT_ID or None,
+        "composio_ok": result.get("ok"),
+        "composio_status_code": result.get("status_code"),
+        "composio_error": result.get("error"),
+        "composio_response": result.get("data"),
+    }
+
+    status = "completed" if result.get("ok") else "failed_runtime"
+    reason_code = None if result.get("ok") else "composio_execution_failed"
+    confidence = "medium" if result.get("ok") else "none"
+
     return {
         "reports": [
             collector_report(
                 collector,
                 platform,
-                "collector_not_implemented",
+                status,
                 "composio_search",
                 website,
                 intended_data=["public_search_results", "possible_profiles", "mentions"],
-                collected_fields=[],
-                missing_fields=["public_search_results", "possible_profiles", "mentions"],
-                reason_code="collector_not_implemented",
-                confidence="none",
-                details={"available_env_key": True},
+                collected_fields=["public_search_results_raw"] if result.get("ok") else [],
+                missing_fields=[] if result.get("ok") else ["public_search_results", "possible_profiles", "mentions"],
+                reason_code=reason_code,
+                confidence=confidence,
+                details=summary,
             )
         ],
-        "summary": {},
+        "summary": summary,
     }
-
 
 def merge_assets(req: PublicPresenceCollectRequest) -> Dict[str, Optional[str]]:
     assets = {
@@ -1733,7 +1926,7 @@ def build_api_capabilities() -> Dict[str, Any]:
         },
         "configured_but_not_implemented": {
             "browserbase_collect_integration": False,
-            "composio_search_enrichment": bool(COMPOSIO_API_KEY),
+            "composio_search_enrichment": bool(COMPOSIO_API_KEY and COMPOSIO_SEARCH_TOOL_SLUG),
         },
         "not_implemented": {
             "visual_report_url": False,
@@ -1756,7 +1949,7 @@ def build_api_capabilities() -> Dict[str, Any]:
 def build_collector_notes() -> Dict[str, str]:
     return {
         "browserbase": "Browserbase visual debug implementado en POST /debug/browser-render. Todavia no esta integrado automaticamente dentro de collectPublicPresence.",
-        "composio": "Reconocido, pero el enrichment por toolkits queda marcado como no implementado en este MVP.",
+        "composio": "Integracion Composio agregada. Usar /debug/composio-tools para descubrir tool_slug y COMPOSIO_SEARCH_TOOL_SLUG para ejecutar enrichment.",
         "visual": "GET /deliverables/screenshot/{screenshot_id}.png devuelve screenshots generados por debugBrowserRender.",
     }
 
@@ -1770,6 +1963,8 @@ async def root() -> Dict[str, Any]:
         "endpoints": [
             "GET /api/status",
             "POST /debug/browser-render",
+            "GET /debug/composio-tools",
+            "POST /debug/composio-execute",
             "POST /collect/public-presence",
             "GET /deliverables/screenshot/{screenshot_id}.png",
             "GET /deliverables/text/{report_id}.txt",
@@ -1796,6 +1991,8 @@ async def api_status(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
             "GET /api/status",
             "GET /debug/collector-config",
             "POST /debug/browser-render",
+            "GET /debug/composio-tools",
+            "POST /debug/composio-execute",
             "POST /collect/public-presence",
             "GET /deliverables/screenshot/{screenshot_id}.png",
             "GET /deliverables/text/{report_id}.txt"
@@ -1803,6 +2000,65 @@ async def api_status(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
     }
 
 
+
+@app.get("/debug/composio-tools")
+async def debug_composio_tools(
+    toolkit_slug: str = "search_api",
+    query: str = "search",
+    _: None = Depends(verify_api_key),
+) -> Dict[str, Any]:
+    result = await composio_list_tools(toolkit_slug=toolkit_slug, query=query)
+    data = result.get("data") or {}
+    items = data.get("items") if isinstance(data, dict) else None
+    tool_slugs = []
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict):
+                tool_slugs.append({
+                    "slug": item.get("slug"),
+                    "name": item.get("name"),
+                    "toolkit": (item.get("toolkit") or {}).get("slug") if isinstance(item.get("toolkit"), dict) else None,
+                    "input_parameters": item.get("input_parameters"),
+                })
+
+    return {
+        "status": "ok" if result.get("ok") else "failed",
+        "composio_status_code": result.get("status_code"),
+        "toolkit_slug": toolkit_slug,
+        "query": query,
+        "tool_slugs": tool_slugs,
+        "raw": data,
+    }
+
+
+@app.post("/debug/composio-execute")
+async def debug_composio_execute(payload: Dict[str, Any], _: None = Depends(verify_api_key)) -> Dict[str, Any]:
+    tool_slug = str(payload.get("tool_slug") or COMPOSIO_SEARCH_TOOL_SLUG or "").strip()
+    if not tool_slug:
+        raise HTTPException(status_code=400, detail="Falta tool_slug o COMPOSIO_SEARCH_TOOL_SLUG.")
+
+    user_id = str(payload.get("user_id") or COMPOSIO_DEFAULT_USER_ID or "default").strip()
+    connected_account_id = str(payload.get("connected_account_id") or COMPOSIO_CONNECTED_ACCOUNT_ID or "").strip()
+    text = payload.get("text") or payload.get("query") or "Search public web for Cotillón Chialvo Córdoba and return public URLs."
+    arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else None
+
+    result = await composio_execute_tool(
+        tool_slug=tool_slug,
+        text=str(text),
+        arguments=arguments,
+        user_id=user_id,
+        connected_account_id=connected_account_id or None,
+    )
+
+    return {
+        "status": "ok" if result.get("ok") else "failed",
+        "tool_slug": tool_slug,
+        "user_id": user_id,
+        "connected_account_id": connected_account_id or None,
+        "composio_status_code": result.get("status_code"),
+        "composio_error": result.get("error"),
+        "raw": result.get("data"),
+    }
 @app.post("/debug/browser-render")
 async def debug_browser_render(req: BrowserRenderRequest, _: None = Depends(verify_api_key)) -> Dict[str, Any]:
     return await render_browserbase_visual(req)
@@ -1933,6 +2189,7 @@ async def get_text_report(report_id: str) -> Response:
         raise HTTPException(status_code=404, detail="Text report not found or expired")
     headers = {"Content-Disposition": f"attachment; filename={item['filename']}"}
     return Response(content=item["content"], media_type="text/plain; charset=utf-8", headers=headers)
+
 
 
 
