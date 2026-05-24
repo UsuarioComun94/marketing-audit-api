@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.4"
+APP_VERSION = "public-presence-collector-mvp-0.5"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -2086,26 +2086,325 @@ def summarize_execution(reports: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _status_rank(status: Optional[str]) -> int:
+    order = {
+        "completed": 6,
+        "completed_with_limitations": 5,
+        "partial": 4,
+        "collector_not_implemented": 3,
+        "skipped_missing_api_key": 2,
+        "skipped_missing_input": 1,
+        "blocked_by_platform": 1,
+        "failed_runtime": 0,
+    }
+    return order.get(str(status or "unknown"), 0)
+
+
+def aggregate_platform_status(collector_reports: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    platforms: Dict[str, Dict[str, Any]] = {}
+    for report in collector_reports:
+        platform = report.get("platform") or "unknown"
+        bucket = platforms.setdefault(
+            platform,
+            {
+                "statuses": [],
+                "collectors": [],
+                "best_status": "unknown",
+                "aggregate_status": "unknown",
+                "confidence": "none",
+                "completed_collectors": 0,
+                "partial_collectors": 0,
+                "failed_collectors": 0,
+                "limitations": [],
+            },
+        )
+        status = str(report.get("status") or "unknown")
+        bucket["statuses"].append(status)
+        bucket["collectors"].append(report.get("collector"))
+        if status == "completed":
+            bucket["completed_collectors"] += 1
+        elif status == "partial":
+            bucket["partial_collectors"] += 1
+        elif status == "failed_runtime":
+            bucket["failed_collectors"] += 1
+        if _status_rank(status) > _status_rank(bucket.get("best_status")):
+            bucket["best_status"] = status
+            bucket["confidence"] = report.get("confidence") or bucket.get("confidence") or "none"
+        if report.get("reason"):
+            bucket["limitations"].append(report.get("reason"))
+
+    for platform, bucket in platforms.items():
+        statuses = bucket.get("statuses") or []
+        if "completed" in statuses and any(s in statuses for s in ["partial", "collector_not_implemented", "skipped_missing_api_key", "blocked_by_platform", "failed_runtime"]):
+            aggregate = "completed_with_limitations"
+        elif "completed" in statuses:
+            aggregate = "completed"
+        elif "partial" in statuses:
+            aggregate = "partial"
+        elif "collector_not_implemented" in statuses:
+            aggregate = "not_implemented"
+        elif any(s.startswith("skipped") for s in statuses):
+            aggregate = "not_collected"
+        elif "failed_runtime" in statuses:
+            aggregate = "failed"
+        else:
+            aggregate = bucket.get("best_status") or "unknown"
+        bucket["aggregate_status"] = aggregate
+        bucket["collectors"] = [c for c in dict.fromkeys([c for c in bucket.get("collectors", []) if c])]
+        bucket["limitations"] = list(dict.fromkeys([str(x) for x in bucket.get("limitations", []) if x]))[:6]
+    return platforms
+
+
 def build_metrics_summary(evidence_items: List[Dict[str, Any]], collector_reports: List[Dict[str, Any]]) -> Dict[str, Any]:
     by_platform: Dict[str, Dict[str, Any]] = {}
+    platform_status = aggregate_platform_status(collector_reports)
     for ev in evidence_items:
         platform = ev.get("platform") or "unknown"
         bucket = by_platform.setdefault(platform, {"evidence_count": 0, "data_types": []})
         bucket["evidence_count"] += 1
         bucket["data_types"].append(ev.get("data_type"))
-    for platform in by_platform:
-        by_platform[platform]["data_types"] = sorted(set([x for x in by_platform[platform]["data_types"] if x]))
-    for report in collector_reports:
-        platform = report.get("platform") or "unknown"
+    for platform in set(list(by_platform.keys()) + list(platform_status.keys())):
         bucket = by_platform.setdefault(platform, {"evidence_count": 0, "data_types": []})
-        bucket["collector_status"] = report.get("status")
-        bucket["confidence"] = report.get("confidence")
+        bucket["data_types"] = sorted(set([x for x in bucket.get("data_types", []) if x]))
+        status_info = platform_status.get(platform) or {}
+        bucket["collector_status"] = status_info.get("aggregate_status", "n/d")
+        bucket["best_collector_status"] = status_info.get("best_status", "n/d")
+        bucket["confidence"] = status_info.get("confidence", "n/d")
+        bucket["collectors"] = status_info.get("collectors", [])
+        bucket["limitations"] = status_info.get("limitations", [])
     return by_platform
+
+
+def dedupe_recovery_guide(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    priority_status = {"requires_owner_access": 4, "not_collected": 3, "partial": 2}
+    priority_importance = {"alta": 4, "media-alta": 3, "media": 2, "baja": 1}
+    selected: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for item in items:
+        platform = str(item.get("platform") or "unknown")
+        field = str(item.get("field") or item.get("label_es") or "unknown")
+        key = (platform, field)
+        current = selected.get(key)
+        score = priority_status.get(str(item.get("status")), 0) * 10 + priority_importance.get(str(item.get("importance")), 0)
+        current_score = -1
+        if current:
+            current_score = priority_status.get(str(current.get("status")), 0) * 10 + priority_importance.get(str(current.get("importance")), 0)
+        if current is None or score > current_score:
+            selected[key] = item
+    return sorted(
+        selected.values(),
+        key=lambda x: (
+            0 if x.get("requires_client_permission") else 1,
+            -priority_importance.get(str(x.get("importance")), 0),
+            str(x.get("platform") or ""),
+            str(x.get("field") or ""),
+        ),
+    )
+
+
+def _evidence_values(evidence_items: List[Dict[str, Any]], platform: Optional[str] = None, data_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    out = []
+    for ev in evidence_items:
+        if platform and ev.get("platform") != platform:
+            continue
+        if data_type and ev.get("data_type") != data_type:
+            continue
+        out.append(ev)
+    return out
+
+
+def build_public_presence_score(payload: Dict[str, Any]) -> Dict[str, Any]:
+    evidence_items = payload.get("evidence_registry") or []
+    reports = payload.get("collector_reports") or []
+    metrics = payload.get("metrics_summary") or {}
+
+    website_types = set((metrics.get("website") or {}).get("data_types") or [])
+    social_platforms = ["instagram", "facebook", "linkedin", "tiktok", "youtube", "x"]
+    social_detected = [p for p in social_platforms if (metrics.get(p) or {}).get("evidence_count", 0) > 0]
+    search_completed = any(r.get("collector") == "public_search_provider_router" and r.get("status") == "completed" for r in reports)
+    firecrawl_completed = any(r.get("collector") == "firecrawl_website_collector" and r.get("status") == "completed" for r in reports)
+    website_completed = any(r.get("platform") == "website" and r.get("status") == "completed" for r in reports)
+
+    website_score = 0
+    if website_completed:
+        website_score += 12
+    if firecrawl_completed:
+        website_score += 8
+    for dtype in ["title", "visible_text_sample", "firecrawl_markdown_sample", "services_or_products", "pricing", "website_claims", "robots_txt", "sitemap_xml"]:
+        if dtype in website_types:
+            website_score += 2
+    website_score = min(35, website_score)
+
+    search_score = 20 if search_completed else 0
+    search_evidence_count = len(_evidence_values(evidence_items, "search", "public_search_result"))
+    search_score += min(5, search_evidence_count)
+    search_score = min(25, search_score)
+
+    social_score = min(20, len(social_detected) * 4)
+    if "linkedin" in social_detected:
+        social_score += 2
+    social_score = min(20, social_score)
+
+    data_quality_score = 0
+    if len(evidence_items) >= 10:
+        data_quality_score += 5
+    if len(evidence_items) >= 20:
+        data_quality_score += 5
+    if any(ev.get("limitations") for ev in evidence_items):
+        data_quality_score += 3
+    if payload.get("field_recovery_guide"):
+        data_quality_score += 2
+    data_quality_score = min(15, data_quality_score)
+
+    guardrail_score = 5
+    total = int(min(100, website_score + search_score + social_score + data_quality_score + guardrail_score))
+
+    if total >= 75:
+        level = "fuerte"
+    elif total >= 55:
+        level = "media"
+    elif total >= 35:
+        level = "básica"
+    else:
+        level = "débil"
+
+    return {
+        "score": total,
+        "level": level,
+        "scale": "0-100",
+        "components": {
+            "website_public_evidence": website_score,
+            "search_discovery": search_score,
+            "social_public_presence": social_score,
+            "data_quality_and_traceability": data_quality_score,
+            "guardrails": guardrail_score,
+        },
+        "interpretation": "Score de presencia pública observable. No mide ventas, ROAS, CPA, CPL, conversión ni calidad de lead.",
+        "signals": {
+            "website_completed": website_completed,
+            "firecrawl_completed": firecrawl_completed,
+            "search_completed": search_completed,
+            "social_profiles_detected": social_detected,
+            "search_results_count": search_evidence_count,
+        },
+    }
+
+
+def build_executive_public_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
+    evidence_items = payload.get("evidence_registry") or []
+    metrics = payload.get("metrics_summary") or {}
+    score = payload.get("public_presence_score") or build_public_presence_score(payload)
+    assets = payload.get("assets_received") or {}
+
+    website_texts = _evidence_values(evidence_items, "website")
+    search_results = _evidence_values(evidence_items, "search", "public_search_result")
+    linkedin_samples = _evidence_values(evidence_items, "linkedin")
+
+    findings: List[Dict[str, Any]] = []
+    if (metrics.get("website") or {}).get("evidence_count", 0):
+        findings.append({
+            "area": "Sitio web",
+            "finding": "El sitio público fue leído con collector estático y Firecrawl; hay evidencia de propuesta comercial, productos, claims y páginas indexables.",
+            "evidence": "website_static_collector + firecrawl_website_collector",
+            "risk_or_opportunity": "Base suficiente para auditoría pública inicial, pero conviene profundizar páginas internas críticas como compras mayoristas, contacto y categorías.",
+        })
+    if search_results:
+        findings.append({
+            "area": "Búsqueda pública",
+            "finding": f"El router de búsqueda encontró {len(search_results)} resultados públicos relevantes usando Tavily.",
+            "evidence": ", ".join([str(ev.get("source_url")) for ev in search_results[:4] if ev.get("source_url")]),
+            "risk_or_opportunity": "Hay superficie pública suficiente para discovery; los snippets deben validarse con extracción directa antes de usarse como prueba fuerte.",
+        })
+    social_detected = [p for p in ["instagram", "facebook", "linkedin", "tiktok"] if (metrics.get(p) or {}).get("evidence_count", 0) > 0]
+    if social_detected:
+        findings.append({
+            "area": "Redes sociales",
+            "finding": "Se detectaron perfiles públicos en: " + ", ".join(social_detected) + ".",
+            "evidence": "metadata pública best-effort",
+            "risk_or_opportunity": "Las plataformas limitan métricas y posteos sin autorización; para análisis de performance hacen falta accesos o export manual del cliente.",
+        })
+    if linkedin_samples:
+        findings.append({
+            "area": "LinkedIn",
+            "finding": "LinkedIn entregó señales públicas útiles, incluyendo título, muestra textual y followers visibles cuando estuvieron disponibles.",
+            "evidence": "linkedin_public_collector",
+            "risk_or_opportunity": "Puede usarse como evidencia pública de posicionamiento B2B, no como insight interno de performance.",
+        })
+
+    recommendations = [
+        {
+            "priority": "alta",
+            "action": "Validar y extraer páginas internas descubiertas por búsqueda: sobre-nosotros, compras-mayoristas, sucursales-contacto y categorías comerciales.",
+            "impact": "alto",
+            "effort": "medio",
+            "reason": "El discovery ya encontró URLs de valor; falta convertirlas en evidencia extraída y resumida.",
+        },
+        {
+            "priority": "alta",
+            "action": "Separar claramente evidencia pública, claims declarados y datos que requieren acceso privado.",
+            "impact": "alto",
+            "effort": "bajo",
+            "reason": "Evita inferencias falsas sobre ventas, performance o calidad de lead.",
+        },
+        {
+            "priority": "media-alta",
+            "action": "Usar Browserbase visual debug para capturar screenshots de home, contacto, compras mayoristas y perfiles sociales prioritarios.",
+            "impact": "medio-alto",
+            "effort": "medio",
+            "reason": "Aporta prueba visual cuando HTML/Firecrawl no alcanza o la página depende de JavaScript.",
+        },
+        {
+            "priority": "media",
+            "action": "Solicitar al cliente exports o capturas fechadas de Meta Business Suite, LinkedIn, TikTok, GA4, Search Console y CRM si se quiere diagnosticar performance.",
+            "impact": "alto",
+            "effort": "alto",
+            "reason": "Los datos internos no son públicos y no deben inferirse desde presencia pública.",
+        },
+    ]
+
+    matrix = [
+        {"initiative": "Deduplicar y compactar datos faltantes en el reporte", "impact": "medio", "effort": "bajo"},
+        {"initiative": "Extraer páginas internas descubiertas por Tavily con Firecrawl", "impact": "alto", "effort": "medio"},
+        {"initiative": "Capturar screenshots con Browserbase para evidencia visual", "impact": "medio-alto", "effort": "medio"},
+        {"initiative": "Conectar datos privados del cliente para performance real", "impact": "muy alto", "effort": "alto"},
+    ]
+
+    return {
+        "summary": f"La presencia pública observable es {score.get('level')} ({score.get('score')}/100). El sistema encontró sitio, evidencia textual, perfiles/redes y resultados públicos; las métricas de performance siguen fuera de alcance sin acceso del cliente.",
+        "readiness_level": score.get("level"),
+        "score": score.get("score"),
+        "key_findings": findings,
+        "priority_recommendations": recommendations,
+        "impact_effort_matrix": matrix,
+        "critical_limitations": [
+            "No mide ventas, ROAS, CPA, CPL, conversión ni calidad de lead.",
+            "Los snippets de búsqueda sirven para discovery, no como prueba definitiva.",
+            "Instagram, Facebook, LinkedIn y TikTok pueden ocultar métricas o requerir login/API/autorización.",
+        ],
+        "next_data_requests": [
+            "GA4 / Search Console para tráfico orgánico, eventos y páginas principales.",
+            "Google Ads / Meta Ads para inversión, leads, costos y conversiones.",
+            "Meta Business Suite / LinkedIn / TikTok exports para alcance, interacciones y posteos.",
+            "CRM/ventas para calidad de lead, cierre y revenue.",
+        ],
+        "assets_analyzed": assets,
+    }
+
+
+def _format_json_value(value: Any, limit: int = 1200) -> str:
+    if isinstance(value, (dict, list)):
+        return truncate(json.dumps(value, ensure_ascii=False, indent=2), limit)
+    return truncate(str(value), limit)
 
 
 def build_txt_report(payload: Dict[str, Any]) -> str:
     lines: List[str] = []
-    lines.append("REPORTE DE RECOLECCIÓN DE PRESENCIA PÚBLICA")
+    score = payload.get("public_presence_score") or {}
+    audit = payload.get("executive_public_audit") or {}
+    metrics = payload.get("metrics_summary") or {}
+    recovery_deduped = dedupe_recovery_guide(payload.get("field_recovery_guide") or [])
+    evidence_items = payload.get("evidence_registry") or []
+
+    lines.append("AUDITORÍA DE PRESENCIA DIGITAL PÚBLICA")
     lines.append("=" * 58)
     lines.append("")
     lines.append(f"Empresa: {payload.get('company_name') or 'No informada'}")
@@ -2114,103 +2413,123 @@ def build_txt_report(payload: Dict[str, Any]) -> str:
     lines.append(f"Estado general: {payload.get('collection_status')}")
     lines.append(f"Hash de recolección: {payload.get('collection_hash')}")
     lines.append("")
-    lines.append("FUENTES RECIBIDAS")
+
+    lines.append("1. RESUMEN EJECUTIVO")
+    lines.append(audit.get("summary") or "No se generó resumen ejecutivo.")
+    lines.append("")
+    lines.append(f"Score de presencia pública: {score.get('score', 'n/d')}/100")
+    lines.append(f"Nivel: {score.get('level', 'n/d')}")
+    lines.append("Nota: este score mide presencia pública observable, no performance comercial.")
+    lines.append("")
+
+    lines.append("2. FUENTES RECIBIDAS")
     for k, v in (payload.get("assets_received") or {}).items():
         lines.append(f"- {k}: {v or 'no recibido'}")
     lines.append("")
-    lines.append("1. RESUMEN DE EJECUCIÓN")
+
+    lines.append("3. SCORE Y COMPONENTES")
+    for name, value in (score.get("components") or {}).items():
+        lines.append(f"- {name}: {value}")
+    signals = score.get("signals") or {}
+    if signals:
+        lines.append("Señales usadas:")
+        for k, v in signals.items():
+            lines.append(f"  - {k}: {v}")
+    lines.append("")
+
+    lines.append("4. HALLAZGOS PRINCIPALES")
+    findings = audit.get("key_findings") or []
+    if findings:
+        for idx, item in enumerate(findings, start=1):
+            lines.append(f"{idx}. {item.get('area')}: {item.get('finding')}")
+            lines.append(f"   Evidencia: {item.get('evidence')}")
+            lines.append(f"   Implicancia: {item.get('risk_or_opportunity')}")
+    else:
+        lines.append("- No se generaron hallazgos principales.")
+    lines.append("")
+
+    lines.append("5. RECOMENDACIONES PRIORIZADAS")
+    for idx, item in enumerate(audit.get("priority_recommendations") or [], start=1):
+        lines.append(f"{idx}. [{item.get('priority')}] {item.get('action')}")
+        lines.append(f"   Impacto: {item.get('impact')} | Esfuerzo: {item.get('effort')}")
+        lines.append(f"   Motivo: {item.get('reason')}")
+    lines.append("")
+
+    lines.append("6. MATRIZ IMPACTO / ESFUERZO")
+    for item in audit.get("impact_effort_matrix") or []:
+        lines.append(f"- {item.get('initiative')} | Impacto: {item.get('impact')} | Esfuerzo: {item.get('effort')}")
+    lines.append("")
+
+    lines.append("7. ESTADO POR PLATAFORMA")
+    for platform, data in metrics.items():
+        lines.append(f"\n{platform.upper()}")
+        lines.append(f"- Estado agregado: {data.get('collector_status', 'n/d')}")
+        lines.append(f"- Evidencias registradas: {data.get('evidence_count', 0)}")
+        lines.append(f"- Confianza: {data.get('confidence', 'n/d')}")
+        types = data.get("data_types") or []
+        if types:
+            lines.append("- Datos observados: " + ", ".join(types[:18]))
+        limitations = data.get("limitations") or []
+        if limitations:
+            lines.append("- Limitaciones: " + " | ".join(limitations[:3]))
+    lines.append("")
+
+    lines.append("8. EVIDENCIA DESTACADA")
+    preferred = []
+    preferred.extend(_evidence_values(evidence_items, "website", "firecrawl_markdown_sample")[:1])
+    preferred.extend(_evidence_values(evidence_items, "website", "visible_text_sample")[:1])
+    preferred.extend(_evidence_values(evidence_items, "linkedin", "public_text_sample")[:1])
+    preferred.extend(_evidence_values(evidence_items, "search", "public_search_result")[:6])
+    if not preferred:
+        preferred = evidence_items[:8]
+    for ev in preferred[:10]:
+        lines.append("")
+        lines.append(f"{ev.get('evidence_id')} | {ev.get('platform')} | {ev.get('data_type')}")
+        lines.append(f"Fuente: {ev.get('source_url') or 'n/d'}")
+        lines.append(f"Collector: {ev.get('collector')} | Confianza: {ev.get('confidence')}")
+        lines.append("Valor observado:")
+        lines.append(_format_json_value(ev.get("value"), limit=1200))
+        if ev.get("limitations"):
+            lines.append("Limitaciones: " + " | ".join([str(x) for x in ev.get("limitations", [])[:3]]))
+    lines.append("")
+
+    lines.append("9. DATOS FALTANTES CRÍTICOS")
+    critical = [x for x in recovery_deduped if x.get("requires_client_permission") or x.get("importance") in {"alta", "media-alta"}]
+    if critical:
+        for item in critical[:18]:
+            lines.append("")
+            lines.append(f"Campo: {item.get('label_es')} ({item.get('field')})")
+            lines.append(f"Plataforma: {item.get('platform')} | Importancia: {item.get('importance')} | Permiso cliente: {'sí' if item.get('requires_client_permission') else 'no'}")
+            lines.append(f"Motivo: {item.get('why_not_collected')}")
+            how = item.get("how_to_collect") or []
+            if how:
+                lines.append("Cómo recuperarlo: " + " | ".join([str(x) for x in how[:3]]))
+    else:
+        lines.append("- No se detectaron faltantes críticos.")
+    lines.append("")
+
+    lines.append("10. DATOS QUE REQUIEREN ACCESO DEL CLIENTE")
+    for item in audit.get("next_data_requests") or []:
+        lines.append(f"- {item}")
+    lines.append("")
+
+    lines.append("11. LIMITACIONES Y GUARDRAILS")
+    for item in audit.get("critical_limitations") or []:
+        lines.append(f"- {item}")
+    lines.append("- Los claims del sitio se registran como claims declarados, no como hechos verificados externamente.")
+    lines.append("- Este reporte no afirma ROAS, CPA, CPL, conversión, ventas ni calidad de lead.")
+    lines.append("")
+
+    lines.append("12. ANEXO TÉCNICO - RESUMEN DE EJECUCIÓN")
     rep = payload.get("collection_execution_report") or {}
     for key in ["collectors_attempted_or_evaluated", "collectors_completed", "collectors_partial", "collectors_skipped", "collectors_failed", "collectors_blocked_by_platform", "collectors_not_implemented"]:
         lines.append(f"- {key}: {rep.get(key, 0)}")
     lines.append("")
-    lines.append("2. ESTADO POR COLLECTOR")
+    lines.append("Collectors evaluados:")
     for r in payload.get("collector_reports", []):
-        lines.append("")
-        lines.append(f"Collector: {r.get('collector')}")
-        lines.append(f"Plataforma: {r.get('platform')}")
-        lines.append(f"Estado: {r.get('status')}")
-        lines.append(f"Herramienta usada: {r.get('tool_used')}")
-        lines.append(f"URL/input: {r.get('input_url') or 'no aplica'}")
-        if r.get("reason"):
-            lines.append(f"Motivo: {r.get('reason')}")
-        collected = r.get("collected_fields") or []
-        missing = r.get("missing_fields") or []
-        lines.append("Datos recolectados:")
-        if collected:
-            for f in collected:
-                lines.append(f"  - {f}")
-        else:
-            lines.append("  - ninguno")
-        lines.append("Datos no recolectados:")
-        if missing:
-            for f in missing[:40]:
-                lines.append(f"  - {f}")
-        else:
-            lines.append("  - ninguno")
-        how = r.get("how_to_collect_missing") or []
-        if how:
-            lines.append("Cómo obtener lo faltante:")
-            for step in how:
-                lines.append(f"  - {step}")
-    lines.append("")
-    lines.append("3. RESUMEN DE MÉTRICAS / DATOS OBSERVADOS")
-    summary = payload.get("metrics_summary") or {}
-    for platform, data in summary.items():
-        lines.append(f"\n{platform.upper()}")
-        lines.append(f"- Evidencias registradas: {data.get('evidence_count', 0)}")
-        lines.append(f"- Estado del collector: {data.get('collector_status', 'n/d')}")
-        lines.append(f"- Confianza: {data.get('confidence', 'n/d')}")
-        types = data.get("data_types") or []
-        if types:
-            lines.append("- Tipos de datos observados: " + ", ".join(types))
-    lines.append("")
-    lines.append("4. EVIDENCIA RECOLECTADA")
-    for ev in payload.get("evidence_registry", []):
-        lines.append("")
-        lines.append(f"{ev.get('evidence_id')} | {ev.get('platform')} | {ev.get('data_type')}")
-        lines.append(f"Fuente: {ev.get('source_url') or 'n/d'}")
-        lines.append(f"Collector: {ev.get('collector')}")
-        lines.append(f"Tipo de evidencia: {ev.get('evidence_type')}")
-        lines.append(f"Confianza: {ev.get('confidence')}")
-        value = ev.get("value")
-        if isinstance(value, (dict, list)):
-            value_text = json.dumps(value, ensure_ascii=False, indent=2)
-        else:
-            value_text = str(value)
-        lines.append("Valor observado:")
-        lines.append(truncate(value_text, 1400))
-        if ev.get("limitations"):
-            lines.append("Limitaciones:")
-            for lim in ev.get("limitations", []):
-                lines.append(f"  - {lim}")
-    lines.append("")
-    lines.append("5. DATOS NO RECOLECTADOS Y CÓMO RECUPERARLOS")
-    for item in payload.get("field_recovery_guide", []):
-        lines.append("")
-        lines.append(f"Campo: {item.get('label_es')} ({item.get('field')})")
-        lines.append(f"Plataforma: {item.get('platform')}")
-        lines.append(f"Estado: {item.get('status')}")
-        lines.append(f"Por qué no se recopiló: {item.get('why_not_collected')}")
-        lines.append(f"Importancia: {item.get('importance')}")
-        lines.append(f"Requiere permiso del cliente: {'sí' if item.get('requires_client_permission') else 'no'}")
-        lines.append("Cómo se puede recopilar:")
-        for step in item.get("how_to_collect", [])[:8]:
-            lines.append(f"  - {step}")
-    lines.append("")
-    lines.append("6. DATOS QUE REQUIEREN ACCESO DEL CLIENTE")
-    lines.append("- Google Analytics / GA4: tráfico, eventos, conversiones, fuentes y landings.")
-    lines.append("- Search Console: queries, clicks, impresiones, CTR, posición media y páginas orgánicas.")
-    lines.append("- Google Ads / Meta Ads: inversión, impresiones, clics, leads, conversiones y costos.")
-    lines.append("- Instagram/Facebook/LinkedIn/TikTok Insights: alcance, impresiones, demografía, visitas, guardados y clicks.")
-    lines.append("- CRM/ventas: calidad de lead, contacto efectivo, cierre, ventas y revenue.")
-    lines.append("")
-    lines.append("7. LIMITACIONES DEL REPORTE")
-    lines.append("- Este archivo recopila presencia pública observable; no diagnostica performance comercial.")
-    lines.append("- No afirma ROAS, CPA, CPL real, conversión, ventas ni calidad de lead.")
-    lines.append("- Los datos de redes sociales públicas pueden estar incompletos por restricciones de plataforma.")
-    lines.append("- Los claims del sitio se registran como claims declarados, no como hechos verificados externamente.")
-    return "\n".join(lines) + "\n"
+        lines.append(f"- {r.get('collector')} | plataforma={r.get('platform')} | estado={r.get('status')} | herramienta={r.get('tool_used')}")
 
+    return "\n".join(lines) + "\n"
 
 
 def build_api_capabilities() -> Dict[str, Any]:
@@ -2224,6 +2543,8 @@ def build_api_capabilities() -> Dict[str, Any]:
             "text_report": True,
             "public_social_limited": True,
             "search_provider_router": bool(TAVILY_API_KEY or SERPER_API_KEY or (COMPOSIO_API_KEY and COMPOSIO_SEARCH_TOOL_SLUG)),
+            "executive_public_audit_report": True,
+            "public_presence_score": True,
         },
         "configured_but_not_implemented": {
             "browserbase_collect_integration": False,
@@ -2251,6 +2572,7 @@ def build_collector_notes() -> Dict[str, str]:
     return {
         "browserbase": "Browserbase visual debug implementado en POST /debug/browser-render. Todavia no esta integrado automaticamente dentro de collectPublicPresence.",
         "search": "Router de busqueda implementado: Tavily -> Serper -> Composio/SearchApi como fallback final.",
+        "report": "Reporte ejecutivo v0.5: score de presencia publica, hallazgos, recomendaciones y anexo tecnico.",
         "composio": "Integracion Composio mantenida para debug y fallback final. SEARCH_API_SEARCH puede fallar por cuota 429 de SearchApi.io.",
         "visual": "GET /deliverables/screenshot/{screenshot_id}.png devuelve screenshots generados por debugBrowserRender.",
     }
@@ -2464,7 +2786,7 @@ async def collect_public_presence(req: PublicPresenceCollectRequest, _: None = D
     summaries["search_enrichment"] = search_result["summary"]
 
     execution = summarize_execution(reports)
-    recovery = build_recovery_guide(reports)
+    recovery = dedupe_recovery_guide(build_recovery_guide(reports))
     metrics_summary = build_metrics_summary(evidence.items, reports)
     unavailable_data = [
         {"platform": g.get("platform"), "field": g.get("field"), "reason": g.get("why_not_collected")}
@@ -2472,6 +2794,22 @@ async def collect_public_presence(req: PublicPresenceCollectRequest, _: None = D
         if g.get("status") in {"not_collected", "requires_owner_access"}
     ]
     requires_owner_access = [g for g in recovery if g.get("requires_client_permission")]
+
+    temp_payload_for_analysis: Dict[str, Any] = {
+        "collection_status": execution["overall_status"],
+        "collector_version": APP_VERSION,
+        "created_at": created_at,
+        "company_name": req.company_name,
+        "assets_received": assets,
+        "collection_execution_report": execution,
+        "collector_reports": reports,
+        "evidence_registry": evidence.items,
+        "metrics_summary": metrics_summary,
+        "field_recovery_guide": recovery,
+    }
+    public_presence_score = build_public_presence_score(temp_payload_for_analysis)
+    temp_payload_for_analysis["public_presence_score"] = public_presence_score
+    executive_public_audit = build_executive_public_audit(temp_payload_for_analysis)
 
     response_payload: Dict[str, Any] = {
         "collection_status": execution["overall_status"],
@@ -2485,13 +2823,15 @@ async def collect_public_presence(req: PublicPresenceCollectRequest, _: None = D
         "collector_reports": reports,
         "evidence_registry": evidence.items,
         "metrics_summary": metrics_summary,
+        "public_presence_score": public_presence_score,
+        "executive_public_audit": executive_public_audit,
         "field_recovery_guide": recovery,
         "unavailable_data": unavailable_data,
         "requires_owner_access": requires_owner_access,
         "tool_summaries": summaries,
         "txt_report": {},
         "non_analysis_guards": [
-            "Este endpoint solo recolecta presencia pública; no genera diagnóstico comercial.",
+            "Este endpoint genera auditoria de presencia publica; no diagnostico de performance comercial privada.",
             "No afirmar performance, ROAS, CPA, CPL, conversión, ventas ni calidad de lead con este output.",
             "Los datos no recolectados deben explicarse mediante field_recovery_guide.",
         ],
