@@ -554,7 +554,7 @@ def extract_meta_and_links(doc: str, base_url: str) -> Dict[str, Any]:
             og[str(prop)] = collapse_ws(str(content))
     out["open_graph"] = og
 
-    out["structured_data_count"] = len(soup.find_all("script", attrs={"type": re.compile("ld\+json", re.I)}))
+    out["structured_data_count"] = len(soup.find_all("script", attrs={"type": re.compile(r"ld\+json", re.I)}))
 
     scripts = []
     for s in soup.find_all("script", src=True):
@@ -2189,6 +2189,7 @@ async def get_text_report(report_id: str) -> Response:
         raise HTTPException(status_code=404, detail="Text report not found or expired")
     headers = {"Content-Disposition": f"attachment; filename={item['filename']}"}
     return Response(content=item["content"], media_type="text/plain; charset=utf-8", headers=headers)
+
 
 
 
