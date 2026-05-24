@@ -1,0 +1,986 @@
+﻿{
+    "openapi":  "3.1.0",
+    "info":  {
+                 "title":  "Marketing Auditor - Public Presence Collector",
+                 "description":  "Recolecta presencia publica, evidencia visual y reportes sin inventar datos privados.",
+                 "version":  "public-presence-collector-mvp-0.3"
+             },
+    "servers":  [
+                    {
+                        "url":  "https://marketing-audit-api.onrender.com"
+                    }
+                ],
+    "paths":  {
+                  "/api/status":  {
+                                      "get":  {
+                                                  "summary":  "Ver estado de la API",
+                                                  "operationId":  "getApiStatus",
+                                                  "description":  "Devuelve estado, version, herramientas, capacidades y limites actuales.",
+                                                  "security":  [
+                                                                   {
+                                                                       "ApiKeyAuth":  [
+
+                                                                                      ]
+                                                                   }
+                                                               ],
+                                                  "responses":  {
+                                                                    "200":  {
+                                                                                "description":  "Estado de la API",
+                                                                                "content":  {
+                                                                                                "application/json":  {
+                                                                                                                         "schema":  {
+                                                                                                                                        "$ref":  "#/components/schemas/ApiStatusResponse"
+                                                                                                                                    }
+                                                                                                                     }
+                                                                                            }
+                                                                            }
+                                                                }
+                                              }
+                                  },
+                  "/debug/collector-config":  {
+                                                  "get":  {
+                                                              "summary":  "Ver configuracion disponible del collector",
+                                                              "operationId":  "getCollectorConfig",
+                                                              "description":  "Devuelve herramientas configuradas y collectors disponibles, sin exponer secretos.",
+                                                              "security":  [
+                                                                               {
+                                                                                   "ApiKeyAuth":  [
+
+                                                                                                  ]
+                                                                               }
+                                                                           ],
+                                                              "responses":  {
+                                                                                "200":  {
+                                                                                            "description":  "Configuracion del collector",
+                                                                                            "content":  {
+                                                                                                            "application/json":  {
+                                                                                                                                     "schema":  {
+                                                                                                                                                    "$ref":  "#/components/schemas/CollectorConfigResponse"
+                                                                                                                                                }
+                                                                                                                                 }
+                                                                                                        }
+                                                                                        }
+                                                                            }
+                                                          }
+                                              },
+                  "/debug/browser-render":  {
+                                                "post":  {
+                                                             "summary":  "Renderizar URL y recolectar evidencia visual",
+                                                             "operationId":  "debugBrowserRender",
+                                                             "description":  "Renderiza una URL y devuelve screenshot, CTAs, links, forms, imagenes y texto visible.",
+                                                             "security":  [
+                                                                              {
+                                                                                  "ApiKeyAuth":  [
+
+                                                                                                 ]
+                                                                              }
+                                                                          ],
+                                                             "requestBody":  {
+                                                                                 "required":  true,
+                                                                                 "content":  {
+                                                                                                 "application/json":  {
+                                                                                                                          "schema":  {
+                                                                                                                                         "$ref":  "#/components/schemas/BrowserRenderRequest"
+                                                                                                                                     }
+                                                                                                                      }
+                                                                                             }
+                                                                             },
+                                                             "responses":  {
+                                                                               "200":  {
+                                                                                           "description":  "Resultado de render visual",
+                                                                                           "content":  {
+                                                                                                           "application/json":  {
+                                                                                                                                    "schema":  {
+                                                                                                                                                   "$ref":  "#/components/schemas/BrowserRenderResponse"
+                                                                                                                                               }
+                                                                                                                                }
+                                                                                                       }
+                                                                                       }
+                                                                           }
+                                                         }
+                                            },
+                  "/collect/public-presence":  {
+                                                   "post":  {
+                                                                "summary":  "Recolectar presencia publica",
+                                                                "operationId":  "collectPublicPresence",
+                                                                "description":  "Recolecta datos publicos observables desde sitio web y redes provistas.",
+                                                                "security":  [
+                                                                                 {
+                                                                                     "ApiKeyAuth":  [
+
+                                                                                                    ]
+                                                                                 }
+                                                                             ],
+                                                                "requestBody":  {
+                                                                                    "required":  true,
+                                                                                    "content":  {
+                                                                                                    "application/json":  {
+                                                                                                                             "schema":  {
+                                                                                                                                            "$ref":  "#/components/schemas/PublicPresenceCollectRequest"
+                                                                                                                                        }
+                                                                                                                         }
+                                                                                                }
+                                                                                },
+                                                                "responses":  {
+                                                                                  "200":  {
+                                                                                              "description":  "Resultado de recoleccion publica",
+                                                                                              "content":  {
+                                                                                                              "application/json":  {
+                                                                                                                                       "schema":  {
+                                                                                                                                                      "$ref":  "#/components/schemas/PublicPresenceCollectResponse"
+                                                                                                                                                  }
+                                                                                                                                   }
+                                                                                                          }
+                                                                                          }
+                                                                              }
+                                                            }
+                                               },
+                  "/deliverables/screenshot/{screenshot_id}.png":  {
+                                                                       "get":  {
+                                                                                   "summary":  "Descargar screenshot PNG",
+                                                                                   "operationId":  "getScreenshot",
+                                                                                   "description":  "Devuelve el screenshot PNG generado por debugBrowserRender.",
+                                                                                   "security":  [
+                                                                                                    {
+                                                                                                        "ApiKeyAuth":  [
+
+                                                                                                                       ]
+                                                                                                    }
+                                                                                                ],
+                                                                                   "parameters":  [
+                                                                                                      {
+                                                                                                          "name":  "screenshot_id",
+                                                                                                          "in":  "path",
+                                                                                                          "required":  true,
+                                                                                                          "description":  "ID del screenshot generado por debugBrowserRender.",
+                                                                                                          "schema":  {
+                                                                                                                         "type":  "string"
+                                                                                                                     }
+                                                                                                      }
+                                                                                                  ],
+                                                                                   "responses":  {
+                                                                                                     "200":  {
+                                                                                                                 "description":  "Screenshot PNG",
+                                                                                                                 "content":  {
+                                                                                                                                 "image/png":  {
+                                                                                                                                                   "schema":  {
+                                                                                                                                                                  "type":  "string",
+                                                                                                                                                                  "format":  "binary"
+                                                                                                                                                              }
+                                                                                                                                               }
+                                                                                                                             }
+                                                                                                             }
+                                                                                                 }
+                                                                               }
+                                                                   },
+                  "/deliverables/text/{report_id}.txt":  {
+                                                             "get":  {
+                                                                         "summary":  "Descargar reporte TXT",
+                                                                         "operationId":  "getTextReport",
+                                                                         "description":  "Devuelve el reporte TXT generado por collectPublicPresence.",
+                                                                         "security":  [
+                                                                                          {
+                                                                                              "ApiKeyAuth":  [
+
+                                                                                                             ]
+                                                                                          }
+                                                                                      ],
+                                                                         "parameters":  [
+                                                                                            {
+                                                                                                "name":  "report_id",
+                                                                                                "in":  "path",
+                                                                                                "required":  true,
+                                                                                                "description":  "ID del reporte TXT generado por collectPublicPresence.",
+                                                                                                "schema":  {
+                                                                                                               "type":  "string"
+                                                                                                           }
+                                                                                            }
+                                                                                        ],
+                                                                         "responses":  {
+                                                                                           "200":  {
+                                                                                                       "description":  "Reporte TXT",
+                                                                                                       "content":  {
+                                                                                                                       "text/plain":  {
+                                                                                                                                          "schema":  {
+                                                                                                                                                         "type":  "string"
+                                                                                                                                                     }
+                                                                                                                                      }
+                                                                                                                   }
+                                                                                                   }
+                                                                                       }
+                                                                     }
+                                                         },
+                  "/debug/composio-tools":  {
+                                                "get":  {
+                                                            "operationId":  "debugComposioTools",
+                                                            "summary":  "List available Composio tools",
+                                                            "description":  "Debug endpoint. Lists available Composio tools for a toolkit/query. Use only for backend validation.",
+                                                            "security":  [
+                                                                             {
+                                                                                 "ApiKeyAuth":  [
+
+                                                                                                ]
+                                                                             }
+                                                                         ],
+                                                            "parameters":  [
+                                                                               {
+                                                                                   "name":  "toolkit_slug",
+                                                                                   "in":  "query",
+                                                                                   "required":  false,
+                                                                                   "schema":  {
+                                                                                                  "type":  "string",
+                                                                                                  "default":  "search_api"
+                                                                                              }
+                                                                               },
+                                                                               {
+                                                                                   "name":  "query",
+                                                                                   "in":  "query",
+                                                                                   "required":  false,
+                                                                                   "schema":  {
+                                                                                                  "type":  "string",
+                                                                                                  "default":  "search"
+                                                                                              }
+                                                                               }
+                                                                           ],
+                                                            "responses":  {
+                                                                              "200":  {
+                                                                                          "description":  "Composio tools list"
+                                                                                      }
+                                                                          }
+                                                        }
+                                            },
+                  "/debug/composio-execute":  {
+                                                  "post":  {
+                                                               "operationId":  "debugComposioExecute",
+                                                               "summary":  "Execute a Composio tool",
+                                                               "description":  "Debug endpoint. Executes a Composio tool through the Render backend. Use only for validation.",
+                                                               "security":  [
+                                                                                {
+                                                                                    "ApiKeyAuth":  [
+
+                                                                                                   ]
+                                                                                }
+                                                                            ],
+                                                               "requestBody":  {
+                                                                                   "required":  true,
+                                                                                   "content":  {
+                                                                                                   "application/json":  {
+                                                                                                                            "schema":  {
+                                                                                                                                           "type":  "object",
+                                                                                                                                           "required":  [
+                                                                                                                                                            "tool_slug"
+                                                                                                                                                        ],
+                                                                                                                                           "properties":  {
+                                                                                                                                                              "tool_slug":  {
+                                                                                                                                                                                "type":  "string",
+                                                                                                                                                                                "example":  "SEARCH_API_SEARCH"
+                                                                                                                                                                            },
+                                                                                                                                                              "user_id":  {
+                                                                                                                                                                              "type":  "string",
+                                                                                                                                                                              "example":  "default"
+                                                                                                                                                                          },
+                                                                                                                                                              "connected_account_id":  {
+                                                                                                                                                                                           "type":  "string"
+                                                                                                                                                                                       },
+                                                                                                                                                              "query":  {
+                                                                                                                                                                            "type":  "string",
+                                                                                                                                                                            "example":  "Cotillon Chialvo Cordoba"
+                                                                                                                                                                        },
+                                                                                                                                                              "text":  {
+                                                                                                                                                                           "type":  "string"
+                                                                                                                                                                       },
+                                                                                                                                                              "arguments":  {
+                                                                                                                                                                                "type":  "object",
+                                                                                                                                                                                "additionalProperties":  true,
+                                                                                                                                                                                "example":  {
+                                                                                                                                                                                                "engine":  "google",
+                                                                                                                                                                                                "q":  "Cotillon Chialvo Cordoba",
+                                                                                                                                                                                                "gl":  "ar",
+                                                                                                                                                                                                "hl":  "es",
+                                                                                                                                                                                                "num":  10
+                                                                                                                                                                                            }
+                                                                                                                                                                            }
+                                                                                                                                                          }
+                                                                                                                                       }
+                                                                                                                        }
+                                                                                               }
+                                                                               },
+                                                               "responses":  {
+                                                                                 "200":  {
+                                                                                             "description":  "Composio execution result"
+                                                                                         },
+                                                                                 "400":  {
+                                                                                             "description":  "Invalid request"
+                                                                                         },
+                                                                                 "401":  {
+                                                                                             "description":  "Invalid API key"
+                                                                                         }
+                                                                             }
+                                                           }
+                                              }
+              },
+    "components":  {
+                       "securitySchemes":  {
+                                               "ApiKeyAuth":  {
+                                                                  "type":  "apiKey",
+                                                                  "in":  "header",
+                                                                  "name":  "X-API-Key"
+                                                              }
+                                           },
+                       "schemas":  {
+                                       "ToolConfig":  {
+                                                          "type":  "object",
+                                                          "properties":  {
+                                                                             "firecrawl":  {
+                                                                                               "type":  "boolean"
+                                                                                           },
+                                                                             "browserbase":  {
+                                                                                                 "type":  "boolean"
+                                                                                             },
+                                                                             "composio":  {
+                                                                                              "type":  "boolean"
+                                                                                          },
+                                                                             "youtube":  {
+                                                                                             "type":  "boolean"
+                                                                                         }
+                                                                         },
+                                                          "additionalProperties":  false
+                                                      },
+                                       "ApiCapabilities":  {
+                                                               "type":  "object",
+                                                               "properties":  {
+                                                                                  "current_scope":  {
+                                                                                                        "type":  "string"
+                                                                                                    },
+                                                                                  "implemented":  {
+                                                                                                      "type":  "object",
+                                                                                                      "properties":  {
+                                                                                                                         "website_static":  {
+                                                                                                                                                "type":  "boolean"
+                                                                                                                                            },
+                                                                                                                         "firecrawl_website":  {
+                                                                                                                                                   "type":  "boolean"
+                                                                                                                                               },
+                                                                                                                         "browserbase_visual_debug":  {
+                                                                                                                                                          "type":  "boolean"
+                                                                                                                                                      },
+                                                                                                                         "youtube_data_api":  {
+                                                                                                                                                  "type":  "boolean"
+                                                                                                                                              },
+                                                                                                                         "text_report":  {
+                                                                                                                                             "type":  "boolean"
+                                                                                                                                         },
+                                                                                                                         "public_social_limited":  {
+                                                                                                                                                       "type":  "boolean"
+                                                                                                                                                   }
+                                                                                                                     },
+                                                                                                      "additionalProperties":  true
+                                                                                                  },
+                                                                                  "configured_but_not_implemented":  {
+                                                                                                                         "type":  "object",
+                                                                                                                         "properties":  {
+                                                                                                                                            "browserbase_collect_integration":  {
+                                                                                                                                                                                    "type":  "boolean"
+                                                                                                                                                                                },
+                                                                                                                                            "composio_search_enrichment":  {
+                                                                                                                                                                               "type":  "boolean"
+                                                                                                                                                                           }
+                                                                                                                                        },
+                                                                                                                         "additionalProperties":  true
+                                                                                                                     },
+                                                                                  "not_implemented":  {
+                                                                                                          "type":  "object",
+                                                                                                          "properties":  {
+                                                                                                                             "visual_report_url":  {
+                                                                                                                                                       "type":  "boolean"
+                                                                                                                                                   },
+                                                                                                                             "visual_quality_summary_integrated":  {
+                                                                                                                                                                       "type":  "boolean"
+                                                                                                                                                                   },
+                                                                                                                             "analysis_trace":  {
+                                                                                                                                                    "type":  "boolean"
+                                                                                                                                                },
+                                                                                                                             "commercial_score":  {
+                                                                                                                                                      "type":  "boolean"
+                                                                                                                                                  },
+                                                                                                                             "funnel_blueprint":  {
+                                                                                                                                                      "type":  "boolean"
+                                                                                                                                                  },
+                                                                                                                             "private_performance_audit":  {
+                                                                                                                                                               "type":  "boolean"
+                                                                                                                                                           },
+                                                                                                                             "automatic_mercado_libre_scraping":  {
+                                                                                                                                                                      "type":  "boolean"
+                                                                                                                                                                  }
+                                                                                                                         },
+                                                                                                          "additionalProperties":  true
+                                                                                                      },
+                                                                                  "guards":  {
+                                                                                                 "type":  "array",
+                                                                                                 "items":  {
+                                                                                                               "type":  "string"
+                                                                                                           }
+                                                                                             }
+                                                                              },
+                                                               "required":  [
+                                                                                "current_scope",
+                                                                                "implemented",
+                                                                                "configured_but_not_implemented",
+                                                                                "not_implemented",
+                                                                                "guards"
+                                                                            ],
+                                                               "additionalProperties":  true
+                                                           },
+                                       "ApiStatusResponse":  {
+                                                                 "type":  "object",
+                                                                 "properties":  {
+                                                                                    "status":  {
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                    "service":  {
+                                                                                                    "type":  "string"
+                                                                                                },
+                                                                                    "version":  {
+                                                                                                    "type":  "string"
+                                                                                                },
+                                                                                    "public_base_url":  {
+                                                                                                            "type":  "string"
+                                                                                                        },
+                                                                                    "configured_tools":  {
+                                                                                                             "$ref":  "#/components/schemas/ToolConfig"
+                                                                                                         },
+                                                                                    "capabilities":  {
+                                                                                                         "$ref":  "#/components/schemas/ApiCapabilities"
+                                                                                                     },
+                                                                                    "endpoints":  {
+                                                                                                      "type":  "array",
+                                                                                                      "items":  {
+                                                                                                                    "type":  "string"
+                                                                                                                }
+                                                                                                  }
+                                                                                },
+                                                                 "required":  [
+                                                                                  "status",
+                                                                                  "service",
+                                                                                  "version",
+                                                                                  "configured_tools",
+                                                                                  "capabilities",
+                                                                                  "endpoints"
+                                                                              ],
+                                                                 "additionalProperties":  true
+                                                             },
+                                       "CollectorConfigResponse":  {
+                                                                       "type":  "object",
+                                                                       "properties":  {
+                                                                                          "version":  {
+                                                                                                          "type":  "string"
+                                                                                                      },
+                                                                                          "configured_tools":  {
+                                                                                                                   "$ref":  "#/components/schemas/ToolConfig"
+                                                                                                               },
+                                                                                          "available_environment_keys":  {
+                                                                                                                             "$ref":  "#/components/schemas/ToolConfig"
+                                                                                                                         },
+                                                                                          "collectors":  {
+                                                                                                             "type":  "array",
+                                                                                                             "items":  {
+                                                                                                                           "type":  "string"
+                                                                                                                       }
+                                                                                                         },
+                                                                                          "notes":  {
+                                                                                                        "type":  "object",
+                                                                                                        "properties":  {
+                                                                                                                           "browserbase":  {
+                                                                                                                                               "type":  "string"
+                                                                                                                                           },
+                                                                                                                           "composio":  {
+                                                                                                                                            "type":  "string"
+                                                                                                                                        },
+                                                                                                                           "visual":  {
+                                                                                                                                          "type":  "string"
+                                                                                                                                      }
+                                                                                                                       },
+                                                                                                        "additionalProperties":  true
+                                                                                                    }
+                                                                                      },
+                                                                       "required":  [
+                                                                                        "version",
+                                                                                        "configured_tools"
+                                                                                    ],
+                                                                       "additionalProperties":  true
+                                                                   },
+                                       "AssetsInput":  {
+                                                           "type":  "object",
+                                                           "properties":  {
+                                                                              "website":  {
+                                                                                              "type":  [
+                                                                                                           "string",
+                                                                                                           "null"
+                                                                                                       ]
+                                                                                          },
+                                                                              "instagram":  {
+                                                                                                "type":  [
+                                                                                                             "string",
+                                                                                                             "null"
+                                                                                                         ]
+                                                                                            },
+                                                                              "facebook":  {
+                                                                                               "type":  [
+                                                                                                            "string",
+                                                                                                            "null"
+                                                                                                        ]
+                                                                                           },
+                                                                              "linkedin":  {
+                                                                                               "type":  [
+                                                                                                            "string",
+                                                                                                            "null"
+                                                                                                        ]
+                                                                                           },
+                                                                              "youtube":  {
+                                                                                              "type":  [
+                                                                                                           "string",
+                                                                                                           "null"
+                                                                                                       ]
+                                                                                          },
+                                                                              "tiktok":  {
+                                                                                             "type":  [
+                                                                                                          "string",
+                                                                                                          "null"
+                                                                                                      ]
+                                                                                         },
+                                                                              "x":  {
+                                                                                        "type":  [
+                                                                                                     "string",
+                                                                                                     "null"
+                                                                                                 ]
+                                                                                    }
+                                                                          },
+                                                           "additionalProperties":  false
+                                                       },
+                                       "PublicPresenceCollectRequest":  {
+                                                                            "type":  "object",
+                                                                            "properties":  {
+                                                                                               "company_name":  {
+                                                                                                                    "type":  [
+                                                                                                                                 "string",
+                                                                                                                                 "null"
+                                                                                                                             ]
+                                                                                                                },
+                                                                                               "website":  {
+                                                                                                               "type":  [
+                                                                                                                            "string",
+                                                                                                                            "null"
+                                                                                                                        ]
+                                                                                                           },
+                                                                                               "website_url":  {
+                                                                                                                   "type":  [
+                                                                                                                                "string",
+                                                                                                                                "null"
+                                                                                                                            ]
+                                                                                                               },
+                                                                                               "instagram":  {
+                                                                                                                 "type":  [
+                                                                                                                              "string",
+                                                                                                                              "null"
+                                                                                                                          ]
+                                                                                                             },
+                                                                                               "facebook":  {
+                                                                                                                "type":  [
+                                                                                                                             "string",
+                                                                                                                             "null"
+                                                                                                                         ]
+                                                                                                            },
+                                                                                               "linkedin":  {
+                                                                                                                "type":  [
+                                                                                                                             "string",
+                                                                                                                             "null"
+                                                                                                                         ]
+                                                                                                            },
+                                                                                               "youtube":  {
+                                                                                                               "type":  [
+                                                                                                                            "string",
+                                                                                                                            "null"
+                                                                                                                        ]
+                                                                                                           },
+                                                                                               "tiktok":  {
+                                                                                                              "type":  [
+                                                                                                                           "string",
+                                                                                                                           "null"
+                                                                                                                       ]
+                                                                                                          },
+                                                                                               "x":  {
+                                                                                                         "type":  [
+                                                                                                                      "string",
+                                                                                                                      "null"
+                                                                                                                  ]
+                                                                                                     },
+                                                                                               "assets":  {
+                                                                                                              "anyOf":  [
+                                                                                                                            {
+                                                                                                                                "$ref":  "#/components/schemas/AssetsInput"
+                                                                                                                            },
+                                                                                                                            {
+                                                                                                                                "type":  "null"
+                                                                                                                            }
+                                                                                                                        ]
+                                                                                                          },
+                                                                                               "collection_depth":  {
+                                                                                                                        "type":  "string",
+                                                                                                                        "enum":  [
+                                                                                                                                     "basic",
+                                                                                                                                     "standard"
+                                                                                                                                 ],
+                                                                                                                        "default":  "basic"
+                                                                                                                    },
+                                                                                               "max_website_pages":  {
+                                                                                                                         "type":  "integer",
+                                                                                                                         "minimum":  1,
+                                                                                                                         "maximum":  10,
+                                                                                                                         "default":  5
+                                                                                                                     }
+                                                                                           },
+                                                                            "additionalProperties":  false
+                                                                        },
+                                       "BrowserRenderRequest":  {
+                                                                    "type":  "object",
+                                                                    "properties":  {
+                                                                                       "url":  {
+                                                                                                   "type":  "string",
+                                                                                                   "description":  "URL publica a renderizar."
+                                                                                               },
+                                                                                       "viewport":  {
+                                                                                                        "type":  "string",
+                                                                                                        "enum":  [
+                                                                                                                     "desktop",
+                                                                                                                     "mobile"
+                                                                                                                 ],
+                                                                                                        "default":  "desktop"
+                                                                                                    },
+                                                                                       "wait_ms":  {
+                                                                                                       "type":  "integer",
+                                                                                                       "minimum":  0,
+                                                                                                       "maximum":  8000,
+                                                                                                       "default":  1500
+                                                                                                   },
+                                                                                       "timeout_ms":  {
+                                                                                                          "type":  "integer",
+                                                                                                          "minimum":  5000,
+                                                                                                          "maximum":  90000,
+                                                                                                          "default":  30000
+                                                                                                      },
+                                                                                       "full_page":  {
+                                                                                                         "type":  "boolean",
+                                                                                                         "description":  "Si true captura pagina completa; si false solo viewport.",
+                                                                                                         "default":  true
+                                                                                                     }
+                                                                                   },
+                                                                    "required":  [
+                                                                                     "url"
+                                                                                 ],
+                                                                    "additionalProperties":  false
+                                                                },
+                                       "ScreenshotInfo":  {
+                                                              "type":  "object",
+                                                              "properties":  {
+                                                                                 "available":  {
+                                                                                                   "type":  "boolean"
+                                                                                               },
+                                                                                 "screenshot_id":  {
+                                                                                                       "type":  [
+                                                                                                                    "string",
+                                                                                                                    "null"
+                                                                                                                ]
+                                                                                                   },
+                                                                                 "screenshot_url":  {
+                                                                                                        "type":  [
+                                                                                                                     "string",
+                                                                                                                     "null"
+                                                                                                                 ]
+                                                                                                    },
+                                                                                 "media_type":  {
+                                                                                                    "type":  [
+                                                                                                                 "string",
+                                                                                                                 "null"
+                                                                                                             ]
+                                                                                                }
+                                                                             },
+                                                              "required":  [
+                                                                               "available"
+                                                                           ],
+                                                              "additionalProperties":  true
+                                                          },
+                                       "ViewportInfo":  {
+                                                            "type":  "object",
+                                                            "properties":  {
+                                                                               "name":  {
+                                                                                            "type":  "string"
+                                                                                        },
+                                                                               "width":  {
+                                                                                             "type":  "integer"
+                                                                                         },
+                                                                               "height":  {
+                                                                                              "type":  "integer"
+                                                                                          },
+                                                                               "full_page":  {
+                                                                                                 "type":  "boolean"
+                                                                                             }
+                                                                           },
+                                                            "additionalProperties":  true
+                                                        },
+                                       "VisualDomSummary":  {
+                                                                "type":  "object",
+                                                                "properties":  {
+                                                                                   "text_sample":  {
+                                                                                                       "type":  "string"
+                                                                                                   },
+                                                                                   "buttons_text":  {
+                                                                                                        "type":  "array",
+                                                                                                        "items":  {
+                                                                                                                      "type":  "string"
+                                                                                                                  }
+                                                                                                    },
+                                                                                   "visible_ctas":  {
+                                                                                                        "type":  "array",
+                                                                                                        "items":  {
+                                                                                                                      "type":  "string"
+                                                                                                                  }
+                                                                                                    },
+                                                                                   "links_count":  {
+                                                                                                       "type":  "integer"
+                                                                                                   },
+                                                                                   "forms_count":  {
+                                                                                                       "type":  "integer"
+                                                                                                   },
+                                                                                   "images_count":  {
+                                                                                                        "type":  "integer"
+                                                                                                    },
+                                                                                   "images_without_alt_count":  {
+                                                                                                                    "type":  "integer"
+                                                                                                                },
+                                                                                   "image_alt_samples":  {
+                                                                                                             "type":  "array",
+                                                                                                             "items":  {
+                                                                                                                           "type":  "string"
+                                                                                                                       }
+                                                                                                         },
+                                                                                   "headings":  {
+                                                                                                    "type":  "array",
+                                                                                                    "items":  {
+                                                                                                                  "type":  "string"
+                                                                                                              }
+                                                                                                },
+                                                                                   "meta_description":  {
+                                                                                                            "type":  [
+                                                                                                                         "string",
+                                                                                                                         "null"
+                                                                                                                     ]
+                                                                                                        },
+                                                                                   "structured_data_count":  {
+                                                                                                                 "type":  [
+                                                                                                                              "integer",
+                                                                                                                              "null"
+                                                                                                                          ]
+                                                                                                             },
+                                                                                   "open_graph":  {
+                                                                                                      "type":  "object",
+                                                                                                      "properties":  {
+                                                                                                                         "title":  {
+                                                                                                                                       "type":  [
+                                                                                                                                                    "string",
+                                                                                                                                                    "null"
+                                                                                                                                                ]
+                                                                                                                                   },
+                                                                                                                         "description":  {
+                                                                                                                                             "type":  [
+                                                                                                                                                          "string",
+                                                                                                                                                          "null"
+                                                                                                                                                      ]
+                                                                                                                                         },
+                                                                                                                         "image":  {
+                                                                                                                                       "type":  [
+                                                                                                                                                    "string",
+                                                                                                                                                    "null"
+                                                                                                                                                ]
+                                                                                                                                   }
+                                                                                                                     },
+                                                                                                      "additionalProperties":  true
+                                                                                                  }
+                                                                               },
+                                                                "required":  [
+                                                                                 "text_sample",
+                                                                                 "buttons_text",
+                                                                                 "visible_ctas",
+                                                                                 "links_count",
+                                                                                 "forms_count",
+                                                                                 "images_count",
+                                                                                 "images_without_alt_count"
+                                                                             ],
+                                                                "additionalProperties":  true
+                                                            },
+                                       "BrowserRenderResponse":  {
+                                                                     "type":  "object",
+                                                                     "properties":  {
+                                                                                        "status":  {
+                                                                                                       "type":  "string"
+                                                                                                   },
+                                                                                        "collector":  {
+                                                                                                          "type":  "string"
+                                                                                                      },
+                                                                                        "url_requested":  {
+                                                                                                              "type":  [
+                                                                                                                           "string",
+                                                                                                                           "null"
+                                                                                                                       ]
+                                                                                                          },
+                                                                                        "final_url":  {
+                                                                                                          "type":  [
+                                                                                                                       "string",
+                                                                                                                       "null"
+                                                                                                                   ]
+                                                                                                      },
+                                                                                        "http_status":  {
+                                                                                                            "type":  [
+                                                                                                                         "integer",
+                                                                                                                         "null"
+                                                                                                                     ]
+                                                                                                        },
+                                                                                        "page_title":  {
+                                                                                                           "type":  [
+                                                                                                                        "string",
+                                                                                                                        "null"
+                                                                                                                    ]
+                                                                                                       },
+                                                                                        "session_id":  {
+                                                                                                           "type":  [
+                                                                                                                        "string",
+                                                                                                                        "null"
+                                                                                                                    ]
+                                                                                                       },
+                                                                                        "viewport":  {
+                                                                                                         "$ref":  "#/components/schemas/ViewportInfo"
+                                                                                                     },
+                                                                                        "screenshot":  {
+                                                                                                           "$ref":  "#/components/schemas/ScreenshotInfo"
+                                                                                                       },
+                                                                                        "visual_dom_summary":  {
+                                                                                                                   "$ref":  "#/components/schemas/VisualDomSummary"
+                                                                                                               },
+                                                                                        "confidence":  {
+                                                                                                           "type":  [
+                                                                                                                        "string",
+                                                                                                                        "null"
+                                                                                                                    ]
+                                                                                                       },
+                                                                                        "limitations":  {
+                                                                                                            "type":  "array",
+                                                                                                            "items":  {
+                                                                                                                          "type":  "string"
+                                                                                                                      }
+                                                                                                        },
+                                                                                        "retrieved_at":  {
+                                                                                                             "type":  [
+                                                                                                                          "string",
+                                                                                                                          "null"
+                                                                                                                      ]
+                                                                                                         },
+                                                                                        "reason":  {
+                                                                                                       "type":  [
+                                                                                                                    "string",
+                                                                                                                    "null"
+                                                                                                                ]
+                                                                                                   }
+                                                                                    },
+                                                                     "required":  [
+                                                                                      "status",
+                                                                                      "collector"
+                                                                                  ],
+                                                                     "additionalProperties":  true
+                                                                 },
+                                       "DynamicObject":  {
+                                                             "type":  "object",
+                                                             "properties":  {
+                                                                                "_dynamic":  {
+                                                                                                 "type":  "string",
+                                                                                                 "description":  "Campo dinamico opcional."
+                                                                                             }
+                                                                            },
+                                                             "additionalProperties":  true
+                                                         },
+                                       "PublicPresenceCollectResponse":  {
+                                                                             "type":  "object",
+                                                                             "properties":  {
+                                                                                                "collection_status":  {
+                                                                                                                          "type":  "string"
+                                                                                                                      },
+                                                                                                "collector_version":  {
+                                                                                                                          "type":  "string"
+                                                                                                                      },
+                                                                                                "created_at":  {
+                                                                                                                   "type":  "string"
+                                                                                                               },
+                                                                                                "company_name":  {
+                                                                                                                     "type":  [
+                                                                                                                                  "string",
+                                                                                                                                  "null"
+                                                                                                                              ]
+                                                                                                                 },
+                                                                                                "assets_received":  {
+                                                                                                                        "$ref":  "#/components/schemas/DynamicObject"
+                                                                                                                    },
+                                                                                                "collection_depth":  {
+                                                                                                                         "type":  "string"
+                                                                                                                     },
+                                                                                                "collection_hash":  {
+                                                                                                                        "type":  "string"
+                                                                                                                    },
+                                                                                                "collection_execution_report":  {
+                                                                                                                                    "$ref":  "#/components/schemas/DynamicObject"
+                                                                                                                                },
+                                                                                                "collector_reports":  {
+                                                                                                                          "type":  "array",
+                                                                                                                          "items":  {
+                                                                                                                                        "$ref":  "#/components/schemas/DynamicObject"
+                                                                                                                                    }
+                                                                                                                      },
+                                                                                                "evidence_registry":  {
+                                                                                                                          "type":  "array",
+                                                                                                                          "items":  {
+                                                                                                                                        "$ref":  "#/components/schemas/DynamicObject"
+                                                                                                                                    }
+                                                                                                                      },
+                                                                                                "metrics_summary":  {
+                                                                                                                        "$ref":  "#/components/schemas/DynamicObject"
+                                                                                                                    },
+                                                                                                "field_recovery_guide":  {
+                                                                                                                             "type":  "array",
+                                                                                                                             "items":  {
+                                                                                                                                           "$ref":  "#/components/schemas/DynamicObject"
+                                                                                                                                       }
+                                                                                                                         },
+                                                                                                "unavailable_data":  {
+                                                                                                                         "type":  "array",
+                                                                                                                         "items":  {
+                                                                                                                                       "$ref":  "#/components/schemas/DynamicObject"
+                                                                                                                                   }
+                                                                                                                     },
+                                                                                                "requires_owner_access":  {
+                                                                                                                              "type":  "array",
+                                                                                                                              "items":  {
+                                                                                                                                            "$ref":  "#/components/schemas/DynamicObject"
+                                                                                                                                        }
+                                                                                                                          },
+                                                                                                "tool_summaries":  {
+                                                                                                                       "$ref":  "#/components/schemas/DynamicObject"
+                                                                                                                   },
+                                                                                                "txt_report":  {
+                                                                                                                   "$ref":  "#/components/schemas/DynamicObject"
+                                                                                                               }
+                                                                                            },
+                                                                             "required":  [
+                                                                                              "collection_status"
+                                                                                          ],
+                                                                             "additionalProperties":  true
+                                                                         }
+                                   }
+                   }
+}
