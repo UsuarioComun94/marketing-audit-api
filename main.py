@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import base64
@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.3"
+APP_VERSION = "public-presence-collector-mvp-0.4"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -74,6 +74,8 @@ COMPOSIO_API_BASE = os.getenv("COMPOSIO_API_BASE", "https://backend.composio.dev
 COMPOSIO_DEFAULT_USER_ID = os.getenv("COMPOSIO_DEFAULT_USER_ID", "default").strip() or "default"
 COMPOSIO_CONNECTED_ACCOUNT_ID = os.getenv("COMPOSIO_CONNECTED_ACCOUNT_ID", "").strip()
 COMPOSIO_SEARCH_TOOL_SLUG = os.getenv("COMPOSIO_SEARCH_TOOL_SLUG", "").strip()
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
+SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
 
 TEXT_REPORTS: Dict[str, Dict[str, Any]] = {}
@@ -180,6 +182,13 @@ EXPECTED_FIELDS: Dict[str, List[str]] = {
         "likes_reposts_replies_views",
         "account_created_at",
     ],
+    "search": [
+        "public_search_results",
+        "possible_profiles",
+        "mentions",
+        "provider_used",
+        "fallback_attempts",
+    ],
 }
 
 REASON_MESSAGES_ES = {
@@ -198,6 +207,8 @@ REASON_MESSAGES_ES = {
     "collector_not_implemented": "El collector está reconocido, pero todavía no está implementado en esta versión mínima.",
     "insufficient_public_data": "La fuente pública entregó información insuficiente para ese campo.",
     "private_metric": "Es una métrica privada de performance; no puede obtenerse desde links públicos.",
+    "all_search_providers_failed": "Todos los proveedores de búsqueda configurados fallaron o no devolvieron resultados útiles.",
+    "no_search_results": "La búsqueda pública no devolvió resultados útiles con los proveedores configurados.",
 }
 
 HOW_TO_COLLECT_ES = {
@@ -251,6 +262,14 @@ HOW_TO_COLLECT_ES = {
             "Para datos estructurados, usar API de X si existe acceso y condiciones habilitadas.",
         ]
     },
+    "search": {
+        "generic": [
+            "Configurar TAVILY_API_KEY y SERPER_API_KEY para búsqueda pública con fallback.",
+            "Si un proveedor responde 429, esperar reset de cuota o usar fallback.",
+            "Usar Firecrawl después de la búsqueda para extraer contenido real de URLs encontradas.",
+            "No tratar snippets de SERP como evidencia definitiva; usarlos para descubrir fuentes.",
+        ]
+    },
 }
 
 app = FastAPI(
@@ -302,6 +321,14 @@ class BrowserRenderRequest(BaseModel):
     wait_ms: int = Field(default=1500, ge=0, le=8000)
     timeout_ms: int = Field(default=30000, ge=5000, le=90000)
     full_page: bool = Field(default=True, description="Si true, captura full page; si false, captura viewport.")
+
+
+class SearchProviderDebugRequest(BaseModel):
+    query: str = Field(..., min_length=2, description="Consulta pública a ejecutar.")
+    max_results: int = Field(default=8, ge=1, le=10)
+    gl: str = Field(default="ar", min_length=2, max_length=5, description="País para Serper/Google, por ejemplo ar o us.")
+    hl: str = Field(default="es", min_length=2, max_length=5, description="Idioma para Serper/Google, por ejemplo es o en.")
+    use_fallbacks: bool = Field(default=True, description="Si true, intenta Tavily -> Serper -> Composio.")
 
 
 
@@ -1618,20 +1645,330 @@ async def composio_execute_tool(
     return await composio_api_request("POST", f"/tools/execute/{tool_slug}", json_body=body, timeout_seconds=60.0)
 
 
-async def collect_composio_search_placeholder(company_name: Optional[str], website: Optional[str]) -> Dict[str, Any]:
-    collector = "composio_search_enrichment_collector"
+
+def build_search_query(company_name: Optional[str] = None, website: Optional[str] = None, raw_query: Optional[str] = None) -> str:
+    parts: List[str] = []
+    if raw_query:
+        parts.append(str(raw_query).strip())
+    if company_name:
+        parts.append(str(company_name).strip())
+    if website:
+        parts.append(str(website).strip())
+    return " ".join([p for p in parts if p]).strip()
+
+
+def classify_provider_error(status_code: Optional[int], text: str = "") -> Optional[str]:
+    if status_code == 429:
+        return "rate_limited"
+    if status_code in {401, 403}:
+        return "auth_error"
+    if status_code and status_code >= 500:
+        return "provider_server_error"
+    if status_code and status_code >= 400:
+        return "provider_http_error"
+    if text:
+        low = text.lower()
+        if "rate limit" in low or "quota" in low or "credits" in low:
+            return "rate_limited"
+    return None
+
+
+def normalize_search_results(provider: str, data: Any, max_results: int = 10) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+
+    def _add(title: Any, url: Any, snippet: Any = None, position: Optional[int] = None, score: Any = None, kind: str = "organic") -> None:
+        if not url:
+            return
+        url_str = str(url).strip()
+        if not url_str:
+            return
+        results.append(
+            {
+                "provider": provider,
+                "kind": kind,
+                "title": truncate(str(title or ""), 180),
+                "url": url_str,
+                "snippet": truncate(str(snippet or ""), 320),
+                "position": position,
+                "score": score,
+            }
+        )
+
+    if not isinstance(data, dict):
+        return results
+
+    if provider == "tavily":
+        for idx, item in enumerate(data.get("results") or [], start=1):
+            if isinstance(item, dict):
+                _add(
+                    item.get("title"),
+                    item.get("url"),
+                    item.get("content") or item.get("raw_content"),
+                    idx,
+                    item.get("score"),
+                )
+
+    elif provider == "serper":
+        kg = data.get("knowledgeGraph")
+        if isinstance(kg, dict):
+            _add(kg.get("title"), kg.get("website") or kg.get("descriptionLink"), kg.get("description"), 0, None, "knowledge_graph")
+        for idx, item in enumerate(data.get("organic") or [], start=1):
+            if isinstance(item, dict):
+                _add(item.get("title"), item.get("link"), item.get("snippet"), item.get("position") or idx)
+        places = data.get("places") or data.get("localResults", {}).get("places") if isinstance(data.get("localResults"), dict) else []
+        if isinstance(places, list):
+            for idx, item in enumerate(places[:3], start=1):
+                if isinstance(item, dict):
+                    _add(item.get("title"), item.get("website") or item.get("link"), item.get("address") or item.get("phone"), idx, None, "local")
+
+    elif provider == "composio":
+        # Composio/SearchApi can wrap data in multiple shapes depending on toolkit/version.
+        payload = data.get("data") if isinstance(data.get("data"), dict) else data
+        for key in ("organic_results", "organic"):
+            for idx, item in enumerate(payload.get(key) or [], start=1):
+                if isinstance(item, dict):
+                    _add(item.get("title"), item.get("link") or item.get("url"), item.get("snippet") or item.get("description"), item.get("position") or idx)
+
+    seen = set()
+    deduped: List[Dict[str, Any]] = []
+    for item in results:
+        url = item.get("url")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        deduped.append(item)
+        if len(deduped) >= max_results:
+            break
+    return deduped
+
+
+async def tavily_search(query: str, max_results: int = 8) -> Dict[str, Any]:
+    provider = "tavily"
+    if not TAVILY_API_KEY:
+        return {"provider": provider, "ok": False, "status_code": None, "error": "missing_api_key", "results": [], "raw": None}
+    if httpx is None:
+        return {"provider": provider, "ok": False, "status_code": None, "error": "missing_dependency_httpx", "results": [], "raw": None}
+
+    payload = {
+        "query": query,
+        "search_depth": "basic",
+        "include_answer": False,
+        "include_raw_content": False,
+        "max_results": max_results,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            resp = await client.post(
+                "https://api.tavily.com/search",
+                headers={
+                    "Authorization": f"Bearer {TAVILY_API_KEY}",
+                    "Content-Type": "application/json",
+                    "User-Agent": USER_AGENT,
+                },
+                json=payload,
+            )
+
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"raw_text": resp.text[:5000]}
+
+        results = normalize_search_results(provider, data, max_results=max_results)
+        error = classify_provider_error(resp.status_code, resp.text)
+        if 200 <= resp.status_code < 300 and results:
+            return {"provider": provider, "ok": True, "status_code": resp.status_code, "error": None, "results": results, "raw": data}
+        return {
+            "provider": provider,
+            "ok": False,
+            "status_code": resp.status_code,
+            "error": error or ("no_search_results" if 200 <= resp.status_code < 300 else "provider_http_error"),
+            "results": results,
+            "raw": data,
+        }
+    except Exception as exc:
+        return {"provider": provider, "ok": False, "status_code": None, "error": f"provider_exception: {exc}", "results": [], "raw": None}
+
+
+async def serper_search(query: str, max_results: int = 8, gl: str = "ar", hl: str = "es") -> Dict[str, Any]:
+    provider = "serper"
+    if not SERPER_API_KEY:
+        return {"provider": provider, "ok": False, "status_code": None, "error": "missing_api_key", "results": [], "raw": None}
+    if httpx is None:
+        return {"provider": provider, "ok": False, "status_code": None, "error": "missing_dependency_httpx", "results": [], "raw": None}
+
+    payload = {
+        "q": query,
+        "num": max_results,
+        "gl": gl,
+        "hl": hl,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            resp = await client.post(
+                "https://google.serper.dev/search",
+                headers={
+                    "X-API-KEY": SERPER_API_KEY,
+                    "Content-Type": "application/json",
+                    "User-Agent": USER_AGENT,
+                },
+                json=payload,
+            )
+
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"raw_text": resp.text[:5000]}
+
+        results = normalize_search_results(provider, data, max_results=max_results)
+        error = classify_provider_error(resp.status_code, resp.text)
+        if 200 <= resp.status_code < 300 and results:
+            return {"provider": provider, "ok": True, "status_code": resp.status_code, "error": None, "results": results, "raw": data}
+        return {
+            "provider": provider,
+            "ok": False,
+            "status_code": resp.status_code,
+            "error": error or ("no_search_results" if 200 <= resp.status_code < 300 else "provider_http_error"),
+            "results": results,
+            "raw": data,
+        }
+    except Exception as exc:
+        return {"provider": provider, "ok": False, "status_code": None, "error": f"provider_exception: {exc}", "results": [], "raw": None}
+
+
+async def composio_search_fallback(query: str, max_results: int = 8) -> Dict[str, Any]:
+    provider = "composio_search_api"
+    if not COMPOSIO_API_KEY:
+        return {"provider": provider, "ok": False, "status_code": None, "error": "missing_api_key", "results": [], "raw": None}
+    if not COMPOSIO_SEARCH_TOOL_SLUG:
+        return {"provider": provider, "ok": False, "status_code": None, "error": "missing_composio_search_tool_slug", "results": [], "raw": None}
+
+    arguments = {"engine": "google", "q": query, "gl": "ar", "hl": "es", "num": max_results}
+    result = await composio_execute_tool(
+        tool_slug=COMPOSIO_SEARCH_TOOL_SLUG,
+        arguments=arguments,
+        user_id=COMPOSIO_DEFAULT_USER_ID,
+    )
+
+    data = result.get("data")
+    results = normalize_search_results("composio", data, max_results=max_results)
+    if result.get("ok") and results:
+        return {"provider": provider, "ok": True, "status_code": result.get("status_code"), "error": None, "results": results, "raw": data}
+
+    raw_text = json.dumps(data, ensure_ascii=False, default=str)[:1500] if data is not None else ""
+    return {
+        "provider": provider,
+        "ok": False,
+        "status_code": result.get("status_code"),
+        "error": classify_provider_error(result.get("status_code"), raw_text) or result.get("error") or "provider_failed",
+        "results": results,
+        "raw": data,
+    }
+
+
+def build_search_provider_config() -> Dict[str, Any]:
+    return {
+        "configured": {
+            "tavily": bool(TAVILY_API_KEY),
+            "serper": bool(SERPER_API_KEY),
+            "composio_search_api": bool(COMPOSIO_API_KEY and COMPOSIO_SEARCH_TOOL_SLUG),
+            "firecrawl_extractor": bool(FIRECRAWL_API_KEY),
+        },
+        "provider_order": [
+            "tavily",
+            "serper",
+            "composio_search_api",
+        ],
+        "notes": {
+            "tavily": "Proveedor principal de discovery/search. No reemplaza Firecrawl para extracción profunda.",
+            "serper": "Fallback SERP Google. Usar para discovery cuando Tavily falla o no devuelve URLs suficientes.",
+            "composio_search_api": "Fallback final; hoy depende de SearchApi.io y puede fallar por cuota 429.",
+            "firecrawl_extractor": "Extractor/crawler complementario para leer URLs encontradas.",
+        },
+    }
+
+
+async def run_search_provider_router(
+    query: str,
+    max_results: int = 8,
+    gl: str = "ar",
+    hl: str = "es",
+    use_fallbacks: bool = True,
+) -> Dict[str, Any]:
+    query = collapse_ws(query)
+    if not query:
+        return {
+            "status": "skipped_missing_input",
+            "query": query,
+            "selected_provider": None,
+            "results": [],
+            "attempts": [],
+            "reason_code": "missing_input",
+            "provider_config": build_search_provider_config(),
+        }
+
+    attempts: List[Dict[str, Any]] = []
+
+    provider_calls = [
+        ("tavily", lambda: tavily_search(query, max_results=max_results)),
+        ("serper", lambda: serper_search(query, max_results=max_results, gl=gl, hl=hl)),
+        ("composio_search_api", lambda: composio_search_fallback(query, max_results=max_results)),
+    ]
+
+    for provider_name, call in provider_calls:
+        if attempts and not use_fallbacks:
+            break
+
+        result = await call()
+        raw = result.pop("raw", None)
+        safe_attempt = dict(result)
+        safe_attempt["raw_sample"] = truncate(json.dumps(raw, ensure_ascii=False, default=str), 1200) if raw is not None else None
+        attempts.append(safe_attempt)
+
+        if result.get("ok") and result.get("results"):
+            return {
+                "status": "completed",
+                "query": query,
+                "selected_provider": provider_name,
+                "results": result.get("results", []),
+                "attempts": attempts,
+                "reason_code": None,
+                "provider_config": build_search_provider_config(),
+            }
+
+    configured_any = bool(TAVILY_API_KEY or SERPER_API_KEY or (COMPOSIO_API_KEY and COMPOSIO_SEARCH_TOOL_SLUG))
+    return {
+        "status": "failed_runtime" if configured_any else "skipped_missing_api_key",
+        "query": query,
+        "selected_provider": None,
+        "results": [],
+        "attempts": attempts,
+        "reason_code": "all_search_providers_failed" if configured_any else "missing_api_key",
+        "provider_config": build_search_provider_config(),
+    }
+
+
+
+async def collect_public_search_enrichment(
+    company_name: Optional[str],
+    website: Optional[str],
+    evidence: Optional[EvidenceBuilder] = None,
+) -> Dict[str, Any]:
+    collector = "public_search_provider_router"
     platform = "search"
 
-    if not company_name and not website:
+    query = build_search_query(company_name=company_name, website=website)
+    if not query:
         return {
             "reports": [
                 collector_report(
                     collector,
                     platform,
                     "skipped_missing_input",
-                    "composio_search",
+                    "search_provider_router",
                     None,
-                    intended_data=["public_search_results", "possible_profiles", "mentions"],
+                    intended_data=EXPECTED_FIELDS["search"],
                     reason_code="missing_input",
                     confidence="none",
                 )
@@ -1639,85 +1976,43 @@ async def collect_composio_search_placeholder(company_name: Optional[str], websi
             "summary": {},
         }
 
-    if not COMPOSIO_API_KEY:
-        return {
-            "reports": [
-                collector_report(
-                    collector,
-                    platform,
-                    "skipped_missing_api_key",
-                    "composio_search",
-                    website,
-                    intended_data=["public_search_results", "possible_profiles", "mentions"],
-                    reason_code="missing_api_key",
-                    confidence="none",
-                )
-            ],
-            "summary": {},
-        }
+    result = await run_search_provider_router(query=query, max_results=8, gl="ar", hl="es", use_fallbacks=True)
+    results = result.get("results") or []
+    selected_provider = result.get("selected_provider")
+    status = result.get("status") or "failed_runtime"
+    reason_code = result.get("reason_code")
 
-    if not COMPOSIO_SEARCH_TOOL_SLUG:
-        tools_result = await composio_list_tools("search_api", "search")
-        return {
-            "reports": [
-                collector_report(
-                    collector,
-                    platform,
-                    "collector_not_configured",
-                    "composio_search",
-                    website,
-                    intended_data=["public_search_results", "possible_profiles", "mentions"],
-                    collected_fields=["composio_tools_lookup"] if tools_result.get("ok") else [],
-                    missing_fields=["public_search_results", "possible_profiles", "mentions"],
-                    reason_code="missing_composio_search_tool_slug",
-                    confidence="none",
-                    details={
-                        "message": "COMPOSIO_SEARCH_TOOL_SLUG no esta configurado. Usar /debug/composio-tools para descubrir el slug correcto.",
-                        "tools_lookup_status_code": tools_result.get("status_code"),
-                        "tools_lookup_ok": tools_result.get("ok"),
-                        "tools_lookup_sample": tools_result.get("data"),
-                    },
-                )
-            ],
-            "summary": {
-                "configured": False,
-                "reason": "missing_composio_search_tool_slug",
-                "tools_lookup": tools_result,
-            },
-        }
-
-    query_parts = []
-    if company_name:
-        query_parts.append(company_name)
-    if website:
-        query_parts.append(website)
-
-    query = " ".join(query_parts).strip()
-    task_text = (
-        "Search public web for this company/site and return public URLs, social profiles, mentions, "
-        f"and relevant public evidence only. Query: {query}"
-    )
-
-    result = await composio_execute_tool(
-        tool_slug=COMPOSIO_SEARCH_TOOL_SLUG,
-        text=task_text,
-        user_id=COMPOSIO_DEFAULT_USER_ID,
-    )
+    if evidence is not None:
+        for item in results[:8]:
+            evidence.add(
+                platform,
+                item.get("url"),
+                collector,
+                "public_search_result",
+                {
+                    "provider": item.get("provider"),
+                    "title": item.get("title"),
+                    "url": item.get("url"),
+                    "snippet": item.get("snippet"),
+                    "position": item.get("position"),
+                },
+                "medium",
+                raw_excerpt=item.get("snippet") or "",
+                limitations=[
+                    "Resultado de búsqueda usado para discovery; el snippet no reemplaza extracción directa de la fuente.",
+                    "Usar Firecrawl/Browserbase para validar contenido de URLs relevantes.",
+                ],
+            )
 
     summary = {
         "query": query,
-        "tool_slug": COMPOSIO_SEARCH_TOOL_SLUG,
-        "user_id": COMPOSIO_DEFAULT_USER_ID,
-        "connected_account_id": COMPOSIO_CONNECTED_ACCOUNT_ID or None,
-        "composio_ok": result.get("ok"),
-        "composio_status_code": result.get("status_code"),
-        "composio_error": result.get("error"),
-        "composio_response": result.get("data"),
+        "selected_provider": selected_provider,
+        "status": status,
+        "results_count": len(results),
+        "results": results,
+        "attempts": result.get("attempts") or [],
+        "provider_config": result.get("provider_config") or build_search_provider_config(),
     }
-
-    status = "completed" if result.get("ok") else "failed_runtime"
-    reason_code = None if result.get("ok") else "composio_execution_failed"
-    confidence = "medium" if result.get("ok") else "none"
 
     return {
         "reports": [
@@ -1725,18 +2020,23 @@ async def collect_composio_search_placeholder(company_name: Optional[str], websi
                 collector,
                 platform,
                 status,
-                "composio_search",
+                selected_provider or "search_provider_router",
                 website,
-                intended_data=["public_search_results", "possible_profiles", "mentions"],
-                collected_fields=["public_search_results_raw"] if result.get("ok") else [],
-                missing_fields=[] if result.get("ok") else ["public_search_results", "possible_profiles", "mentions"],
+                intended_data=EXPECTED_FIELDS["search"],
+                collected_fields=["public_search_results", "provider_used", "fallback_attempts"] if results else [],
+                missing_fields=[] if results else ["public_search_results", "possible_profiles", "mentions"],
                 reason_code=reason_code,
-                confidence=confidence,
+                confidence="medium" if results else "none",
                 details=summary,
             )
         ],
         "summary": summary,
     }
+
+
+async def collect_composio_search_placeholder(company_name: Optional[str], website: Optional[str]) -> Dict[str, Any]:
+    # Backward-compatible wrapper. New logic uses Tavily -> Serper -> Composio fallback.
+    return await collect_public_search_enrichment(company_name, website, evidence=None)
 
 def merge_assets(req: PublicPresenceCollectRequest) -> Dict[str, Optional[str]]:
     assets = {
@@ -1923,10 +2223,11 @@ def build_api_capabilities() -> Dict[str, Any]:
             "youtube_data_api": bool(YOUTUBE_API_KEY),
             "text_report": True,
             "public_social_limited": True,
+            "search_provider_router": bool(TAVILY_API_KEY or SERPER_API_KEY or (COMPOSIO_API_KEY and COMPOSIO_SEARCH_TOOL_SLUG)),
         },
         "configured_but_not_implemented": {
             "browserbase_collect_integration": False,
-            "composio_search_enrichment": bool(COMPOSIO_API_KEY and COMPOSIO_SEARCH_TOOL_SLUG),
+            "composio_search_enrichment": False,
         },
         "not_implemented": {
             "visual_report_url": False,
@@ -1949,7 +2250,8 @@ def build_api_capabilities() -> Dict[str, Any]:
 def build_collector_notes() -> Dict[str, str]:
     return {
         "browserbase": "Browserbase visual debug implementado en POST /debug/browser-render. Todavia no esta integrado automaticamente dentro de collectPublicPresence.",
-        "composio": "Integracion Composio agregada. Usar /debug/composio-tools para descubrir tool_slug y COMPOSIO_SEARCH_TOOL_SLUG para ejecutar enrichment.",
+        "search": "Router de busqueda implementado: Tavily -> Serper -> Composio/SearchApi como fallback final.",
+        "composio": "Integracion Composio mantenida para debug y fallback final. SEARCH_API_SEARCH puede fallar por cuota 429 de SearchApi.io.",
         "visual": "GET /deliverables/screenshot/{screenshot_id}.png devuelve screenshots generados por debugBrowserRender.",
     }
 
@@ -1962,6 +2264,8 @@ async def root() -> Dict[str, Any]:
         "version": APP_VERSION,
         "endpoints": [
             "GET /api/status",
+            "GET /debug/search-provider-config",
+            "POST /debug/search-test",
             "POST /debug/browser-render",
             "GET /debug/composio-tools",
             "POST /debug/composio-execute",
@@ -1983,6 +2287,8 @@ async def api_status(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
             "firecrawl": bool(FIRECRAWL_API_KEY),
             "browserbase": bool(BROWSERBASE_API_KEY),
             "composio": bool(COMPOSIO_API_KEY),
+            "tavily": bool(TAVILY_API_KEY),
+            "serper": bool(SERPER_API_KEY),
             "youtube": bool(YOUTUBE_API_KEY),
         },
         "capabilities": build_api_capabilities(),
@@ -1990,6 +2296,8 @@ async def api_status(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
             "GET /",
             "GET /api/status",
             "GET /debug/collector-config",
+            "GET /debug/search-provider-config",
+            "POST /debug/search-test",
             "POST /debug/browser-render",
             "GET /debug/composio-tools",
             "POST /debug/composio-execute",
@@ -2059,6 +2367,38 @@ async def debug_composio_execute(payload: Dict[str, Any], _: None = Depends(veri
         "composio_error": result.get("error"),
         "raw": result.get("data"),
     }
+
+
+@app.get("/debug/search-provider-config")
+async def debug_search_provider_config(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "version": APP_VERSION,
+        **build_search_provider_config(),
+    }
+
+
+@app.post("/debug/search-test")
+async def debug_search_test(req: SearchProviderDebugRequest, _: None = Depends(verify_api_key)) -> Dict[str, Any]:
+    result = await run_search_provider_router(
+        query=req.query,
+        max_results=req.max_results,
+        gl=req.gl,
+        hl=req.hl,
+        use_fallbacks=req.use_fallbacks,
+    )
+    return {
+        "status": result.get("status"),
+        "query": result.get("query"),
+        "selected_provider": result.get("selected_provider"),
+        "results_count": len(result.get("results") or []),
+        "results": result.get("results"),
+        "attempts": result.get("attempts"),
+        "provider_config": result.get("provider_config"),
+        "reason_code": result.get("reason_code"),
+    }
+
+
 @app.post("/debug/browser-render")
 async def debug_browser_render(req: BrowserRenderRequest, _: None = Depends(verify_api_key)) -> Dict[str, Any]:
     return await render_browserbase_visual(req)
@@ -2072,6 +2412,8 @@ async def collector_config(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
             "firecrawl": bool(FIRECRAWL_API_KEY),
             "browserbase": bool(BROWSERBASE_API_KEY),
             "composio": bool(COMPOSIO_API_KEY),
+            "tavily": bool(TAVILY_API_KEY),
+            "serper": bool(SERPER_API_KEY),
             "youtube": bool(YOUTUBE_API_KEY),
         },
         "notes": build_collector_notes(),
@@ -2117,9 +2459,9 @@ async def collect_public_presence(req: PublicPresenceCollectRequest, _: None = D
         reports.extend(result["reports"])
         summaries[platform] = result["summary"]
 
-    composio_result = await collect_composio_search_placeholder(req.company_name, assets.get("website"))
-    reports.extend(composio_result["reports"])
-    summaries["composio_search"] = composio_result["summary"]
+    search_result = await collect_public_search_enrichment(req.company_name, assets.get("website"), evidence)
+    reports.extend(search_result["reports"])
+    summaries["search_enrichment"] = search_result["summary"]
 
     execution = summarize_execution(reports)
     recovery = build_recovery_guide(reports)
@@ -2189,6 +2531,7 @@ async def get_text_report(report_id: str) -> Response:
         raise HTTPException(status_code=404, detail="Text report not found or expired")
     headers = {"Content-Disposition": f"attachment; filename={item['filename']}"}
     return Response(content=item["content"], media_type="text/plain; charset=utf-8", headers=headers)
+
 
 
 
