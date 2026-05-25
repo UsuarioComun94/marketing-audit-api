@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.5"
+APP_VERSION = "public-presence-collector-mvp-0.6"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -321,6 +321,18 @@ class BrowserRenderRequest(BaseModel):
     wait_ms: int = Field(default=1500, ge=0, le=8000)
     timeout_ms: int = Field(default=30000, ge=5000, le=90000)
     full_page: bool = Field(default=True, description="Si true, captura full page; si false, captura viewport.")
+
+
+
+class VisualSiteAuditRequest(BaseModel):
+    url: Optional[str] = Field(default=None, description="URL pública del sitio.")
+    website: Optional[str] = Field(default=None, description="Alias de url.")
+    company_name: Optional[str] = None
+    max_internal_pages: int = Field(default=3, ge=0, le=5)
+    viewports: List[str] = Field(default_factory=lambda: ["desktop", "mobile"])
+    wait_ms: int = Field(default=1500, ge=0, le=8000)
+    timeout_ms: int = Field(default=45000, ge=5000, le=90000)
+    full_page: bool = Field(default=True, description="Capturar página completa.")
 
 
 class SearchProviderDebugRequest(BaseModel):
@@ -2539,6 +2551,7 @@ def build_api_capabilities() -> Dict[str, Any]:
             "website_static": True,
             "firecrawl_website": bool(FIRECRAWL_API_KEY),
             "browserbase_visual_debug": bool(BROWSERBASE_API_KEY),
+            "visual_site_summary_endpoint": bool(BROWSERBASE_API_KEY),
             "youtube_data_api": bool(YOUTUBE_API_KEY),
             "text_report": True,
             "public_social_limited": True,
@@ -2575,6 +2588,7 @@ def build_collector_notes() -> Dict[str, str]:
         "report": "Reporte ejecutivo v0.5: score de presencia publica, hallazgos, recomendaciones y anexo tecnico.",
         "composio": "Integracion Composio mantenida para debug y fallback final. SEARCH_API_SEARCH puede fallar por cuota 429 de SearchApi.io.",
         "visual": "GET /deliverables/screenshot/{screenshot_id}.png devuelve screenshots generados por debugBrowserRender.",
+        "visual_site": "POST /audit/visual-site renderiza home y páginas internas candidatas en desktop/mobile para resumen visual estructurado.",
     }
 
 
@@ -2589,6 +2603,7 @@ async def root() -> Dict[str, Any]:
             "GET /debug/search-provider-config",
             "POST /debug/search-test",
             "POST /debug/browser-render",
+            "POST /audit/visual-site",
             "GET /debug/composio-tools",
             "POST /debug/composio-execute",
             "POST /collect/public-presence",
@@ -2621,6 +2636,7 @@ async def api_status(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
             "GET /debug/search-provider-config",
             "POST /debug/search-test",
             "POST /debug/browser-render",
+            "POST /audit/visual-site",
             "GET /debug/composio-tools",
             "POST /debug/composio-execute",
             "POST /collect/public-presence",
@@ -2719,6 +2735,396 @@ async def debug_search_test(req: SearchProviderDebugRequest, _: None = Depends(v
         "provider_config": result.get("provider_config"),
         "reason_code": result.get("reason_code"),
     }
+
+
+
+def _visual_url_domain(url: str) -> str:
+    try:
+        parse = __import__("urllib.parse", fromlist=["urlparse"]).urlparse
+        return parse(url).netloc.lower().replace("www.", "")
+    except Exception:
+        return ""
+
+
+def _visual_join_url(base_url: str, href: str) -> str:
+    try:
+        join = __import__("urllib.parse", fromlist=["urljoin"]).urljoin
+        return join(base_url, href)
+    except Exception:
+        return href
+
+
+def _visual_clean_url(url: str) -> str:
+    try:
+        parse = __import__("urllib.parse", fromlist=["urlparse"]).urlparse
+        parsed = parse(url)
+        clean = parsed._replace(fragment="").geturl()
+        return clean.rstrip("/")
+    except Exception:
+        return str(url or "").strip().rstrip("/")
+
+
+def _visual_page_type(url: str, text: str = "") -> str:
+    raw = f"{url} {text}".lower()
+
+    if any(k in raw for k in ["contacto", "contact", "whatsapp"]):
+        return "contact"
+    if any(k in raw for k in ["carrito", "cart", "checkout", "finalizar"]):
+        return "cart"
+    if any(k in raw for k in ["politica", "devolucion", "envio", "shipping", "returns"]):
+        return "policy"
+    if any(k in raw for k in ["producto", "product", "comprar-online", "/p/"]):
+        return "product"
+    if any(k in raw for k in ["categoria", "category", "productos", "ofertas", "eventos", "reposteria", "decoracion"]):
+        return "category"
+    return "internal"
+
+
+def _visual_candidate_priority(page_type: str) -> int:
+    order = {
+        "category": 1,
+        "product": 2,
+        "contact": 3,
+        "cart": 4,
+        "policy": 5,
+        "internal": 9,
+    }
+    return order.get(page_type, 9)
+
+
+async def _visual_fetch_html_for_links(url: str, timeout_seconds: float = 25.0) -> str:
+    if httpx is None:
+        return ""
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
+            resp = await client.get(url)
+            if resp.status_code >= 400:
+                return ""
+            return resp.text or ""
+    except Exception:
+        return ""
+
+
+def _visual_extract_links_from_html(base_url: str, html: str, limit: int = 30) -> List[Dict[str, str]]:
+    if not html:
+        return []
+
+    base_domain = _visual_url_domain(base_url)
+    candidates: List[Dict[str, str]] = []
+    seen = set()
+
+    soup_cls = globals().get("BeautifulSoup")
+
+    if soup_cls is not None:
+        try:
+            soup = soup_cls(html, "html.parser")
+            anchors = soup.find_all("a", href=True)
+            for a in anchors:
+                href = str(a.get("href") or "").strip()
+                text = collapse_ws(a.get_text(" ", strip=True))
+                if not href or href.startswith(("mailto:", "tel:", "javascript:", "#")):
+                    continue
+
+                joined = _visual_clean_url(_visual_join_url(base_url, href))
+                if not joined.startswith(("http://", "https://")):
+                    continue
+                if _visual_url_domain(joined) != base_domain:
+                    continue
+                if joined == _visual_clean_url(base_url):
+                    continue
+                if joined in seen:
+                    continue
+
+                seen.add(joined)
+                page_type = _visual_page_type(joined, text)
+                candidates.append({
+                    "url": joined,
+                    "text": truncate(text, 120),
+                    "page_type": page_type,
+                    "source": "html_anchor",
+                })
+
+                if len(candidates) >= limit:
+                    break
+        except Exception:
+            pass
+
+    if candidates:
+        return candidates
+
+    # Fallback regex básico si BeautifulSoup no estuviera disponible.
+    try:
+        for match in re.finditer(r'href=["\']([^"\']+)["\']', html, flags=re.I):
+            href = match.group(1).strip()
+            if not href or href.startswith(("mailto:", "tel:", "javascript:", "#")):
+                continue
+
+            joined = _visual_clean_url(_visual_join_url(base_url, href))
+            if not joined.startswith(("http://", "https://")):
+                continue
+            if _visual_url_domain(joined) != base_domain:
+                continue
+            if joined == _visual_clean_url(base_url):
+                continue
+            if joined in seen:
+                continue
+
+            seen.add(joined)
+            page_type = _visual_page_type(joined, "")
+            candidates.append({
+                "url": joined,
+                "text": "",
+                "page_type": page_type,
+                "source": "html_regex",
+            })
+
+            if len(candidates) >= limit:
+                break
+    except Exception:
+        pass
+
+    return candidates
+
+
+def _visual_select_representative_pages(base_url: str, candidates: List[Dict[str, str]], max_internal_pages: int) -> List[Dict[str, str]]:
+    selected: List[Dict[str, str]] = []
+    used_types = set()
+    used_urls = {_visual_clean_url(base_url)}
+
+    ordered = sorted(
+        candidates,
+        key=lambda x: (_visual_candidate_priority(x.get("page_type", "internal")), len(x.get("url", "")))
+    )
+
+    # Primero uno por tipo importante.
+    for item in ordered:
+        if len(selected) >= max_internal_pages:
+            break
+
+        page_type = item.get("page_type", "internal")
+        clean = _visual_clean_url(item.get("url", ""))
+
+        if not clean or clean in used_urls:
+            continue
+
+        if page_type in used_types and page_type != "internal":
+            continue
+
+        selected.append({
+            "page_type": page_type,
+            "url": clean,
+            "source": item.get("source", "candidate"),
+            "anchor_text": item.get("text", ""),
+        })
+        used_types.add(page_type)
+        used_urls.add(clean)
+
+    # Completar con otras internas si faltan.
+    for item in ordered:
+        if len(selected) >= max_internal_pages:
+            break
+
+        clean = _visual_clean_url(item.get("url", ""))
+
+        if not clean or clean in used_urls:
+            continue
+
+        selected.append({
+            "page_type": item.get("page_type", "internal"),
+            "url": clean,
+            "source": item.get("source", "candidate"),
+            "anchor_text": item.get("text", ""),
+        })
+        used_urls.add(clean)
+
+    return selected
+
+
+def _visual_compact_render(page_type: str, source_url: str, viewport: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    summary = result.get("visual_dom_summary") or {}
+    screenshot = result.get("screenshot") or {}
+
+    return {
+        "page_type": page_type,
+        "requested_url": source_url,
+        "viewport": viewport,
+        "status": result.get("status"),
+        "final_url": result.get("final_url"),
+        "http_status": result.get("http_status"),
+        "page_title": result.get("page_title"),
+        "screenshot_url": screenshot.get("screenshot_url"),
+        "screenshot_id": screenshot.get("screenshot_id"),
+        "full_page": (result.get("viewport") or {}).get("full_page"),
+        "links_count": summary.get("links_count"),
+        "forms_count": summary.get("forms_count"),
+        "images_count": summary.get("images_count"),
+        "images_without_alt_count": summary.get("images_without_alt_count"),
+        "visible_ctas": summary.get("visible_ctas") or [],
+        "buttons_text_sample": (summary.get("buttons_text") or [])[:25],
+        "image_alt_samples": (summary.get("image_alt_samples") or [])[:20],
+        "text_sample": truncate(summary.get("text_sample") or "", 900),
+        "limitations": result.get("limitations") or [],
+        "reason": result.get("reason"),
+    }
+
+
+def _visual_analyze_render_metrics(renders: List[Dict[str, Any]]) -> Dict[str, Any]:
+    completed = [r for r in renders if r.get("status") == "completed"]
+
+    def _ratio(n, d):
+        try:
+            if not d:
+                return None
+            return round(float(n) / float(d), 4)
+        except Exception:
+            return None
+
+    by_viewport: Dict[str, Any] = {}
+    for viewport in ["desktop", "mobile"]:
+        items = [r for r in completed if r.get("viewport") == viewport]
+        if not items:
+            by_viewport[viewport] = {
+                "renders_completed": 0,
+                "notes": ["No hay renders completados para este viewport."],
+            }
+            continue
+
+        total_links = sum(int(r.get("links_count") or 0) for r in items)
+        total_forms = sum(int(r.get("forms_count") or 0) for r in items)
+        total_images = sum(int(r.get("images_count") or 0) for r in items)
+        total_images_without_alt = sum(int(r.get("images_without_alt_count") or 0) for r in items)
+
+        ctas: List[str] = []
+        for r in items:
+            for cta in r.get("visible_ctas") or []:
+                clean = collapse_ws(str(cta))
+                if clean and clean not in ctas:
+                    ctas.append(clean)
+
+        by_viewport[viewport] = {
+            "renders_completed": len(items),
+            "total_links_count": total_links,
+            "total_forms_count": total_forms,
+            "total_images_count": total_images,
+            "total_images_without_alt_count": total_images_without_alt,
+            "images_without_alt_ratio": _ratio(total_images_without_alt, total_images),
+            "unique_visible_ctas_sample": ctas[:40],
+            "signals": {
+                "high_link_density": total_links >= 250,
+                "many_forms_detected": total_forms >= 10,
+                "image_alt_gap_detected": (_ratio(total_images_without_alt, total_images) or 0) >= 0.2,
+                "ctas_detected": len(ctas) > 0,
+            },
+        }
+
+    all_ctas: List[str] = []
+    for r in completed:
+        for cta in r.get("visible_ctas") or []:
+            clean = collapse_ws(str(cta))
+            if clean and clean not in all_ctas:
+                all_ctas.append(clean)
+
+    return {
+        "renders_attempted": len(renders),
+        "renders_completed": len(completed),
+        "viewports": by_viewport,
+        "cross_viewport_ctas_sample": all_ctas[:50],
+        "interpretation_rules": [
+            "Alta cantidad de links puede indicar catálogo amplio o navegación compleja; no prueba mala conversión por sí sola.",
+            "Imágenes sin alt afectan accesibilidad/SEO básico observable; no prueban ranking orgánico.",
+            "Screenshots permiten evaluar fricción visual observable; no reemplazan UX research, PageSpeed ni datos de conversión.",
+        ],
+    }
+
+
+async def audit_visual_site_summary(req: VisualSiteAuditRequest) -> Dict[str, Any]:
+    raw_url = req.url or req.website
+    normalized = normalize_url(raw_url)
+
+    if not normalized:
+        raise HTTPException(status_code=400, detail="URL inválida. Enviar url o website.")
+
+    requested_viewports = []
+    for v in req.viewports or ["desktop", "mobile"]:
+        clean = str(v or "").lower().strip()
+        if clean in ("desktop", "mobile") and clean not in requested_viewports:
+            requested_viewports.append(clean)
+
+    if not requested_viewports:
+        requested_viewports = ["desktop", "mobile"]
+
+    pages: List[Dict[str, str]] = [{
+        "page_type": "home",
+        "url": normalized,
+        "source": "input",
+        "anchor_text": "",
+    }]
+
+    candidates: List[Dict[str, str]] = []
+
+    if req.max_internal_pages > 0:
+        html = await _visual_fetch_html_for_links(normalized)
+        candidates = _visual_extract_links_from_html(normalized, html, limit=80)
+        pages.extend(_visual_select_representative_pages(normalized, candidates, req.max_internal_pages))
+
+    renders: List[Dict[str, Any]] = []
+
+    for page in pages:
+        for viewport in requested_viewports:
+            render_req = BrowserRenderRequest(
+                url=page["url"],
+                viewport=viewport,
+                wait_ms=req.wait_ms,
+                timeout_ms=req.timeout_ms,
+                full_page=req.full_page,
+            )
+            result = await render_browserbase_visual(render_req)
+            renders.append(_visual_compact_render(page["page_type"], page["url"], viewport, result))
+
+    completed = [r for r in renders if r.get("status") == "completed"]
+
+    overall_status = "completed" if completed and len(completed) == len(renders) else ("partial" if completed else "completed_with_limitations")
+
+    selected_pages = [
+        {
+            "page_type": p.get("page_type"),
+            "url": p.get("url"),
+            "source": p.get("source"),
+            "anchor_text": p.get("anchor_text"),
+        }
+        for p in pages
+    ]
+
+    return {
+        "status": overall_status,
+        "collector": "visual_site_summary",
+        "version": APP_VERSION,
+        "company_name": req.company_name,
+        "url_requested": normalized,
+        "full_page": req.full_page,
+        "viewports_requested": requested_viewports,
+        "pages_selected": selected_pages,
+        "candidate_links_found": len(candidates),
+        "renders": renders,
+        "visual_site_summary": _visual_analyze_render_metrics(renders),
+        "confidence": "medium-high" if completed else "low",
+        "limitations": [
+            "Este endpoint recolecta evidencia visual pública observable; no mide conversiones, ventas, ROAS, CPA ni margen.",
+            "No reemplaza PageSpeed, Core Web Vitals, heatmaps ni pruebas de usuario.",
+            "La selección de categoría/producto/contacto es heurística sobre links públicos; puede requerir validación manual.",
+            "Algunas páginas pueden variar por cookies, geolocalización, login, stock o contenido dinámico.",
+        ],
+        "retrieved_at": now_iso(),
+    }
+
+
+
+
+
+@app.post("/audit/visual-site")
+async def audit_visual_site(req: VisualSiteAuditRequest, _: None = Depends(verify_api_key)) -> Dict[str, Any]:
+    return await audit_visual_site_summary(req)
 
 
 @app.post("/debug/browser-render")
