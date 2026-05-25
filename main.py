@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.7"
+APP_VERSION = "public-presence-collector-mvp-0.8"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -2604,6 +2604,8 @@ async def root() -> Dict[str, Any]:
             "POST /debug/search-test",
             "POST /debug/browser-render",
             "POST /audit/visual-site",
+            "POST /audit/social-public",
+            "GET /deliverables/social-text/{report_id}.txt",
             "GET /debug/composio-tools",
             "POST /debug/composio-execute",
             "POST /collect/public-presence",
@@ -2638,6 +2640,8 @@ async def api_status(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
             "POST /debug/search-test",
             "POST /debug/browser-render",
             "POST /audit/visual-site",
+            "POST /audit/social-public",
+            "GET /deliverables/social-text/{report_id}.txt",
             "GET /debug/composio-tools",
             "POST /debug/composio-execute",
             "POST /collect/public-presence",
@@ -3120,6 +3124,1061 @@ async def audit_visual_site_summary(req: VisualSiteAuditRequest) -> Dict[str, An
         "retrieved_at": now_iso(),
     }
 
+
+
+
+
+
+# ============================================================
+# Social Public Exhaustive Audit - isolated module
+# ============================================================
+
+SOCIAL_TEXT_REPORTS: Dict[str, str] = {}
+
+
+class SocialPublicAuditRequest(BaseModel):
+    company_name: Optional[str] = None
+    website: Optional[str] = None
+    instagram: Optional[str] = None
+    facebook: Optional[str] = None
+    linkedin: Optional[str] = None
+    tiktok: Optional[str] = None
+    youtube: Optional[str] = None
+    x: Optional[str] = None
+
+    fetch_static_pages: bool = True
+    use_search_discovery: bool = True
+    use_browser_render: bool = False
+
+    max_search_results: int = Field(default=8, ge=0, le=10)
+    max_posts_extract: int = Field(default=20, ge=0, le=40)
+    max_visible_text_chars: int = Field(default=3500, ge=500, le=9000)
+
+    wait_ms: int = Field(default=1500, ge=0, le=8000)
+    timeout_ms: int = Field(default=45000, ge=5000, le=90000)
+
+
+def _sp_ws(value: Any) -> str:
+    import re as _re
+    return _re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _sp_trunc(value: Any, max_chars: int = 800) -> str:
+    text = _sp_ws(value)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "..."
+
+
+def _sp_public_base_url() -> str:
+    import os as _os
+    return (_os.environ.get("PUBLIC_BASE_URL") or "https://marketing-audit-api.onrender.com").rstrip("/")
+
+
+def _sp_norm_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    clean = str(url).strip()
+    if not clean:
+        return None
+    if not clean.startswith(("http://", "https://")):
+        clean = "https://" + clean
+    return clean
+
+
+def _sp_inputs(req: SocialPublicAuditRequest) -> Dict[str, str]:
+    raw_inputs = {
+        "instagram": req.instagram,
+        "facebook": req.facebook,
+        "linkedin": req.linkedin,
+        "tiktok": req.tiktok,
+        "youtube": req.youtube,
+        "x": req.x,
+    }
+
+    out: Dict[str, str] = {}
+    for platform, url in raw_inputs.items():
+        normalized = _sp_norm_url(url)
+        if normalized:
+            out[platform] = normalized
+    return out
+
+
+async def _sp_http_get(url: str, timeout_seconds: float = 30.0) -> Dict[str, Any]:
+    httpx_mod = globals().get("httpx")
+
+    if httpx_mod is None:
+        return {
+            "status": "skipped_missing_dependency",
+            "reason": "httpx no disponible.",
+            "url": url,
+            "html": "",
+        }
+
+    try:
+        headers = {
+            "User-Agent": globals().get("USER_AGENT", "Mozilla/5.0 MarketingAuditor/0.8"),
+            "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+
+        async with httpx_mod.AsyncClient(timeout=timeout_seconds, follow_redirects=True, headers=headers) as client:
+            resp = await client.get(url)
+
+        html = resp.text or ""
+
+        return {
+            "status": "completed" if resp.status_code < 400 else "partial",
+            "url": url,
+            "final_url": str(resp.url),
+            "http_status": resp.status_code,
+            "content_type": resp.headers.get("content-type"),
+            "html_length": len(html),
+            "html": html,
+            "reason": None if resp.status_code < 400 else f"HTTP {resp.status_code}",
+        }
+
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "url": url,
+            "final_url": None,
+            "http_status": None,
+            "content_type": None,
+            "html_length": 0,
+            "html": "",
+            "reason": str(exc),
+        }
+
+
+def _sp_meta_from_html(platform: str, url: str, html: str, max_visible_text_chars: int) -> Dict[str, Any]:
+    import re as _re
+
+    soup_cls = globals().get("BeautifulSoup")
+
+    title = None
+    meta_description = None
+    og_title = None
+    og_description = None
+    canonical = None
+    links: List[Dict[str, str]] = []
+    visible_text = ""
+
+    if soup_cls is not None and html:
+        try:
+            soup = soup_cls(html, "html.parser")
+
+            if soup.title and soup.title.string:
+                title = _sp_trunc(soup.title.string, 240)
+
+            def meta_content(**attrs):
+                m = soup.find("meta", attrs=attrs)
+                if m and m.get("content"):
+                    return _sp_trunc(m.get("content"), 700)
+                return None
+
+            meta_description = meta_content(name="description")
+            og_title = meta_content(property="og:title")
+            og_description = meta_content(property="og:description")
+
+            can = soup.find("link", attrs={"rel": "canonical"})
+            if can and can.get("href"):
+                canonical = str(can.get("href"))
+
+            for a in soup.find_all("a", href=True):
+                href = str(a.get("href") or "").strip()
+                text = _sp_trunc(a.get_text(" ", strip=True), 140)
+
+                if not href:
+                    continue
+
+                if len(links) >= 80:
+                    break
+
+                links.append({
+                    "href": href,
+                    "text": text,
+                })
+
+            for tag in soup(["script", "style", "noscript"]):
+                tag.decompose()
+
+            visible_text = _sp_trunc(soup.get_text(" ", strip=True), max_visible_text_chars)
+
+        except Exception:
+            pass
+
+    if not title and html:
+        m = _re.search(r"<title[^>]*>(.*?)</title>", html, flags=_re.I | _re.S)
+        if m:
+            title = _sp_trunc(m.group(1), 240)
+
+    if not visible_text and html:
+        visible_text = _sp_trunc(_re.sub(r"<[^>]+>", " ", html), max_visible_text_chars)
+
+    return {
+        "platform": platform,
+        "url": url,
+        "title": title,
+        "meta_description": meta_description,
+        "og_title": og_title,
+        "og_description": og_description,
+        "canonical": canonical,
+        "links_sample": links[:40],
+        "visible_text_sample": visible_text,
+    }
+
+
+def _sp_extract_metric_candidates(text: str) -> Dict[str, Any]:
+    import re as _re
+
+    source = _sp_ws(text)
+    lower = source.lower()
+
+    patterns = {
+        "followers": [
+            r"([\d\.,]+[kKmM]?)\s+(followers|seguidores)",
+            r"(followers|seguidores)\s+([\d\.,]+[kKmM]?)",
+            r"([\d\.,]+[kKmM]?)\s+personas siguen",
+        ],
+        "following": [
+            r"([\d\.,]+[kKmM]?)\s+(following|seguidos|siguiendo)",
+            r"(following|seguidos|siguiendo)\s+([\d\.,]+[kKmM]?)",
+        ],
+        "posts": [
+            r"([\d\.,]+[kKmM]?)\s+(posts|publicaciones|posteos)",
+            r"(posts|publicaciones|posteos)\s+([\d\.,]+[kKmM]?)",
+        ],
+        "likes": [
+            r"([\d\.,]+[kKmM]?)\s+(likes|me gusta|reacciones)",
+            r"([\d\.,]+[kKmM]?)\s+likes?",
+        ],
+        "comments": [
+            r"([\d\.,]+[kKmM]?)\s+(comments|comentarios)",
+            r"([\d\.,]+[kKmM]?)\s+comments?",
+        ],
+        "views": [
+            r"([\d\.,]+[kKmM]?)\s+(views|visualizaciones|reproducciones|vistas)",
+            r"([\d\.,]+[kKmM]?)\s+views?",
+        ],
+        "shares": [
+            r"([\d\.,]+[kKmM]?)\s+(shares|compartidos|veces compartido)",
+        ],
+    }
+
+    found: Dict[str, List[str]] = {}
+
+    for metric, metric_patterns in patterns.items():
+        values: List[str] = []
+
+        for pat in metric_patterns:
+            for match in _re.finditer(pat, lower, flags=_re.I):
+                groups = list(match.groups())
+                nums = [g for g in groups if g and _re.search(r"\d", str(g))]
+                for n in nums:
+                    clean = _sp_ws(n)
+                    if clean and clean not in values:
+                        values.append(clean)
+
+                if len(values) >= 12:
+                    break
+
+            if len(values) >= 12:
+                break
+
+        found[metric] = values[:12]
+
+    date_patterns = [
+        r"\b\d{1,2}\s+de\s+[a-záéíóúñ]+\s+de\s+\d{4}\b",
+        r"\b\d{1,2}\s+de\s+[a-záéíóúñ]+\b",
+        r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",
+        r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},\s+\d{4}\b",
+        r"\b\d+\s+(d|h|min|days|hours|minutes|días|horas|minutos)\b",
+        r"\b(ayer|hoy|anteayer)\b",
+    ]
+
+    dates: List[str] = []
+    for pat in date_patterns:
+        for match in _re.finditer(pat, source, flags=_re.I):
+            clean = _sp_ws(match.group(0))
+            if clean not in dates:
+                dates.append(clean)
+
+            if len(dates) >= 20:
+                break
+
+        if len(dates) >= 20:
+            break
+
+    return {
+        "followers_visible_values": found.get("followers", []),
+        "following_visible_values": found.get("following", []),
+        "posts_visible_values": found.get("posts", []),
+        "likes_visible_values": found.get("likes", []),
+        "comments_visible_values": found.get("comments", []),
+        "views_visible_values": found.get("views", []),
+        "shares_visible_values": found.get("shares", []),
+        "dates_visible_values": dates,
+    }
+
+
+def _sp_extract_content_signals(text: str) -> Dict[str, Any]:
+    lower = _sp_ws(text).lower()
+
+    buckets = {
+        "product_or_catalog": ["producto", "productos", "catálogo", "catalogo", "stock", "comprar", "precio", "oferta"],
+        "promotions": ["promo", "promoción", "promocion", "descuento", "off", "cuotas", "envío", "envio"],
+        "events": ["evento", "eventos", "cumpleaños", "egresados", "fiesta", "cumple", "casamiento", "despedida"],
+        "b2b_or_wholesale": ["mayorista", "minorista", "revendedor", "distribución", "distribucion", "importador", "importadores"],
+        "social_proof": ["cliente", "clientes", "testimonio", "reseña", "reviews", "seguidores"],
+        "video_or_reels": ["reel", "reels", "video", "videos", "viral", "visualizaciones", "views"],
+        "cta": ["link", "whatsapp", "mensaje", "consult", "comprar", "contact", "contacto", "ver más", "ver mas"],
+    }
+
+    detected: Dict[str, bool] = {}
+    samples: Dict[str, List[str]] = {}
+
+    words = lower.split()
+
+    for bucket, terms in buckets.items():
+        present_terms = [t for t in terms if t in lower]
+        detected[bucket] = bool(present_terms)
+        samples[bucket] = present_terms[:12]
+
+    return {
+        "detected": detected,
+        "matched_terms": samples,
+        "text_length": len(lower),
+        "word_count_approx": len(words),
+    }
+
+
+def _sp_extract_post_like_items(text: str, max_items: int) -> List[Dict[str, Any]]:
+    import re as _re
+
+    source = _sp_ws(text)
+
+    if not source:
+        return []
+
+    separators = [
+        ". ",
+        " · ",
+        " | ",
+        "\n",
+    ]
+
+    chunks = [source]
+
+    for sep in separators:
+        new_chunks = []
+        for chunk in chunks:
+            new_chunks.extend(chunk.split(sep))
+        chunks = new_chunks
+
+    items: List[Dict[str, Any]] = []
+
+    signal_regex = _re.compile(
+        r"(like|likes|me gusta|comentario|comentarios|comments|views|visualizaciones|reproducciones|followers|seguidores|reel|post|publicaci[oó]n|hoy|ayer|\d{1,2}/\d{1,2}/\d{2,4}|october|november|december|january|february|march|april|may|june|july|august|september)",
+        flags=_re.I,
+    )
+
+    for chunk in chunks:
+        clean = _sp_trunc(chunk, 360)
+
+        if len(clean) < 20:
+            continue
+
+        if signal_regex.search(clean):
+            metrics = _sp_extract_metric_candidates(clean)
+            if clean not in [x.get("text") for x in items]:
+                items.append({
+                    "text": clean,
+                    "metrics_detected": metrics,
+                })
+
+        if len(items) >= max_items:
+            break
+
+    return items
+
+
+async def _sp_search(company_name: Optional[str], platform: str, url: str, max_results: int) -> Dict[str, Any]:
+    import os as _os
+
+    if max_results <= 0:
+        return {
+            "status": "skipped",
+            "reason": "max_search_results=0",
+            "results": [],
+        }
+
+    httpx_mod = globals().get("httpx")
+    tavily_key = _os.environ.get("TAVILY_API_KEY")
+
+    if httpx_mod is None:
+        return {
+            "status": "skipped_missing_dependency",
+            "reason": "httpx no disponible.",
+            "results": [],
+        }
+
+    if not tavily_key:
+        return {
+            "status": "skipped_missing_api_key",
+            "reason": "TAVILY_API_KEY no configurada.",
+            "results": [],
+        }
+
+    query = _sp_ws(
+        f'{company_name or ""} {platform} {url} followers seguidores posts publicaciones likes comments comentarios views reels fecha'
+    )
+
+    try:
+        async with httpx_mod.AsyncClient(timeout=35.0) as client:
+            resp = await client.post(
+                "https://api.tavily.com/search",
+                json={
+                    "api_key": tavily_key,
+                    "query": query,
+                    "search_depth": "basic",
+                    "max_results": max_results,
+                    "include_answer": False,
+                    "include_raw_content": False,
+                },
+            )
+
+        data = resp.json() if resp.text else {}
+        results = []
+
+        for i, item in enumerate((data.get("results") or [])[:max_results], start=1):
+            results.append({
+                "position": i,
+                "title": _sp_trunc(item.get("title"), 220),
+                "url": item.get("url"),
+                "snippet": _sp_trunc(item.get("content"), 700),
+                "score": item.get("score"),
+            })
+
+        return {
+            "status": "completed" if resp.status_code < 400 else "partial",
+            "provider": "tavily",
+            "query": query,
+            "http_status": resp.status_code,
+            "results_count": len(results),
+            "results": results,
+            "reason": None if resp.status_code < 400 else _sp_trunc(resp.text, 700),
+        }
+
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "provider": "tavily",
+            "query": query,
+            "results": [],
+            "reason": str(exc),
+        }
+
+
+async def _sp_browser_render(platform: str, url: str, req: SocialPublicAuditRequest) -> Dict[str, Any]:
+    if not req.use_browser_render:
+        return {
+            "status": "skipped",
+            "reason": "use_browser_render=false",
+        }
+
+    if "render_browserbase_visual" not in globals():
+        return {
+            "status": "skipped_missing_dependency",
+            "reason": "render_browserbase_visual no disponible.",
+        }
+
+    try:
+        render_req = BrowserRenderRequest(
+            url=url,
+            viewport="desktop",
+            wait_ms=req.wait_ms,
+            timeout_ms=req.timeout_ms,
+            full_page=True,
+        )
+
+        result = await render_browserbase_visual(render_req)
+        summary = result.get("visual_dom_summary") or {}
+        screenshot = result.get("screenshot") or {}
+
+        return {
+            "status": result.get("status"),
+            "final_url": result.get("final_url"),
+            "http_status": result.get("http_status"),
+            "page_title": result.get("page_title"),
+            "screenshot_url": screenshot.get("screenshot_url"),
+            "screenshot_id": screenshot.get("screenshot_id"),
+            "text_sample": _sp_trunc(summary.get("text_sample"), req.max_visible_text_chars),
+            "links_count": summary.get("links_count"),
+            "forms_count": summary.get("forms_count"),
+            "images_count": summary.get("images_count"),
+            "visible_ctas": summary.get("visible_ctas") or [],
+            "limitations": result.get("limitations") or [],
+        }
+
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "reason": str(exc),
+        }
+
+
+def _sp_merge_metrics(*metric_sets: Dict[str, Any]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+
+    keys = [
+        "followers_visible_values",
+        "following_visible_values",
+        "posts_visible_values",
+        "likes_visible_values",
+        "comments_visible_values",
+        "views_visible_values",
+        "shares_visible_values",
+        "dates_visible_values",
+    ]
+
+    for key in keys:
+        values: List[str] = []
+
+        for metrics in metric_sets:
+            for item in metrics.get(key) or []:
+                clean = _sp_ws(item)
+                if clean and clean not in values:
+                    values.append(clean)
+
+        merged[key] = values[:25]
+
+    merged["can_calculate_engagement"] = bool(
+        merged.get("followers_visible_values") and (
+            merged.get("likes_visible_values") or merged.get("comments_visible_values")
+        )
+    )
+
+    merged["can_calculate_frequency"] = bool(
+        merged.get("dates_visible_values") and merged.get("posts_visible_values")
+    )
+
+    merged["can_estimate_content_activity"] = bool(
+        merged.get("dates_visible_values") or merged.get("posts_visible_values") or merged.get("views_visible_values")
+    )
+
+    return merged
+
+
+def _sp_quality(metrics: Dict[str, Any], fetch_status: str, search_status: str, render_status: str) -> Dict[str, Any]:
+    visible_groups = [
+        "followers_visible_values",
+        "following_visible_values",
+        "posts_visible_values",
+        "likes_visible_values",
+        "comments_visible_values",
+        "views_visible_values",
+        "shares_visible_values",
+        "dates_visible_values",
+    ]
+
+    visible_count = sum(1 for k in visible_groups if metrics.get(k))
+
+    if visible_count >= 5:
+        confidence = "medium-high"
+    elif visible_count >= 3:
+        confidence = "medium"
+    elif visible_count >= 1:
+        confidence = "low-medium"
+    else:
+        confidence = "low"
+
+    limitations = []
+
+    if fetch_status != "completed":
+        limitations.append("La lectura pública directa fue parcial, fallida o bloqueada.")
+
+    if search_status not in ("completed", "skipped"):
+        limitations.append("La búsqueda pública fue parcial, fallida o no disponible.")
+
+    if render_status not in ("completed", "skipped"):
+        limitations.append("El render visual social fue parcial, fallido o no disponible.")
+
+    if not metrics.get("can_calculate_engagement"):
+        limitations.append("No se puede calcular engagement confiable sin seguidores + interacciones visibles suficientes.")
+
+    if not metrics.get("can_calculate_frequency"):
+        limitations.append("No se puede calcular frecuencia confiable sin fechas + publicaciones visibles suficientes.")
+
+    return {
+        "confidence": confidence,
+        "visible_metric_groups": visible_count,
+        "engagement_calculable": metrics.get("can_calculate_engagement"),
+        "frequency_calculable": metrics.get("can_calculate_frequency"),
+        "limitations": limitations,
+    }
+
+
+def _sp_real_data_contrast_plan(platform: str) -> List[Dict[str, str]]:
+    common = [
+        {
+            "public_observed_field": "perfil público / identidad",
+            "real_data_to_request": "captura fechada o acceso autorizado al perfil/cuenta",
+            "source_expected": "plataforma nativa o captura fechada",
+            "why": "Validar que el perfil leído corresponde a la marca y no a un resultado ambiguo.",
+        },
+        {
+            "public_observed_field": "seguidores visibles",
+            "real_data_to_request": "seguidores actuales y evolución últimos 90/180 días",
+            "source_expected": "Insights nativos",
+            "why": "Contrastar visibilidad pública contra crecimiento real.",
+        },
+        {
+            "public_observed_field": "posts/fechas/interacciones visibles",
+            "real_data_to_request": "export de últimos 30/60/90 contenidos con fecha, formato, alcance, impresiones, views, likes, comentarios, guardados, compartidos, clics y mensajes",
+            "source_expected": "Meta Business Suite / LinkedIn Analytics / TikTok Analytics / YouTube Studio",
+            "why": "Calcular frecuencia, engagement y performance real con datos confiables.",
+        },
+        {
+            "public_observed_field": "clics / mensajes / leads",
+            "real_data_to_request": "clics al link, clics a WhatsApp, mensajes, formularios, leads y tasa de respuesta",
+            "source_expected": "Insights + CRM + WhatsApp/Inbox",
+            "why": "Medir si el contenido genera acciones comerciales, no solo interacción.",
+        },
+        {
+            "public_observed_field": "ventas atribuidas",
+            "real_data_to_request": "ventas/leads por campaña, contenido, UTMs o CRM",
+            "source_expected": "GA4, Ads, CRM, ecommerce backend",
+            "why": "No inferir ventas desde métricas sociales públicas.",
+        },
+    ]
+
+    if platform == "linkedin":
+        common.append({
+            "public_observed_field": "señal B2B",
+            "real_data_to_request": "impresiones, clics, seguidores, visitantes, leads, cargos/industrias y posteos de empresa",
+            "source_expected": "LinkedIn Analytics / CRM",
+            "why": "Validar si LinkedIn aporta confianza B2B o generación de demanda.",
+        })
+
+    return common
+
+
+async def _sp_collect_one(platform: str, url: str, req: SocialPublicAuditRequest) -> Dict[str, Any]:
+    fetch = {
+        "status": "skipped",
+        "reason": "fetch_static_pages=false",
+        "html": "",
+    }
+
+    if req.fetch_static_pages:
+        fetch = await _sp_http_get(url)
+
+    meta = _sp_meta_from_html(platform, url, fetch.get("html") or "", req.max_visible_text_chars)
+
+    static_text = " ".join([
+        meta.get("title") or "",
+        meta.get("meta_description") or "",
+        meta.get("og_title") or "",
+        meta.get("og_description") or "",
+        meta.get("visible_text_sample") or "",
+    ])
+
+    static_metrics = _sp_extract_metric_candidates(static_text)
+    static_signals = _sp_extract_content_signals(static_text)
+    static_post_like = _sp_extract_post_like_items(static_text, req.max_posts_extract)
+
+    search = {
+        "status": "skipped",
+        "reason": "use_search_discovery=false",
+        "results": [],
+    }
+
+    if req.use_search_discovery:
+        search = await _sp_search(req.company_name, platform, url, req.max_search_results)
+
+    search_text = " ".join([
+        str(r.get("title") or "") + " " + str(r.get("snippet") or "")
+        for r in search.get("results") or []
+    ])
+
+    search_metrics = _sp_extract_metric_candidates(search_text)
+    search_signals = _sp_extract_content_signals(search_text)
+    search_post_like = _sp_extract_post_like_items(search_text, req.max_posts_extract)
+
+    render = await _sp_browser_render(platform, url, req)
+    render_text = render.get("text_sample") or ""
+    render_metrics = _sp_extract_metric_candidates(render_text)
+    render_signals = _sp_extract_content_signals(render_text)
+    render_post_like = _sp_extract_post_like_items(render_text, req.max_posts_extract)
+
+    metrics = _sp_merge_metrics(static_metrics, search_metrics, render_metrics)
+
+    quality = _sp_quality(
+        metrics,
+        fetch.get("status"),
+        search.get("status"),
+        render.get("status"),
+    )
+
+    post_like_items = []
+    seen_texts = set()
+
+    for source_name, items in [
+        ("static_html", static_post_like),
+        ("search_discovery", search_post_like),
+        ("browser_render", render_post_like),
+    ]:
+        for item in items:
+            text = item.get("text")
+            if not text or text in seen_texts:
+                continue
+
+            seen_texts.add(text)
+            post_like_items.append({
+                "source": source_name,
+                "text": text,
+                "metrics_detected": item.get("metrics_detected") or {},
+            })
+
+            if len(post_like_items) >= req.max_posts_extract:
+                break
+
+        if len(post_like_items) >= req.max_posts_extract:
+            break
+
+    return {
+        "platform": platform,
+        "url_requested": url,
+        "fetch": {
+            "status": fetch.get("status"),
+            "http_status": fetch.get("http_status"),
+            "final_url": fetch.get("final_url"),
+            "content_type": fetch.get("content_type"),
+            "html_length": fetch.get("html_length"),
+            "reason": fetch.get("reason"),
+        },
+        "public_identity": {
+            "title": meta.get("title"),
+            "meta_description": meta.get("meta_description"),
+            "og_title": meta.get("og_title"),
+            "og_description": meta.get("og_description"),
+            "canonical": meta.get("canonical"),
+            "links_sample": meta.get("links_sample") or [],
+        },
+        "visible_metrics": metrics,
+        "content_signals": {
+            "static_html": static_signals,
+            "search_discovery": search_signals,
+            "browser_render": render_signals,
+        },
+        "post_like_items_sample": post_like_items,
+        "search_discovery": {
+            "status": search.get("status"),
+            "provider": search.get("provider"),
+            "query": search.get("query"),
+            "http_status": search.get("http_status"),
+            "results_count": search.get("results_count"),
+            "results_sample": search.get("results", [])[:req.max_search_results],
+            "reason": search.get("reason"),
+        },
+        "browser_render": render,
+        "data_quality": quality,
+        "contrast_plan": _sp_real_data_contrast_plan(platform),
+        "visible_text_sample": meta.get("visible_text_sample"),
+    }
+
+
+def _sp_summary(platform_reports: List[Dict[str, Any]]) -> Dict[str, Any]:
+    platforms_with_any_metrics: List[str] = []
+    platforms_with_engagement_possible: List[str] = []
+    platforms_with_frequency_possible: List[str] = []
+    platforms_blocked_or_partial: List[str] = []
+
+    for report in platform_reports:
+        platform = report.get("platform")
+        metrics = report.get("visible_metrics") or {}
+
+        has_any = any(
+            metrics.get(k)
+            for k in [
+                "followers_visible_values",
+                "following_visible_values",
+                "posts_visible_values",
+                "likes_visible_values",
+                "comments_visible_values",
+                "views_visible_values",
+                "shares_visible_values",
+                "dates_visible_values",
+            ]
+        )
+
+        if has_any:
+            platforms_with_any_metrics.append(platform)
+
+        if metrics.get("can_calculate_engagement"):
+            platforms_with_engagement_possible.append(platform)
+
+        if metrics.get("can_calculate_frequency"):
+            platforms_with_frequency_possible.append(platform)
+
+        fetch_status = (report.get("fetch") or {}).get("status")
+        if fetch_status != "completed":
+            platforms_blocked_or_partial.append(platform)
+
+    return {
+        "platforms_analyzed": len(platform_reports),
+        "platforms_with_any_visible_metrics": platforms_with_any_metrics,
+        "platforms_with_engagement_possible": platforms_with_engagement_possible,
+        "platforms_with_frequency_possible": platforms_with_frequency_possible,
+        "platforms_partial_or_blocked": platforms_blocked_or_partial,
+        "global_limitations": [
+            "Las plataformas sociales pueden ocultar datos públicos, requerir login, bloquear HTML o entregar contenido regionalizado.",
+            "Los snippets de búsqueda sirven como discovery y evidencia débil/media, no reemplazan analytics nativos.",
+            "No afirmar engagement, frecuencia, alcance, clics, mensajes, ventas ni calidad de audiencia sin datos suficientes.",
+            "Calcular engagement solo si existen seguidores visibles e interacciones visibles suficientes.",
+            "Calcular frecuencia solo si existen fechas y publicaciones visibles suficientes.",
+        ],
+        "owner_exports_required": [
+            "Meta Business Suite: alcance, impresiones, seguidores, clics, mensajes, guardados, compartidos y contenidos últimos 90 días.",
+            "Instagram Insights: posts/reels con fecha, formato, alcance, views, likes, comentarios, guardados, shares y clics.",
+            "Facebook Insights: alcance, reacciones, comentarios, compartidos, clics, mensajes y crecimiento.",
+            "LinkedIn Analytics: followers, impresiones, clics, visitantes, interacciones, posteos y datos de audiencia.",
+            "TikTok Analytics: videos, views, retención, likes, comentarios, shares, seguidores y tráfico al perfil.",
+            "YouTube Studio: videos, views, retención, CTR, suscriptores, tráfico y engagement.",
+            "CRM/WhatsApp: consultas, tasa de respuesta, calidad de lead, cierre y ventas atribuidas.",
+        ],
+    }
+
+
+def _sp_txt(payload: Dict[str, Any]) -> str:
+    lines: List[str] = []
+
+    lines.append("AUDITORÍA SOCIAL PÚBLICA EXHAUSTIVA")
+    lines.append("=" * 72)
+    lines.append("")
+    lines.append(f"Empresa: {payload.get('company_name') or 'No especificada'}")
+    lines.append(f"Fecha de recolección: {payload.get('retrieved_at')}")
+    lines.append(f"Versión del collector: {payload.get('version')}")
+    lines.append(f"Estado: {payload.get('status')}")
+    lines.append(f"Report ID: {payload.get('report_id')}")
+    lines.append("")
+    lines.append("1. FUENTES ANALIZADAS")
+    lines.append("-" * 72)
+
+    for platform, url in (payload.get("sources_received") or {}).items():
+        lines.append(f"- {platform}: {url}")
+
+    lines.append("")
+    lines.append("2. RESUMEN EJECUTIVO SOCIAL")
+    lines.append("-" * 72)
+
+    summary = payload.get("social_public_summary") or {}
+    lines.append(f"Plataformas analizadas: {summary.get('platforms_analyzed')}")
+    lines.append(f"Con alguna métrica visible: {summary.get('platforms_with_any_visible_metrics')}")
+    lines.append(f"Engagement calculable: {summary.get('platforms_with_engagement_possible')}")
+    lines.append(f"Frecuencia calculable: {summary.get('platforms_with_frequency_possible')}")
+    lines.append(f"Parciales o bloqueadas: {summary.get('platforms_partial_or_blocked')}")
+
+    lines.append("")
+    lines.append("3. RESULTADO POR PLATAFORMA")
+    lines.append("-" * 72)
+
+    for report in payload.get("platform_reports") or []:
+        platform = report.get("platform")
+        lines.append("")
+        lines.append("=" * 72)
+        lines.append(f"PLATAFORMA: {platform}")
+        lines.append("=" * 72)
+        lines.append(f"URL solicitada: {report.get('url_requested')}")
+
+        fetch = report.get("fetch") or {}
+        lines.append("")
+        lines.append("Lectura pública directa")
+        lines.append(f"- status: {fetch.get('status')}")
+        lines.append(f"- http_status: {fetch.get('http_status')}")
+        lines.append(f"- final_url: {fetch.get('final_url')}")
+        lines.append(f"- content_type: {fetch.get('content_type')}")
+        lines.append(f"- html_length: {fetch.get('html_length')}")
+        lines.append(f"- reason: {fetch.get('reason')}")
+
+        identity = report.get("public_identity") or {}
+        lines.append("")
+        lines.append("Identidad pública detectada")
+        lines.append(f"- title: {identity.get('title')}")
+        lines.append(f"- meta_description: {identity.get('meta_description')}")
+        lines.append(f"- og_title: {identity.get('og_title')}")
+        lines.append(f"- og_description: {identity.get('og_description')}")
+        lines.append(f"- canonical: {identity.get('canonical')}")
+
+        lines.append("")
+        lines.append("Links visibles sample")
+        for item in identity.get("links_sample") or []:
+            lines.append(f"- {item.get('text')} | {item.get('href')}")
+
+        metrics = report.get("visible_metrics") or {}
+        lines.append("")
+        lines.append("Métricas visibles detectadas")
+        lines.append(f"- followers: {metrics.get('followers_visible_values')}")
+        lines.append(f"- following: {metrics.get('following_visible_values')}")
+        lines.append(f"- posts: {metrics.get('posts_visible_values')}")
+        lines.append(f"- likes: {metrics.get('likes_visible_values')}")
+        lines.append(f"- comments: {metrics.get('comments_visible_values')}")
+        lines.append(f"- views: {metrics.get('views_visible_values')}")
+        lines.append(f"- shares: {metrics.get('shares_visible_values')}")
+        lines.append(f"- fechas: {metrics.get('dates_visible_values')}")
+        lines.append(f"- engagement calculable: {metrics.get('can_calculate_engagement')}")
+        lines.append(f"- frecuencia calculable: {metrics.get('can_calculate_frequency')}")
+
+        lines.append("")
+        lines.append("Contenido/post-like items detectados")
+        for item in report.get("post_like_items_sample") or []:
+            lines.append(f"- source: {item.get('source')}")
+            lines.append(f"  text: {item.get('text')}")
+            lines.append(f"  metrics: {item.get('metrics_detected')}")
+
+        lines.append("")
+        lines.append("Search discovery")
+        search = report.get("search_discovery") or {}
+        lines.append(f"- status: {search.get('status')}")
+        lines.append(f"- provider: {search.get('provider')}")
+        lines.append(f"- query: {search.get('query')}")
+        lines.append(f"- results_count: {search.get('results_count')}")
+        lines.append(f"- reason: {search.get('reason')}")
+
+        for r in search.get("results_sample") or []:
+            lines.append(f"  * {r.get('position')}. {r.get('title')}")
+            lines.append(f"    URL: {r.get('url')}")
+            lines.append(f"    Snippet: {r.get('snippet')}")
+
+        render = report.get("browser_render") or {}
+        lines.append("")
+        lines.append("Browser/render social")
+        lines.append(f"- status: {render.get('status')}")
+        lines.append(f"- final_url: {render.get('final_url')}")
+        lines.append(f"- http_status: {render.get('http_status')}")
+        lines.append(f"- page_title: {render.get('page_title')}")
+        lines.append(f"- screenshot_url: {render.get('screenshot_url')}")
+        lines.append(f"- links_count: {render.get('links_count')}")
+        lines.append(f"- forms_count: {render.get('forms_count')}")
+        lines.append(f"- images_count: {render.get('images_count')}")
+        lines.append(f"- visible_ctas: {render.get('visible_ctas')}")
+        lines.append(f"- reason: {render.get('reason')}")
+
+        quality = report.get("data_quality") or {}
+        lines.append("")
+        lines.append("Calidad de evidencia")
+        lines.append(f"- confidence: {quality.get('confidence')}")
+        lines.append(f"- visible_metric_groups: {quality.get('visible_metric_groups')}")
+        lines.append(f"- engagement_calculable: {quality.get('engagement_calculable')}")
+        lines.append(f"- frequency_calculable: {quality.get('frequency_calculable')}")
+        for limitation in quality.get("limitations") or []:
+            lines.append(f"- limitación: {limitation}")
+
+        lines.append("")
+        lines.append("Plan de contraste contra datos reales")
+        for row in report.get("contrast_plan") or []:
+            lines.append(f"- Campo público: {row.get('public_observed_field')}")
+            lines.append(f"  Dato real a pedir: {row.get('real_data_to_request')}")
+            lines.append(f"  Fuente esperada: {row.get('source_expected')}")
+            lines.append(f"  Motivo: {row.get('why')}")
+
+        lines.append("")
+        lines.append("Texto visible sample")
+        lines.append(str(report.get("visible_text_sample") or "")[:3000])
+
+    lines.append("")
+    lines.append("4. LIMITACIONES GLOBALES")
+    lines.append("-" * 72)
+
+    for item in summary.get("global_limitations") or []:
+        lines.append(f"- {item}")
+
+    lines.append("")
+    lines.append("5. EXPORTS / ACCESOS A PEDIR")
+    lines.append("-" * 72)
+
+    for item in summary.get("owner_exports_required") or []:
+        lines.append(f"- {item}")
+
+    lines.append("")
+    lines.append("6. GUARDRAILS")
+    lines.append("-" * 72)
+    lines.append("- No afirmar engagement, frecuencia, alcance, clics, mensajes, ventas ni calidad de lead sin evidencia suficiente.")
+    lines.append("- No calcular likes promedio, comentarios promedio, engagement rate ni frecuencia si no hay base observable suficiente.")
+    lines.append("- Los snippets de búsqueda son señales de discovery, no analytics nativo.")
+    lines.append("- La información social pública puede estar incompleta por login, bloqueo, región, HTML dinámico o cambios de plataforma.")
+    lines.append("- Para contraste real, usar exports nativos, capturas fechadas, CRM, GA4 y datos de ventas.")
+
+    return "\n".join(lines) + "\n"
+
+
+@app.get("/deliverables/social-text/{report_id}.txt")
+async def get_social_text_report(report_id: str, _: None = Depends(verify_api_key)):
+    txt = SOCIAL_TEXT_REPORTS.get(report_id)
+
+    if not txt:
+        raise HTTPException(status_code=404, detail="Social report not found")
+
+    from fastapi.responses import PlainTextResponse as _PlainTextResponse
+
+    return _PlainTextResponse(
+        txt,
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="social_public_{report_id}.txt"'
+        },
+    )
+
+
+@app.post("/audit/social-public")
+async def audit_social_public(req: SocialPublicAuditRequest, _: None = Depends(verify_api_key)) -> Dict[str, Any]:
+    import uuid as _uuid
+
+    sources = _sp_inputs(req)
+
+    if not sources:
+        raise HTTPException(
+            status_code=400,
+            detail="Enviar al menos un link social público: instagram, facebook, linkedin, tiktok, youtube o x.",
+        )
+
+    platform_reports: List[Dict[str, Any]] = []
+
+    for platform, url in sources.items():
+        platform_reports.append(await _sp_collect_one(platform, url, req))
+
+    report_id = _uuid.uuid4().hex
+    download_url = f"{_sp_public_base_url()}/deliverables/social-text/{report_id}.txt"
+
+    payload: Dict[str, Any] = {
+        "status": "completed_with_limitations",
+        "collector": "social_public_exhaustive_audit",
+        "version": APP_VERSION,
+        "company_name": req.company_name,
+        "sources_received": sources,
+        "platform_reports": platform_reports,
+        "social_public_summary": _sp_summary(platform_reports),
+        "report_id": report_id,
+        "download_url": download_url,
+        "txt_report": {
+            "available": True,
+            "report_id": report_id,
+            "download_url": download_url,
+            "endpoint": f"/deliverables/social-text/{report_id}.txt",
+        },
+        "limitations": [
+            "Módulo basado en evidencia pública observable, HTML público, search discovery y render opcional.",
+            "No reemplaza Meta Business Suite, Instagram Insights, Facebook Insights, LinkedIn Analytics, TikTok Analytics, YouTube Studio ni CRM.",
+            "No calcula engagement/frecuencia si faltan seguidores, fechas, publicaciones o interacciones visibles suficientes.",
+            "No afirma ventas, ROAS, CPA, CPL, tráfico, conversión, margen ni calidad de lead.",
+        ],
+        "retrieved_at": now_iso(),
+    }
+
+    SOCIAL_TEXT_REPORTS[report_id] = _sp_txt(payload)
+
+    return payload
 
 
 
