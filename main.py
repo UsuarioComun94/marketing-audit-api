@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.6"
+APP_VERSION = "public-presence-collector-mvp-0.7"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -2607,6 +2607,7 @@ async def root() -> Dict[str, Any]:
             "GET /debug/composio-tools",
             "POST /debug/composio-execute",
             "POST /collect/public-presence",
+            "POST /collect/public-presence-compact",
             "GET /deliverables/screenshot/{screenshot_id}.png",
             "GET /deliverables/text/{report_id}.txt",
         ],
@@ -2640,6 +2641,7 @@ async def api_status(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
             "GET /debug/composio-tools",
             "POST /debug/composio-execute",
             "POST /collect/public-presence",
+            "POST /collect/public-presence-compact",
             "GET /deliverables/screenshot/{screenshot_id}.png",
             "GET /deliverables/text/{report_id}.txt"
         ]
@@ -3146,6 +3148,211 @@ async def collector_config(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
         },
         "notes": build_collector_notes(),
     }
+
+
+
+def _compact_value_for_action(value: Any, max_chars: int = 700) -> Any:
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float, bool)):
+        return value
+
+    if isinstance(value, str):
+        return truncate(collapse_ws(value), max_chars)
+
+    if isinstance(value, list):
+        out = []
+        for item in value[:20]:
+            out.append(_compact_value_for_action(item, max_chars=max_chars))
+        return out
+
+    if isinstance(value, dict):
+        blocked_keys = {
+            "raw",
+            "raw_html",
+            "html",
+            "markdown",
+            "content",
+            "page_content",
+            "body",
+            "text",
+            "screenshot_base64",
+            "base64",
+            "debug_raw",
+        }
+
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            key = str(k)
+            low = key.lower()
+
+            if low in blocked_keys:
+                out[key] = "[omitted_large_field]"
+                continue
+
+            if any(token in low for token in ["raw", "html", "markdown", "base64"]):
+                out[key] = "[omitted_large_field]"
+                continue
+
+            out[key] = _compact_value_for_action(v, max_chars=max_chars)
+
+            if len(out) >= 30:
+                break
+
+        return out
+
+    return truncate(collapse_ws(str(value)), max_chars)
+
+
+def _compact_report_item(item: Any) -> Dict[str, Any]:
+    if not isinstance(item, dict):
+        return {"value": _compact_value_for_action(item, 300)}
+
+    keys = [
+        "collector",
+        "platform",
+        "status",
+        "source",
+        "url",
+        "reason",
+        "confidence",
+        "data_quality",
+        "fields_collected",
+        "fields_missing",
+    ]
+
+    out: Dict[str, Any] = {}
+    for key in keys:
+        if key in item:
+            out[key] = _compact_value_for_action(item.get(key), 350)
+
+    details = item.get("details")
+    if isinstance(details, dict):
+        detail_out: Dict[str, Any] = {}
+        for k, v in details.items():
+            lk = str(k).lower()
+            if any(token in lk for token in ["raw", "html", "markdown", "content", "base64"]):
+                continue
+            detail_out[str(k)] = _compact_value_for_action(v, 350)
+            if len(detail_out) >= 12:
+                break
+        if detail_out:
+            out["details"] = detail_out
+
+    return out
+
+
+def _compact_evidence_item(item: Any) -> Dict[str, Any]:
+    if not isinstance(item, dict):
+        return {"value": _compact_value_for_action(item, 300)}
+
+    keys = [
+        "source",
+        "platform",
+        "field",
+        "value",
+        "url",
+        "confidence",
+        "retrieved_at",
+        "notes",
+    ]
+
+    out: Dict[str, Any] = {}
+    for key in keys:
+        if key in item:
+            out[key] = _compact_value_for_action(item.get(key), 500)
+
+    return out
+
+
+def _compact_txt_report_info(txt_report: Any) -> Dict[str, Any]:
+    if not isinstance(txt_report, dict):
+        return {}
+
+    allowed = [
+        "report_id",
+        "download_url",
+        "url",
+        "filename",
+        "media_type",
+        "available",
+        "created_at",
+    ]
+
+    out: Dict[str, Any] = {}
+    for key in allowed:
+        if key in txt_report:
+            out[key] = txt_report.get(key)
+
+    for key, value in txt_report.items():
+        lk = str(key).lower()
+        if "id" in lk and "report_id" not in out:
+            out["report_id"] = value
+        if "url" in lk and "download_url" not in out:
+            out["download_url"] = value
+
+    return out
+
+
+def compact_public_presence_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    execution = payload.get("collection_execution_report") or {}
+    collector_reports = payload.get("collector_reports") or []
+    evidence_registry = payload.get("evidence_registry") or []
+    unavailable_data = payload.get("unavailable_data") or []
+    requires_owner_access = payload.get("requires_owner_access") or []
+    field_recovery_guide = payload.get("field_recovery_guide") or []
+
+    compact_reports = [_compact_report_item(x) for x in collector_reports[:35]]
+    compact_evidence = [_compact_evidence_item(x) for x in evidence_registry[:40]]
+
+    txt_report = _compact_txt_report_info(payload.get("txt_report") or {})
+
+    return {
+        "collection_status": payload.get("collection_status"),
+        "collector_version": payload.get("collector_version"),
+        "created_at": payload.get("created_at"),
+        "company_name": payload.get("company_name"),
+        "assets_received": _compact_value_for_action(payload.get("assets_received"), 500),
+        "collection_depth": payload.get("collection_depth"),
+        "collection_hash": payload.get("collection_hash"),
+        "response_mode": "compact_for_gpt_action",
+        "txt_report": txt_report,
+        "report_id": txt_report.get("report_id"),
+        "download_url": txt_report.get("download_url") or txt_report.get("url"),
+        "execution_summary": {
+            "overall_status": execution.get("overall_status"),
+            "collectors_attempted_or_evaluated": execution.get("collectors_attempted_or_evaluated"),
+            "collectors_completed": execution.get("collectors_completed"),
+            "collectors_partial": execution.get("collectors_partial"),
+            "collectors_skipped": execution.get("collectors_skipped"),
+            "collectors_failed": execution.get("collectors_failed"),
+            "collectors_not_implemented": execution.get("collectors_not_implemented"),
+            "status_counts": execution.get("status_counts"),
+        },
+        "metrics_summary_compact": _compact_value_for_action(payload.get("metrics_summary"), 700),
+        "tool_summaries_compact": _compact_value_for_action(payload.get("tool_summaries"), 700),
+        "collector_reports_count": len(collector_reports),
+        "collector_reports_sample": compact_reports,
+        "evidence_registry_count": len(evidence_registry),
+        "evidence_registry_sample": compact_evidence,
+        "unavailable_data_count": len(unavailable_data),
+        "unavailable_data_sample": _compact_value_for_action(unavailable_data[:20], 450),
+        "requires_owner_access_count": len(requires_owner_access),
+        "requires_owner_access_sample": _compact_value_for_action(requires_owner_access[:20], 450),
+        "field_recovery_guide_sample": _compact_value_for_action(field_recovery_guide[:20], 450),
+        "limitations": [
+            "Respuesta compactada para evitar ResponseTooLargeError en GPT Actions.",
+            "Usar getTextReport con report_id/download_url para revisar el informe completo.",
+            "No afirmar ventas, ROAS, CPA, conversion, margen, trafico ni calidad de lead sin acceso privado.",
+        ],
+    }
+
+
+@app.post("/collect/public-presence-compact")
+async def collect_public_presence_compact(req: PublicPresenceCollectRequest, _: None = Depends(verify_api_key)) -> Dict[str, Any]:
+    full_payload = await collect_public_presence(req)
+    return compact_public_presence_payload(full_payload)
 
 
 @app.post("/collect/public-presence")
