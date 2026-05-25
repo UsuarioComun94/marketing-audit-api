@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.8"
+APP_VERSION = "public-presence-collector-mvp-0.8.1"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -3653,21 +3653,42 @@ def _sp_merge_metrics(*metric_sets: Dict[str, Any]) -> Dict[str, Any]:
 
         merged[key] = values[:25]
 
-    merged["can_calculate_engagement"] = bool(
-        merged.get("followers_visible_values") and (
-            merged.get("likes_visible_values") or merged.get("comments_visible_values")
-        )
+    has_followers = bool(merged.get("followers_visible_values"))
+    has_interactions = bool(
+        merged.get("likes_visible_values")
+        or merged.get("comments_visible_values")
+        or merged.get("views_visible_values")
+        or merged.get("shares_visible_values")
     )
+    has_dates = bool(merged.get("dates_visible_values"))
+    has_posts = bool(merged.get("posts_visible_values"))
 
-    merged["can_calculate_frequency"] = bool(
-        merged.get("dates_visible_values") and merged.get("posts_visible_values")
+    # Guardrail de fiabilidad:
+    # Los valores extraídos desde HTML/snippets/render son candidatos textuales.
+    # No son una muestra estructurada de posts ni analytics nativo.
+    merged["public_metric_candidates_detected"] = bool(
+        has_followers or has_interactions or has_dates or has_posts
     )
+    merged["engagement_candidate_detected"] = bool(has_followers and has_interactions)
+    merged["frequency_candidate_detected"] = bool(has_dates or has_posts)
 
-    merged["can_estimate_content_activity"] = bool(
-        merged.get("dates_visible_values") or merged.get("posts_visible_values") or merged.get("views_visible_values")
-    )
+    # Mantener en False hasta tener dataset estructurado suficiente.
+    merged["can_calculate_engagement"] = False
+    merged["can_calculate_frequency"] = False
+
+    merged["calculation_policy"] = {
+        "engagement": "blocked_public_candidates_only",
+        "frequency": "blocked_public_candidates_only",
+        "reason": (
+            "Las métricas visibles son candidatos textuales de HTML/snippets/render. "
+            "Para calcular engagement o frecuencia hace falta dataset estructurado de posts "
+            "con seguidores, fechas e interacciones, o export nativo de la plataforma."
+        ),
+    }
 
     return merged
+
+
 
 
 def _sp_quality(metrics: Dict[str, Any], fetch_status: str, search_status: str, render_status: str) -> Dict[str, Any]:
@@ -3684,16 +3705,22 @@ def _sp_quality(metrics: Dict[str, Any], fetch_status: str, search_status: str, 
 
     visible_count = sum(1 for k in visible_groups if metrics.get(k))
 
+    # Máximo medium porque la evidencia pública social puede venir de HTML/snippets/render,
+    # no de exports nativos ni dataset estructurado de publicaciones.
     if visible_count >= 5:
-        confidence = "medium-high"
-    elif visible_count >= 3:
         confidence = "medium"
+    elif visible_count >= 3:
+        confidence = "low-medium"
     elif visible_count >= 1:
         confidence = "low-medium"
     else:
         confidence = "low"
 
     limitations = []
+
+    limitations.append(
+        "Las métricas sociales visibles se tratan como candidatos públicos, no como analytics nativo."
+    )
 
     if fetch_status != "completed":
         limitations.append("La lectura pública directa fue parcial, fallida o bloqueada.")
@@ -3704,19 +3731,25 @@ def _sp_quality(metrics: Dict[str, Any], fetch_status: str, search_status: str, 
     if render_status not in ("completed", "skipped"):
         limitations.append("El render visual social fue parcial, fallido o no disponible.")
 
-    if not metrics.get("can_calculate_engagement"):
-        limitations.append("No se puede calcular engagement confiable sin seguidores + interacciones visibles suficientes.")
+    limitations.append(
+        "No se calcula engagement desde candidatos textuales; se requiere export nativo o dataset estructurado de posts."
+    )
 
-    if not metrics.get("can_calculate_frequency"):
-        limitations.append("No se puede calcular frecuencia confiable sin fechas + publicaciones visibles suficientes.")
+    limitations.append(
+        "No se calcula frecuencia desde candidatos textuales; se requieren fechas/posteos estructurados."
+    )
 
     return {
         "confidence": confidence,
         "visible_metric_groups": visible_count,
-        "engagement_calculable": metrics.get("can_calculate_engagement"),
-        "frequency_calculable": metrics.get("can_calculate_frequency"),
+        "engagement_candidate_detected": metrics.get("engagement_candidate_detected"),
+        "frequency_candidate_detected": metrics.get("frequency_candidate_detected"),
+        "engagement_calculable": False,
+        "frequency_calculable": False,
         "limitations": limitations,
     }
+
+
 
 
 def _sp_real_data_contrast_plan(platform: str) -> List[Dict[str, str]]:
@@ -3976,8 +4009,8 @@ def _sp_txt(payload: Dict[str, Any]) -> str:
     summary = payload.get("social_public_summary") or {}
     lines.append(f"Plataformas analizadas: {summary.get('platforms_analyzed')}")
     lines.append(f"Con alguna métrica visible: {summary.get('platforms_with_any_visible_metrics')}")
-    lines.append(f"Engagement calculable: {summary.get('platforms_with_engagement_possible')}")
-    lines.append(f"Frecuencia calculable: {summary.get('platforms_with_frequency_possible')}")
+    lines.append(f"Engagement calculable con evidencia pública estructurada: {summary.get('platforms_with_engagement_possible')}")
+    lines.append(f"Frecuencia calculable con evidencia pública estructurada: {summary.get('platforms_with_frequency_possible')}")
     lines.append(f"Parciales o bloqueadas: {summary.get('platforms_partial_or_blocked')}")
 
     lines.append("")
