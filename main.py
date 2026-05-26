@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.2"
+APP_VERSION = "public-presence-collector-mvp-0.9.3"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -3661,17 +3661,127 @@ async def _sp_search(company_name: Optional[str], platform: str, url: str, max_r
 
 
 
+def _sp_social_render_classification(platform: str, final_url: Optional[str], page_title: Optional[str], text_sample: Optional[str]) -> Dict[str, Any]:
+    platform_clean = str(platform or "").lower().strip()
+    url = str(final_url or "").lower()
+    title = str(page_title or "").lower()
+    text = str(text_sample or "").lower()
+    combined = " ".join([url, title, text])
+
+    login_markers = [
+        "/login",
+        "accounts/login",
+        "login?",
+        "iniciar sesión",
+        "inicia sesión",
+        "log in",
+        "sign in",
+        "registrarte",
+        "create an account",
+        "entrar",
+    ]
+
+    block_markers = [
+        "captcha",
+        "unusual traffic",
+        "temporarily blocked",
+        "access denied",
+        "forbidden",
+        "not available",
+        "content isn't available",
+        "contenido no está disponible",
+        "something went wrong",
+    ]
+
+    public_profile_markers_by_platform = {
+        "instagram": ["publicaciones", "seguidores", "siguiendo", "posts", "followers", "following"],
+        "facebook": ["me gusta", "followers", "seguidores", "publicaciones", "reels", "fotos", "opiniones"],
+        "linkedin": ["employees", "empleados", "seguidores", "followers", "overview", "about", "publicaciones"],
+        "tiktok": ["following", "followers", "likes"],
+        "youtube": ["subscribers", "videos", "views"],
+        "x": ["followers", "posts", "following"],
+    }
+
+    matched_login = [m for m in login_markers if m in combined]
+    matched_block = [m for m in block_markers if m in combined]
+    matched_public = [
+        m for m in public_profile_markers_by_platform.get(platform_clean, [])
+        if m in combined
+    ]
+
+    is_login_wall = False
+
+    if platform_clean == "instagram" and "instagram.com/accounts/login" in url:
+        is_login_wall = True
+
+    if platform_clean == "facebook" and ("facebook.com/login" in url or "facebook.com/login.php" in url):
+        is_login_wall = True
+
+    if platform_clean == "linkedin" and ("linkedin.com/login" in url or "authwall" in url):
+        is_login_wall = True
+
+    if matched_login:
+        is_login_wall = True
+
+    is_blocked = bool(matched_block)
+
+    if is_login_wall:
+        classification = "login_wall"
+        evidence_grade = "not_profile_evidence"
+        usable_profile_visual_evidence = False
+        reason = "El render terminó en login/auth wall; screenshot útil solo como evidencia de bloqueo, no como vista del perfil."
+    elif is_blocked:
+        classification = "blocked_or_unavailable"
+        evidence_grade = "not_profile_evidence"
+        usable_profile_visual_evidence = False
+        reason = "El render muestra bloqueo, contenido no disponible o respuesta restrictiva."
+    elif matched_public:
+        classification = "public_profile_candidate"
+        evidence_grade = "partial_public_profile_evidence"
+        usable_profile_visual_evidence = True
+        reason = "El render contiene señales públicas compatibles con perfil/página, pero no reemplaza analytics nativo."
+    else:
+        classification = "unknown_or_partial"
+        evidence_grade = "weak_visual_evidence"
+        usable_profile_visual_evidence = False
+        reason = "El render completó, pero no hay señales suficientes para tratarlo como perfil público visible."
+
+    return {
+        "classification": classification,
+        "evidence_grade": evidence_grade,
+        "usable_profile_visual_evidence": usable_profile_visual_evidence,
+        "is_login_wall": is_login_wall,
+        "is_blocked_or_unavailable": is_blocked,
+        "matched_login_markers": matched_login[:10],
+        "matched_block_markers": matched_block[:10],
+        "matched_public_profile_markers": matched_public[:10],
+        "reason": reason,
+    }
+
+
 async def _sp_browser_render(platform: str, url: str, req: SocialPublicAuditRequest) -> Dict[str, Any]:
     if not req.use_browser_render:
         return {
             "status": "skipped",
             "reason": "use_browser_render=false",
+            "render_classification": {
+                "classification": "skipped",
+                "evidence_grade": "not_attempted",
+                "usable_profile_visual_evidence": False,
+                "reason": "Browser render social no fue solicitado.",
+            },
         }
 
     if "render_browserbase_visual" not in globals():
         return {
             "status": "skipped_missing_dependency",
             "reason": "render_browserbase_visual no disponible.",
+            "render_classification": {
+                "classification": "skipped_missing_dependency",
+                "evidence_grade": "not_attempted",
+                "usable_profile_visual_evidence": False,
+                "reason": "No está disponible el helper de Browserbase render.",
+            },
         }
 
     try:
@@ -3687,26 +3797,55 @@ async def _sp_browser_render(platform: str, url: str, req: SocialPublicAuditRequ
         summary = result.get("visual_dom_summary") or {}
         screenshot = result.get("screenshot") or {}
 
+        text_sample = _sp_trunc(summary.get("text_sample"), req.max_visible_text_chars)
+        final_url = result.get("final_url")
+        page_title = result.get("page_title")
+
+        classification = _sp_social_render_classification(
+            platform=platform,
+            final_url=final_url,
+            page_title=page_title,
+            text_sample=text_sample,
+        )
+
+        limitations = list(result.get("limitations") or [])
+
+        if classification.get("classification") == "login_wall":
+            limitations.append("Render social terminó en login/auth wall; screenshot no prueba vista pública del perfil.")
+        elif classification.get("classification") == "blocked_or_unavailable":
+            limitations.append("Render social muestra bloqueo o contenido no disponible.")
+        elif classification.get("classification") == "unknown_or_partial":
+            limitations.append("Render social completado, pero evidencia visual débil o parcial.")
+
         return {
             "status": result.get("status"),
-            "final_url": result.get("final_url"),
+            "final_url": final_url,
             "http_status": result.get("http_status"),
-            "page_title": result.get("page_title"),
+            "page_title": page_title,
             "screenshot_url": screenshot.get("screenshot_url"),
             "screenshot_id": screenshot.get("screenshot_id"),
-            "text_sample": _sp_trunc(summary.get("text_sample"), req.max_visible_text_chars),
+            "text_sample": text_sample,
             "links_count": summary.get("links_count"),
             "forms_count": summary.get("forms_count"),
             "images_count": summary.get("images_count"),
             "visible_ctas": summary.get("visible_ctas") or [],
-            "limitations": result.get("limitations") or [],
+            "render_classification": classification,
+            "limitations": limitations,
         }
 
     except Exception as exc:
         return {
             "status": "failed",
             "reason": str(exc),
+            "render_classification": {
+                "classification": "failed_runtime",
+                "evidence_grade": "not_profile_evidence",
+                "usable_profile_visual_evidence": False,
+                "reason": "Falló el render social en runtime.",
+            },
         }
+
+
 
 
 def _sp_merge_metrics(*metric_sets: Dict[str, Any]) -> Dict[str, Any]:
@@ -4017,6 +4156,9 @@ def _sp_summary(platform_reports: List[Dict[str, Any]]) -> Dict[str, Any]:
     platforms_with_engagement_possible: List[str] = []
     platforms_with_frequency_possible: List[str] = []
     platforms_blocked_or_partial: List[str] = []
+    platforms_with_login_wall: List[str] = []
+    platforms_with_public_visual_evidence: List[str] = []
+    platforms_with_blocked_visual_evidence: List[str] = []
 
     for report in platform_reports:
         platform = report.get("platform")
@@ -4049,15 +4191,32 @@ def _sp_summary(platform_reports: List[Dict[str, Any]]) -> Dict[str, Any]:
         if fetch_status != "completed":
             platforms_blocked_or_partial.append(platform)
 
+        render = report.get("browser_render") or {}
+        classification = (render.get("render_classification") or {}).get("classification")
+        usable_visual = (render.get("render_classification") or {}).get("usable_profile_visual_evidence")
+
+        if classification == "login_wall":
+            platforms_with_login_wall.append(platform)
+
+        if classification == "blocked_or_unavailable":
+            platforms_with_blocked_visual_evidence.append(platform)
+
+        if usable_visual:
+            platforms_with_public_visual_evidence.append(platform)
+
     return {
         "platforms_analyzed": len(platform_reports),
         "platforms_with_any_visible_metrics": platforms_with_any_metrics,
         "platforms_with_engagement_possible": platforms_with_engagement_possible,
         "platforms_with_frequency_possible": platforms_with_frequency_possible,
         "platforms_partial_or_blocked": platforms_blocked_or_partial,
+        "platforms_with_login_wall_render": platforms_with_login_wall,
+        "platforms_with_public_visual_evidence": platforms_with_public_visual_evidence,
+        "platforms_with_blocked_visual_evidence": platforms_with_blocked_visual_evidence,
         "global_limitations": [
             "Las plataformas sociales pueden ocultar datos públicos, requerir login, bloquear HTML o entregar contenido regionalizado.",
             "Los snippets de búsqueda sirven como discovery y evidencia débil/media, no reemplazan analytics nativos.",
+            "Screenshots de login/auth wall prueban bloqueo de acceso público renderizado, no visibilidad real del perfil.",
             "No afirmar engagement, frecuencia, alcance, clics, mensajes, ventas ni calidad de audiencia sin datos suficientes.",
             "Calcular engagement solo si existen seguidores visibles e interacciones visibles suficientes.",
             "Calcular frecuencia solo si existen fechas y publicaciones visibles suficientes.",
@@ -4072,6 +4231,8 @@ def _sp_summary(platform_reports: List[Dict[str, Any]]) -> Dict[str, Any]:
             "CRM/WhatsApp: consultas, tasa de respuesta, calidad de lead, cierre y ventas atribuidas.",
         ],
     }
+
+
 
 
 def _sp_txt(payload: Dict[str, Any]) -> str:
@@ -4184,6 +4345,11 @@ def _sp_txt(payload: Dict[str, Any]) -> str:
         lines.append(f"- final_url: {render.get('final_url')}")
         lines.append(f"- http_status: {render.get('http_status')}")
         lines.append(f"- page_title: {render.get('page_title')}")
+        rc = render.get("render_classification") or {}
+        lines.append(f"- render_classification: {rc.get('classification')}")
+        lines.append(f"- evidence_grade: {rc.get('evidence_grade')}")
+        lines.append(f"- usable_profile_visual_evidence: {rc.get('usable_profile_visual_evidence')}")
+        lines.append(f"- render_classification_reason: {rc.get('reason')}")
         lines.append(f"- screenshot_url: {render.get('screenshot_url')}")
         lines.append(f"- links_count: {render.get('links_count')}")
         lines.append(f"- forms_count: {render.get('forms_count')}")
