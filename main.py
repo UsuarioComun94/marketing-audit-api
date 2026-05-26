@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.8.1"
+APP_VERSION = "public-presence-collector-mvp-0.8.2"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -3503,6 +3503,42 @@ def _sp_extract_post_like_items(text: str, max_items: int) -> List[Dict[str, Any
     return items
 
 
+def _sp_platform_domains(platform: str) -> List[str]:
+    mapping = {
+        "instagram": ["instagram.com"],
+        "facebook": ["facebook.com", "fb.com"],
+        "linkedin": ["linkedin.com"],
+        "tiktok": ["tiktok.com"],
+        "youtube": ["youtube.com", "youtu.be"],
+        "x": ["x.com", "twitter.com"],
+    }
+    return mapping.get(str(platform or "").lower().strip(), [])
+
+
+def _sp_domain_from_url(url: Optional[str]) -> str:
+    if not url:
+        return ""
+
+    try:
+        parse = __import__("urllib.parse", fromlist=["urlparse"]).urlparse
+        netloc = parse(str(url)).netloc.lower()
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        return netloc
+    except Exception:
+        return ""
+
+
+def _sp_url_matches_platform(platform: str, url: Optional[str]) -> bool:
+    domain = _sp_domain_from_url(url)
+    allowed = _sp_platform_domains(platform)
+
+    if not domain or not allowed:
+        return False
+
+    return any(domain == d or domain.endswith("." + d) for d in allowed)
+
+
 async def _sp_search(company_name: Optional[str], platform: str, url: str, max_results: int) -> Dict[str, Any]:
     import os as _os
 
@@ -3511,6 +3547,8 @@ async def _sp_search(company_name: Optional[str], platform: str, url: str, max_r
             "status": "skipped",
             "reason": "max_search_results=0",
             "results": [],
+            "platform_results": [],
+            "external_results": [],
         }
 
     httpx_mod = globals().get("httpx")
@@ -3521,6 +3559,8 @@ async def _sp_search(company_name: Optional[str], platform: str, url: str, max_r
             "status": "skipped_missing_dependency",
             "reason": "httpx no disponible.",
             "results": [],
+            "platform_results": [],
+            "external_results": [],
         }
 
     if not tavily_key:
@@ -3528,11 +3568,22 @@ async def _sp_search(company_name: Optional[str], platform: str, url: str, max_r
             "status": "skipped_missing_api_key",
             "reason": "TAVILY_API_KEY no configurada.",
             "results": [],
+            "platform_results": [],
+            "external_results": [],
         }
 
-    query = _sp_ws(
-        f'{company_name or ""} {platform} {url} followers seguidores posts publicaciones likes comments comentarios views reels fecha'
-    )
+    allowed_domains = _sp_platform_domains(platform)
+    primary_domain = allowed_domains[0] if allowed_domains else ""
+
+    # Query deliberadamente filtrada por plataforma para reducir contaminación cruzada.
+    if primary_domain:
+        query = _sp_ws(
+            f'{company_name or ""} {platform} site:{primary_domain} {url} followers seguidores posts publicaciones likes comments comentarios views reels fecha'
+        )
+    else:
+        query = _sp_ws(
+            f'{company_name or ""} {platform} {url} followers seguidores posts publicaciones likes comments comentarios views reels fecha'
+        )
 
     try:
         async with httpx_mod.AsyncClient(timeout=35.0) as client:
@@ -3549,25 +3600,47 @@ async def _sp_search(company_name: Optional[str], platform: str, url: str, max_r
             )
 
         data = resp.json() if resp.text else {}
-        results = []
+        all_results = []
+        platform_results = []
+        external_results = []
 
         for i, item in enumerate((data.get("results") or [])[:max_results], start=1):
-            results.append({
+            result_url = item.get("url")
+
+            packed = {
                 "position": i,
                 "title": _sp_trunc(item.get("title"), 220),
-                "url": item.get("url"),
+                "url": result_url,
                 "snippet": _sp_trunc(item.get("content"), 700),
                 "score": item.get("score"),
-            })
+                "domain": _sp_domain_from_url(result_url),
+                "matches_platform": _sp_url_matches_platform(platform, result_url),
+            }
+
+            all_results.append(packed)
+
+            if packed["matches_platform"]:
+                platform_results.append(packed)
+            else:
+                external_results.append(packed)
 
         return {
             "status": "completed" if resp.status_code < 400 else "partial",
             "provider": "tavily",
             "query": query,
+            "platform_filter_domains": allowed_domains,
             "http_status": resp.status_code,
-            "results_count": len(results),
-            "results": results,
+            "results_count": len(all_results),
+            "platform_results_count": len(platform_results),
+            "external_results_count": len(external_results),
+            "results": all_results,
+            "platform_results": platform_results,
+            "external_results": external_results,
             "reason": None if resp.status_code < 400 else _sp_trunc(resp.text, 700),
+            "source_filter_policy": (
+                "Solo platform_results se usan para extraer métricas candidatas de la plataforma. "
+                "external_results quedan como discovery externo y no alimentan visible_metrics."
+            ),
         }
 
     except Exception as exc:
@@ -3576,8 +3649,12 @@ async def _sp_search(company_name: Optional[str], platform: str, url: str, max_r
             "provider": "tavily",
             "query": query,
             "results": [],
+            "platform_results": [],
+            "external_results": [],
             "reason": str(exc),
         }
+
+
 
 
 async def _sp_browser_render(platform: str, url: str, req: SocialPublicAuditRequest) -> Dict[str, Any]:
@@ -3830,9 +3907,12 @@ async def _sp_collect_one(platform: str, url: str, req: SocialPublicAuditRequest
     if req.use_search_discovery:
         search = await _sp_search(req.company_name, platform, url, req.max_search_results)
 
+    # Solo resultados del mismo dominio/plataforma alimentan métricas candidatas.
+    # Resultados externos quedan como discovery, no como visible_metrics.
+    search_metric_results = search.get("platform_results") or []
     search_text = " ".join([
         str(r.get("title") or "") + " " + str(r.get("snippet") or "")
-        for r in search.get("results") or []
+        for r in search_metric_results
     ])
 
     search_metrics = _sp_extract_metric_candidates(search_text)
@@ -3910,9 +3990,15 @@ async def _sp_collect_one(platform: str, url: str, req: SocialPublicAuditRequest
             "status": search.get("status"),
             "provider": search.get("provider"),
             "query": search.get("query"),
+            "platform_filter_domains": search.get("platform_filter_domains"),
+            "source_filter_policy": search.get("source_filter_policy"),
             "http_status": search.get("http_status"),
             "results_count": search.get("results_count"),
+            "platform_results_count": search.get("platform_results_count"),
+            "external_results_count": search.get("external_results_count"),
             "results_sample": search.get("results", [])[:req.max_search_results],
+            "platform_results_sample": search.get("platform_results", [])[:req.max_search_results],
+            "external_results_sample": search.get("external_results", [])[:req.max_search_results],
             "reason": search.get("reason"),
         },
         "browser_render": render,
@@ -4077,10 +4163,13 @@ def _sp_txt(payload: Dict[str, Any]) -> str:
         lines.append(f"- provider: {search.get('provider')}")
         lines.append(f"- query: {search.get('query')}")
         lines.append(f"- results_count: {search.get('results_count')}")
+        lines.append(f"- platform_results_count: {search.get('platform_results_count')}")
+        lines.append(f"- external_results_count: {search.get('external_results_count')}")
+        lines.append(f"- source_filter_policy: {search.get('source_filter_policy')}")
         lines.append(f"- reason: {search.get('reason')}")
 
-        for r in search.get("results_sample") or []:
-            lines.append(f"  * {r.get('position')}. {r.get('title')}")
+        for r in search.get("platform_results_sample") or []:
+            lines.append(f"  * PLATFORM {r.get('position')}. {r.get('title')}")
             lines.append(f"    URL: {r.get('url')}")
             lines.append(f"    Snippet: {r.get('snippet')}")
 
