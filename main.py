@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.4"
+APP_VERSION = "public-presence-collector-mvp-0.9.5"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -2605,6 +2605,7 @@ async def root() -> Dict[str, Any]:
             "POST /debug/browser-render",
             "POST /audit/visual-site",
             "POST /audit/social-public",
+            "POST /audit/social-auth-render",
             "GET /deliverables/social-text/{report_id}.txt",
             "POST /deliverables/upload-to-drive",
             "POST /deliverables/upload-screenshot-to-drive",
@@ -2644,6 +2645,7 @@ async def api_status(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
             "POST /debug/browser-render",
             "POST /audit/visual-site",
             "POST /audit/social-public",
+            "POST /audit/social-auth-render",
             "GET /deliverables/social-text/{report_id}.txt",
             "POST /deliverables/upload-to-drive",
             "POST /deliverables/upload-screenshot-to-drive",
@@ -4994,6 +4996,407 @@ async def debug_social_auth_config(_: None = Depends(verify_api_key)) -> Dict[st
             "No realiza login automÃ¡tico.",
             "CAPTCHA, 2FA o checkpoint deben reportarse como challenge_required; no se resuelven automÃ¡ticamente.",
         ],
+    }
+
+
+
+
+
+# ============================================================
+# Social Auth Render - controlled authenticated public profile view
+# ============================================================
+
+
+class SocialAuthRenderRequest(BaseModel):
+    platform: str = Field(..., description="instagram o facebook")
+    profile_url: str = Field(..., description="URL publica del perfil/pagina a auditar")
+    company_name: Optional[str] = None
+    wait_ms: int = Field(default=3500, ge=1000, le=12000)
+    timeout_ms: int = Field(default=90000, ge=15000, le=180000)
+    full_page: bool = True
+    upload_to_drive: bool = False
+    drive_folder_name: Optional[str] = None
+    filename: Optional[str] = None
+
+
+def _sar_bool_env(name: str) -> bool:
+    import os as _os
+    return str(_os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sar_get_credentials(platform: str) -> Dict[str, Any]:
+    import os as _os
+
+    p = str(platform or "").strip().lower()
+
+    if p == "instagram":
+        username = _os.environ.get("INSTAGRAM_AUDIT_USERNAME")
+        password = _os.environ.get("INSTAGRAM_AUDIT_PASSWORD")
+    elif p == "facebook":
+        username = _os.environ.get("FACEBOOK_AUDIT_USERNAME")
+        password = _os.environ.get("FACEBOOK_AUDIT_PASSWORD")
+    else:
+        username = None
+        password = None
+
+    return {
+        "platform": p,
+        "enabled": _sar_bool_env("SOCIAL_AUTH_ENABLED"),
+        "username": username,
+        "password": password,
+        "ready": bool(
+            _sar_bool_env("SOCIAL_AUTH_ENABLED")
+            and str(username or "").strip()
+            and str(password or "").strip()
+        ),
+    }
+
+
+def _sar_classify_auth_state(platform: str, final_url: Optional[str], title: Optional[str], text: Optional[str]) -> Dict[str, Any]:
+    p = str(platform or "").lower().strip()
+    url = str(final_url or "").lower()
+    ttl = str(title or "").lower()
+    body = str(text or "").lower()
+    combined = " ".join([url, ttl, body])
+
+    captcha_markers = [
+        "captcha",
+        "recaptcha",
+        "security check",
+        "verificaciÃ³n de seguridad",
+        "confirm you are human",
+        "comprueba que eres humano",
+    ]
+
+    checkpoint_markers = [
+        "checkpoint",
+        "two-factor",
+        "two factor",
+        "2fa",
+        "verification code",
+        "cÃ³digo de seguridad",
+        "cÃ³digo de verificaciÃ³n",
+        "approve your login",
+        "confirma tu identidad",
+        "confirm your identity",
+        "suspicious login",
+        "login approval",
+    ]
+
+    login_markers = [
+        "/login",
+        "accounts/login",
+        "iniciar sesiÃ³n",
+        "inicia sesiÃ³n",
+        "log in",
+        "sign in",
+    ]
+
+    visible_markers = {
+        "instagram": ["publicaciones", "seguidores", "siguiendo", "posts", "followers", "following"],
+        "facebook": ["me gusta", "followers", "seguidores", "publicaciones", "reels", "fotos", "opiniones", "about"],
+    }.get(p, [])
+
+    matched_captcha = [m for m in captcha_markers if m in combined]
+    matched_checkpoint = [m for m in checkpoint_markers if m in combined]
+    matched_login = [m for m in login_markers if m in combined]
+    matched_visible = [m for m in visible_markers if m in combined]
+
+    if matched_captcha:
+        classification = "captcha_required"
+        evidence_grade = "not_profile_evidence"
+        usable = False
+        reason = "La plataforma solicitÃ³ CAPTCHA/verificaciÃ³n humana. No se intenta resolver automÃ¡ticamente."
+    elif matched_checkpoint:
+        classification = "checkpoint_required"
+        evidence_grade = "not_profile_evidence"
+        usable = False
+        reason = "La plataforma solicitÃ³ checkpoint/2FA/verificaciÃ³n adicional. No se intenta evadir."
+    elif matched_login:
+        classification = "login_wall"
+        evidence_grade = "not_profile_evidence"
+        usable = False
+        reason = "La navegaciÃ³n autenticada terminÃ³ en login wall o no mantuvo sesiÃ³n usable."
+    elif matched_visible:
+        classification = "authenticated_profile_visible"
+        evidence_grade = "authenticated_public_profile_evidence"
+        usable = True
+        reason = "El perfil/pÃ¡gina pÃºblica fue visible tras login automÃ¡tico controlado."
+    else:
+        classification = "unknown_or_partial"
+        evidence_grade = "weak_visual_evidence"
+        usable = False
+        reason = "La pÃ¡gina cargÃ³, pero no hay seÃ±ales suficientes para confirmar perfil pÃºblico visible."
+
+    return {
+        "classification": classification,
+        "evidence_grade": evidence_grade,
+        "usable_profile_visual_evidence": usable,
+        "matched_captcha_markers": matched_captcha[:10],
+        "matched_checkpoint_markers": matched_checkpoint[:10],
+        "matched_login_markers": matched_login[:10],
+        "matched_profile_visible_markers": matched_visible[:10],
+        "reason": reason,
+        "policy": {
+            "captcha_bypass_attempted": False,
+            "checkpoint_bypass_attempted": False,
+            "private_profile_access_attempted": False,
+            "write_actions_attempted": False,
+        },
+    }
+
+
+async def _sar_login_and_capture(req: SocialAuthRenderRequest) -> Dict[str, Any]:
+    import asyncio as _asyncio
+    import uuid as _uuid
+    from datetime import datetime as _datetime
+
+    platform = str(req.platform or "").strip().lower()
+    creds = _sar_get_credentials(platform)
+
+    if platform not in {"instagram", "facebook"}:
+        return {
+            "status": "failed",
+            "classification": "unsupported_platform",
+            "reason": "Solo se soporta instagram o facebook en esta etapa.",
+        }
+
+    if not creds.get("ready"):
+        return {
+            "status": "failed",
+            "classification": "missing_auth_config",
+            "reason": "SOCIAL_AUTH_ENABLED y credenciales de la plataforma deben estar configuradas en Render.",
+            "auth_config": {
+                "enabled": creds.get("enabled"),
+                "username_configured": bool(str(creds.get("username") or "").strip()),
+                "password_configured": bool(str(creds.get("password") or "").strip()),
+            },
+        }
+
+    try:
+        from playwright.async_api import async_playwright
+    except Exception as exc:
+        return {
+            "status": "failed_runtime",
+            "classification": "playwright_unavailable",
+            "reason": f"Playwright no estÃ¡ disponible en runtime: {exc}",
+        }
+
+    browser = None
+    context = None
+    page = None
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            )
+
+            context = await browser.new_context(
+                viewport={"width": 1365, "height": 900},
+                locale="es-AR",
+                timezone_id="America/Argentina/Cordoba",
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0.0.0 Safari/537.36"
+                ),
+            )
+
+            page = await context.new_page()
+            page.set_default_timeout(req.timeout_ms)
+
+            if platform == "instagram":
+                login_url = "https://www.instagram.com/accounts/login/"
+                await page.goto(login_url, wait_until="domcontentloaded", timeout=req.timeout_ms)
+                await page.wait_for_timeout(1500)
+                await page.fill('input[name="username"]', str(creds["username"]))
+                await page.fill('input[name="password"]', str(creds["password"]))
+                await page.click('button[type="submit"]')
+                await page.wait_for_timeout(req.wait_ms)
+
+            elif platform == "facebook":
+                login_url = "https://www.facebook.com/login"
+                await page.goto(login_url, wait_until="domcontentloaded", timeout=req.timeout_ms)
+                await page.wait_for_timeout(1500)
+                await page.fill('input[name="email"]', str(creds["username"]))
+                await page.fill('input[name="pass"]', str(creds["password"]))
+                await page.click('button[name="login"], button[type="submit"]')
+                await page.wait_for_timeout(req.wait_ms)
+
+            post_login_url = page.url
+            post_login_title = await page.title()
+            post_login_text = ""
+            try:
+                post_login_text = await page.locator("body").inner_text(timeout=8000)
+            except Exception:
+                post_login_text = ""
+
+            post_login_classification = _sar_classify_auth_state(
+                platform=platform,
+                final_url=post_login_url,
+                title=post_login_title,
+                text=post_login_text,
+            )
+
+            if post_login_classification.get("classification") in {"captcha_required", "checkpoint_required"}:
+                screenshot_bytes = await page.screenshot(full_page=True, type="png")
+                screenshot_id = "auth_" + _uuid.uuid4().hex
+
+                drive_upload = None
+                if req.upload_to_drive and "_drive_upload_binary" in globals():
+                    filename = req.filename or f"{platform}_auth_challenge_{screenshot_id}.png"
+                    drive_upload = await _drive_upload_binary(
+                        filename=filename,
+                        content=screenshot_bytes,
+                        mime_type="image/png",
+                        folder_name=req.drive_folder_name,
+                    )
+
+                await context.close()
+                await browser.close()
+
+                return {
+                    "status": "completed_with_limitations",
+                    "platform": platform,
+                    "profile_url": req.profile_url,
+                    "auth_stage": "post_login",
+                    "final_url": post_login_url,
+                    "page_title": post_login_title,
+                    "screenshot_id": screenshot_id,
+                    "screenshot_stored_in_backend": False,
+                    "drive_upload": drive_upload,
+                    "auth_render_classification": post_login_classification,
+                    "text_sample": (post_login_text or "")[:2500],
+                    "retrieved_at": _datetime.utcnow().isoformat() + "Z",
+                    "limitations": [
+                        "Se detectÃ³ challenge/captcha/checkpoint; no se intenta resolver automÃ¡ticamente.",
+                        "El screenshot representa el bloqueo, no evidencia visual del perfil.",
+                    ],
+                }
+
+            await page.goto(str(req.profile_url), wait_until="domcontentloaded", timeout=req.timeout_ms)
+            await page.wait_for_timeout(req.wait_ms)
+
+            final_url = page.url
+            page_title = await page.title()
+
+            visible_text = ""
+            try:
+                visible_text = await page.locator("body").inner_text(timeout=12000)
+            except Exception:
+                visible_text = ""
+
+            classification = _sar_classify_auth_state(
+                platform=platform,
+                final_url=final_url,
+                title=page_title,
+                text=visible_text,
+            )
+
+            screenshot_bytes = await page.screenshot(full_page=req.full_page, type="png")
+            screenshot_id = "auth_" + _uuid.uuid4().hex
+
+            links_count = 0
+            images_count = 0
+            forms_count = 0
+
+            try:
+                links_count = await page.locator("a").count()
+                images_count = await page.locator("img").count()
+                forms_count = await page.locator("form").count()
+            except Exception:
+                pass
+
+            drive_upload = None
+            if req.upload_to_drive and "_drive_upload_binary" in globals():
+                filename = req.filename or f"{platform}_authenticated_render_{screenshot_id}.png"
+                drive_upload = await _drive_upload_binary(
+                    filename=filename,
+                    content=screenshot_bytes,
+                    mime_type="image/png",
+                    folder_name=req.drive_folder_name,
+                )
+
+            await context.close()
+            await browser.close()
+
+            return {
+                "status": "completed",
+                "platform": platform,
+                "company_name": req.company_name,
+                "profile_url": req.profile_url,
+                "auth_stage": "profile_view",
+                "final_url": final_url,
+                "page_title": page_title,
+                "screenshot_id": screenshot_id,
+                "screenshot_stored_in_backend": False,
+                "drive_upload": drive_upload,
+                "auth_render_classification": classification,
+                "text_sample": (visible_text or "")[:5000],
+                "links_count": links_count,
+                "forms_count": forms_count,
+                "images_count": images_count,
+                "retrieved_at": _datetime.utcnow().isoformat() + "Z",
+                "limitations": [
+                    "Login automÃ¡tico controlado con cuenta dedicada.",
+                    "No se accede a perfiles privados, DMs ni datos no pÃºblicos.",
+                    "No se realizan acciones de escritura.",
+                    "CAPTCHA, 2FA o checkpoint se reportan; no se resuelven automÃ¡ticamente.",
+                    "La evidencia autenticada visible no reemplaza exports nativos de Meta/Instagram Insights.",
+                ],
+            }
+
+    except Exception as exc:
+        try:
+            if context:
+                await context.close()
+        except Exception:
+            pass
+        try:
+            if browser:
+                await browser.close()
+        except Exception:
+            pass
+
+        return {
+            "status": "failed_runtime",
+            "platform": platform,
+            "profile_url": req.profile_url,
+            "auth_render_classification": {
+                "classification": "failed_runtime",
+                "evidence_grade": "not_profile_evidence",
+                "usable_profile_visual_evidence": False,
+                "reason": str(exc),
+                "policy": {
+                    "captcha_bypass_attempted": False,
+                    "checkpoint_bypass_attempted": False,
+                    "private_profile_access_attempted": False,
+                    "write_actions_attempted": False,
+                },
+            },
+            "limitations": [
+                "FallÃ³ el render autenticado en runtime.",
+                "No se debe tratar como evidencia visual del perfil.",
+            ],
+        }
+
+
+@app.post("/audit/social-auth-render")
+async def audit_social_auth_render(
+    req: SocialAuthRenderRequest,
+    _: None = Depends(verify_api_key),
+) -> Dict[str, Any]:
+    result = await _sar_login_and_capture(req)
+    return {
+        "collector": "social_auth_render",
+        "version": APP_VERSION,
+        **result,
     }
 
 
