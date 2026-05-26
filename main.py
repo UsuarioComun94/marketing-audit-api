@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.3"
+APP_VERSION = "public-presence-collector-mvp-0.9.3.1"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -3801,14 +3801,32 @@ async def _sp_browser_render(platform: str, url: str, req: SocialPublicAuditRequ
         final_url = result.get("final_url")
         page_title = result.get("page_title")
 
-        classification = _sp_social_render_classification(
-            platform=platform,
-            final_url=final_url,
-            page_title=page_title,
-            text_sample=text_sample,
-        )
+        render_status = result.get("status")
+
+        if render_status != "completed":
+            classification = {
+                "classification": "failed_runtime",
+                "evidence_grade": "not_profile_evidence",
+                "usable_profile_visual_evidence": False,
+                "is_login_wall": False,
+                "is_blocked_or_unavailable": False,
+                "matched_login_markers": [],
+                "matched_block_markers": [],
+                "matched_public_profile_markers": [],
+                "reason": "El render social no completó correctamente; no hay evidencia visual usable del perfil.",
+            }
+        else:
+            classification = _sp_social_render_classification(
+                platform=platform,
+                final_url=final_url,
+                page_title=page_title,
+                text_sample=text_sample,
+            )
 
         limitations = list(result.get("limitations") or [])
+
+        if render_status != "completed":
+            limitations.append("Render social failed_runtime; no se debe tratar como evidencia visual del perfil.")
 
         if classification.get("classification") == "login_wall":
             limitations.append("Render social terminó en login/auth wall; screenshot no prueba vista pública del perfil.")
@@ -4198,7 +4216,7 @@ def _sp_summary(platform_reports: List[Dict[str, Any]]) -> Dict[str, Any]:
         if classification == "login_wall":
             platforms_with_login_wall.append(platform)
 
-        if classification == "blocked_or_unavailable":
+        if classification in {"blocked_or_unavailable", "failed_runtime"}:
             platforms_with_blocked_visual_evidence.append(platform)
 
         if usable_visual:
