@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.8.2"
+APP_VERSION = "public-presence-collector-mvp-0.9"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -2606,6 +2606,7 @@ async def root() -> Dict[str, Any]:
             "POST /audit/visual-site",
             "POST /audit/social-public",
             "GET /deliverables/social-text/{report_id}.txt",
+            "POST /deliverables/upload-to-drive",
             "GET /debug/composio-tools",
             "POST /debug/composio-execute",
             "POST /collect/public-presence",
@@ -2642,6 +2643,7 @@ async def api_status(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
             "POST /audit/visual-site",
             "POST /audit/social-public",
             "GET /deliverables/social-text/{report_id}.txt",
+            "POST /deliverables/upload-to-drive",
             "GET /debug/composio-tools",
             "POST /debug/composio-execute",
             "POST /collect/public-presence",
@@ -4251,6 +4253,209 @@ async def get_social_text_report(report_id: str, _: None = Depends(verify_api_ke
             "Content-Disposition": f'attachment; filename="social_public_{report_id}.txt"'
         },
     )
+
+
+
+# ============================================================
+# Drive Upload - isolated deliverables module
+# ============================================================
+
+DRIVE_UPLOADS: Dict[str, Any] = {}
+
+
+class DriveUploadRequest(BaseModel):
+    report_id: str
+    report_type: str = Field(default="public_presence")
+    filename: Optional[str] = None
+
+
+def _drive_collapse_ws(value: Any) -> str:
+    import re as _re
+    return _re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _drive_safe_filename(value: Optional[str], fallback: str) -> str:
+    import re as _re
+
+    raw_name = _drive_collapse_ws(value or fallback)
+    raw_name = _re.sub(r'[\\/:*?"<>|#%{}~&]+', "_", raw_name)
+    raw_name = _re.sub(r"\s+", " ", raw_name).strip()
+
+    if not raw_name:
+        raw_name = fallback
+
+    if not raw_name.lower().endswith(".txt"):
+        raw_name += ".txt"
+
+    return raw_name[:180]
+
+
+def _drive_public_base_url() -> str:
+    import os as _os
+    return (_os.environ.get("PUBLIC_BASE_URL") or "https://marketing-audit-api.onrender.com").rstrip("/")
+
+
+def _drive_report_url(report_type: str, report_id: str) -> str:
+    base = _drive_public_base_url()
+    kind = _drive_collapse_ws(report_type).lower()
+
+    if kind in {"social", "social_public", "audit_social", "social-public"}:
+        return f"{base}/deliverables/social-text/{report_id}.txt"
+
+    return f"{base}/deliverables/text/{report_id}.txt"
+
+
+def _drive_default_filename(report_type: str, report_id: str) -> str:
+    kind = _drive_collapse_ws(report_type).lower()
+
+    if kind in {"social", "social_public", "audit_social", "social-public"}:
+        return f"social_public_{report_id}.txt"
+
+    return f"public_presence_{report_id}.txt"
+
+
+async def _drive_fetch_report_text(report_type: str, report_id: str) -> Dict[str, Any]:
+    import os as _os
+
+    httpx_mod = globals().get("httpx")
+
+    if httpx_mod is None:
+        import httpx as httpx_mod
+
+    api_key = _os.environ.get("API_KEY") or _os.environ.get("MARKETING_AUDIT_API_KEY") or ""
+    url = _drive_report_url(report_type, report_id)
+
+    headers = {}
+    if api_key:
+        headers["X-API-Key"] = api_key
+
+    async with httpx_mod.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        resp = await client.get(url, headers=headers)
+
+    if resp.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "status": "failed",
+                "reason": "Could not fetch report text before Drive upload",
+                "source_url": url,
+                "http_status": resp.status_code,
+                "body_sample": (resp.text or "")[:500],
+            },
+        )
+
+    return {
+        "status": "completed",
+        "source_url": url,
+        "text": resp.text or "",
+        "bytes": len((resp.text or "").encode("utf-8")),
+    }
+
+
+async def _drive_upload_text(filename: str, text: str) -> Dict[str, Any]:
+    import os as _os
+
+    httpx_mod = globals().get("httpx")
+
+    if httpx_mod is None:
+        import httpx as httpx_mod
+
+    webapp_url = (_os.environ.get("DRIVE_UPLOAD_WEBAPP_URL") or "").strip()
+    secret = (_os.environ.get("DRIVE_UPLOAD_SECRET") or "").strip()
+
+    if not webapp_url or not secret:
+        return {
+            "status": "skipped_missing_config",
+            "reason": "DRIVE_UPLOAD_WEBAPP_URL or DRIVE_UPLOAD_SECRET not configured",
+        }
+
+    payload = {
+        "secret": secret,
+        "filename": filename,
+        "mime_type": "text/plain",
+        "content": text,
+    }
+
+    try:
+        async with httpx_mod.AsyncClient(timeout=180.0, follow_redirects=True) as client:
+            resp = await client.post(
+                webapp_url,
+                json=payload,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+            )
+
+        try:
+            data = resp.json()
+        except Exception:
+            data = {
+                "status": "failed",
+                "reason": "Drive uploader returned non-JSON response",
+                "body_sample": (resp.text or "")[:700],
+            }
+
+        data["http_status"] = resp.status_code
+
+        if resp.status_code >= 400 and data.get("status") == "completed":
+            data["status"] = "failed"
+
+        return data
+
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "reason": str(exc),
+        }
+
+
+@app.post("/deliverables/upload-to-drive")
+async def upload_report_to_drive(req: DriveUploadRequest, _: None = Depends(verify_api_key)) -> Dict[str, Any]:
+    import uuid as _uuid
+
+    report_id = _drive_collapse_ws(req.report_id)
+
+    if not report_id:
+        raise HTTPException(status_code=400, detail="report_id requerido")
+
+    report_type = _drive_collapse_ws(req.report_type or "public_presence")
+    filename = _drive_safe_filename(req.filename, _drive_default_filename(report_type, report_id))
+
+    fetched = await _drive_fetch_report_text(report_type, report_id)
+    upload = await _drive_upload_text(filename, fetched["text"])
+
+    upload_id = _uuid.uuid4().hex
+
+    status = "completed" if upload.get("status") == "completed" else "failed"
+
+    payload: Dict[str, Any] = {
+        "status": status,
+        "collector": "drive_upload",
+        "version": APP_VERSION,
+        "upload_id": upload_id,
+        "report_id": report_id,
+        "report_type": report_type,
+        "filename": filename,
+        "source_url": fetched.get("source_url"),
+        "source_bytes": fetched.get("bytes"),
+        "drive_status": upload.get("status"),
+        "drive_file_id": upload.get("file_id"),
+        "drive_file_name": upload.get("file_name"),
+        "drive_url": upload.get("drive_url"),
+        "public_sharing": upload.get("public_sharing"),
+        "drive_http_status": upload.get("http_status"),
+        "reason": upload.get("reason"),
+        "uploaded_at": now_iso(),
+        "limitations": [
+            "Drive upload only confirms file persistence in Google Drive.",
+            "No modifica el contenido del reporte.",
+            "No vuelve público el archivo salvo que Apps Script tenga PUBLIC_SHARING=true.",
+        ],
+    }
+
+    DRIVE_UPLOADS[upload_id] = payload
+
+    return payload
+
+
 
 
 @app.post("/audit/social-public")
