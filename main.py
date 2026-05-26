@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.3.1"
+APP_VERSION = "public-presence-collector-mvp-0.9.4"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -2638,6 +2638,7 @@ async def api_status(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
             "GET /",
             "GET /api/status",
             "GET /debug/collector-config",
+            "GET /debug/social-auth-config",
             "GET /debug/search-provider-config",
             "POST /debug/search-test",
             "POST /debug/browser-render",
@@ -4903,6 +4904,99 @@ async def audit_visual_site(req: VisualSiteAuditRequest, _: None = Depends(verif
 @app.post("/debug/browser-render")
 async def debug_browser_render(req: BrowserRenderRequest, _: None = Depends(verify_api_key)) -> Dict[str, Any]:
     return await render_browserbase_visual(req)
+
+
+
+# ============================================================
+# Social Auth Config - safe diagnostics only
+# ============================================================
+
+
+def _mask_secret_value(value: Optional[str]) -> Dict[str, Any]:
+    raw = str(value or "").strip()
+
+    if not raw:
+        return {
+            "configured": False,
+            "masked": None,
+            "length": 0,
+        }
+
+    if len(raw) <= 4:
+        masked = "*" * len(raw)
+    else:
+        masked = raw[:2] + ("*" * max(0, len(raw) - 4)) + raw[-2:]
+
+    return {
+        "configured": True,
+        "masked": masked,
+        "length": len(raw),
+    }
+
+
+def _social_auth_env_config() -> Dict[str, Any]:
+    import os as _os
+
+    enabled_raw = str(_os.environ.get("SOCIAL_AUTH_ENABLED") or "").strip().lower()
+    enabled = enabled_raw in {"1", "true", "yes", "on"}
+
+    instagram_username = _os.environ.get("INSTAGRAM_AUDIT_USERNAME")
+    instagram_password = _os.environ.get("INSTAGRAM_AUDIT_PASSWORD")
+    facebook_username = _os.environ.get("FACEBOOK_AUDIT_USERNAME")
+    facebook_password = _os.environ.get("FACEBOOK_AUDIT_PASSWORD")
+
+    return {
+        "social_auth_enabled": enabled,
+        "social_auth_enabled_raw_present": bool(enabled_raw),
+        "instagram": {
+            "username": _mask_secret_value(instagram_username),
+            "password": {
+                "configured": bool(str(instagram_password or "").strip()),
+                "length": len(str(instagram_password or "")),
+            },
+            "ready_for_login_attempt": bool(enabled and str(instagram_username or "").strip() and str(instagram_password or "").strip()),
+        },
+        "facebook": {
+            "username": _mask_secret_value(facebook_username),
+            "password": {
+                "configured": bool(str(facebook_password or "").strip()),
+                "length": len(str(facebook_password or "")),
+            },
+            "ready_for_login_attempt": bool(enabled and str(facebook_username or "").strip() and str(facebook_password or "").strip()),
+        },
+        "safety_policy": {
+            "credentials_exposed": False,
+            "captcha_bypass_supported": False,
+            "checkpoint_bypass_supported": False,
+            "private_profiles_supported": False,
+            "dm_access_supported": False,
+            "write_actions_supported": False,
+            "allowed_scope": [
+                "public profile/page viewing",
+                "screenshots",
+                "visible text extraction",
+                "classification of login_wall/captcha/checkpoint/blocked/profile_visible",
+            ],
+        },
+    }
+
+
+@app.get("/debug/social-auth-config")
+async def debug_social_auth_config(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
+    return {
+        "status": "completed",
+        "service": "marketing-auditor-social-auth-config",
+        "version": APP_VERSION,
+        "config": _social_auth_env_config(),
+        "notes": [
+            "Este endpoint no devuelve credenciales.",
+            "Solo confirma si las variables necesarias existen.",
+            "No realiza login automÃ¡tico.",
+            "CAPTCHA, 2FA o checkpoint deben reportarse como challenge_required; no se resuelven automÃ¡ticamente.",
+        ],
+    }
+
+
 
 
 @app.get("/debug/collector-config")
