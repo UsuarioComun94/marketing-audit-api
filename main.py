@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9"
+APP_VERSION = "public-presence-collector-mvp-0.9.1"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -2607,6 +2607,7 @@ async def root() -> Dict[str, Any]:
             "POST /audit/social-public",
             "GET /deliverables/social-text/{report_id}.txt",
             "POST /deliverables/upload-to-drive",
+            "POST /deliverables/upload-screenshot-to-drive",
             "GET /debug/composio-tools",
             "POST /debug/composio-execute",
             "POST /collect/public-presence",
@@ -2644,6 +2645,7 @@ async def api_status(_: None = Depends(verify_api_key)) -> Dict[str, Any]:
             "POST /audit/social-public",
             "GET /deliverables/social-text/{report_id}.txt",
             "POST /deliverables/upload-to-drive",
+            "POST /deliverables/upload-screenshot-to-drive",
             "GET /debug/composio-tools",
             "POST /debug/composio-execute",
             "POST /collect/public-presence",
@@ -4405,6 +4407,186 @@ async def _drive_upload_text(filename: str, text: str) -> Dict[str, Any]:
             "status": "failed",
             "reason": str(exc),
         }
+
+
+
+# ============================================================
+# Drive Screenshot Upload - isolated deliverables module
+# ============================================================
+
+
+class DriveScreenshotUploadRequest(BaseModel):
+    screenshot_id: str
+    filename: Optional[str] = None
+
+
+def _drive_screenshot_default_filename(screenshot_id: str) -> str:
+    clean = _drive_collapse_ws(screenshot_id)
+    return f"screenshot_{clean}.png"
+
+
+def _drive_screenshot_url(screenshot_id: str) -> str:
+    base = _drive_public_base_url()
+    clean = _drive_collapse_ws(screenshot_id)
+    return f"{base}/deliverables/screenshot/{clean}.png"
+
+
+async def _drive_fetch_screenshot_bytes(screenshot_id: str) -> Dict[str, Any]:
+    import os as _os
+
+    httpx_mod = globals().get("httpx")
+
+    if httpx_mod is None:
+        import httpx as httpx_mod
+
+    clean = _drive_collapse_ws(screenshot_id)
+    url = _drive_screenshot_url(clean)
+
+    api_key = _os.environ.get("API_KEY") or _os.environ.get("MARKETING_AUDIT_API_KEY") or ""
+
+    headers = {}
+    if api_key:
+        headers["X-API-Key"] = api_key
+
+    async with httpx_mod.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        resp = await client.get(url, headers=headers)
+
+    if resp.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "status": "failed",
+                "reason": "Could not fetch screenshot before Drive upload",
+                "source_url": url,
+                "http_status": resp.status_code,
+                "body_sample": (resp.text or "")[:500],
+            },
+        )
+
+    content_type = resp.headers.get("content-type") or "image/png"
+
+    return {
+        "status": "completed",
+        "source_url": url,
+        "content": resp.content,
+        "bytes": len(resp.content or b""),
+        "content_type": content_type,
+    }
+
+
+async def _drive_upload_binary(filename: str, content: bytes, mime_type: str) -> Dict[str, Any]:
+    import os as _os
+    import base64 as _base64
+
+    httpx_mod = globals().get("httpx")
+
+    if httpx_mod is None:
+        import httpx as httpx_mod
+
+    webapp_url = (_os.environ.get("DRIVE_UPLOAD_WEBAPP_URL") or "").strip()
+    secret = (_os.environ.get("DRIVE_UPLOAD_SECRET") or "").strip()
+
+    if not webapp_url or not secret:
+        return {
+            "status": "skipped_missing_config",
+            "reason": "DRIVE_UPLOAD_WEBAPP_URL or DRIVE_UPLOAD_SECRET not configured",
+        }
+
+    payload = {
+        "secret": secret,
+        "filename": filename,
+        "mime_type": mime_type or "image/png",
+        "content_base64": _base64.b64encode(content or b"").decode("ascii"),
+    }
+
+    try:
+        async with httpx_mod.AsyncClient(timeout=180.0, follow_redirects=True) as client:
+            resp = await client.post(
+                webapp_url,
+                json=payload,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+            )
+
+        try:
+            data = resp.json()
+        except Exception:
+            data = {
+                "status": "failed",
+                "reason": "Drive uploader returned non-JSON response",
+                "body_sample": (resp.text or "")[:700],
+            }
+
+        data["http_status"] = resp.status_code
+
+        if resp.status_code >= 400 and data.get("status") == "completed":
+            data["status"] = "failed"
+
+        return data
+
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "reason": str(exc),
+        }
+
+
+@app.post("/deliverables/upload-screenshot-to-drive")
+async def upload_screenshot_to_drive(req: DriveScreenshotUploadRequest, _: None = Depends(verify_api_key)) -> Dict[str, Any]:
+    import uuid as _uuid
+
+    screenshot_id = _drive_collapse_ws(req.screenshot_id)
+
+    if not screenshot_id:
+        raise HTTPException(status_code=400, detail="screenshot_id requerido")
+
+    filename = _drive_safe_filename(
+        req.filename,
+        _drive_screenshot_default_filename(screenshot_id),
+    )
+
+    if not filename.lower().endswith(".png"):
+        filename = filename.rsplit(".", 1)[0] + ".png"
+
+    fetched = await _drive_fetch_screenshot_bytes(screenshot_id)
+    upload = await _drive_upload_binary(
+        filename=filename,
+        content=fetched["content"],
+        mime_type=fetched.get("content_type") or "image/png",
+    )
+
+    upload_id = _uuid.uuid4().hex
+    status = "completed" if upload.get("status") == "completed" else "failed"
+
+    payload: Dict[str, Any] = {
+        "status": status,
+        "collector": "drive_screenshot_upload",
+        "version": APP_VERSION,
+        "upload_id": upload_id,
+        "screenshot_id": screenshot_id,
+        "filename": filename,
+        "source_url": fetched.get("source_url"),
+        "source_bytes": fetched.get("bytes"),
+        "source_content_type": fetched.get("content_type"),
+        "drive_status": upload.get("status"),
+        "drive_file_id": upload.get("file_id"),
+        "drive_file_name": upload.get("file_name"),
+        "drive_url": upload.get("drive_url"),
+        "public_sharing": upload.get("public_sharing"),
+        "drive_http_status": upload.get("http_status"),
+        "reason": upload.get("reason"),
+        "uploaded_at": now_iso(),
+        "limitations": [
+            "Drive upload only confirms screenshot persistence in Google Drive.",
+            "No interpreta el contenido visual por sí solo.",
+            "No vuelve público el archivo salvo que Apps Script tenga PUBLIC_SHARING=true.",
+        ],
+    }
+
+    DRIVE_UPLOADS[upload_id] = payload
+
+    return payload
+
+
 
 
 @app.post("/deliverables/upload-to-drive")
