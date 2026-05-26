@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.1"
+APP_VERSION = "public-presence-collector-mvp-0.9.2"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -4269,6 +4269,7 @@ class DriveUploadRequest(BaseModel):
     report_id: str
     report_type: str = Field(default="public_presence")
     filename: Optional[str] = None
+    drive_folder_name: Optional[str] = None
 
 
 def _drive_collapse_ws(value: Any) -> str:
@@ -4354,7 +4355,7 @@ async def _drive_fetch_report_text(report_type: str, report_id: str) -> Dict[str
     }
 
 
-async def _drive_upload_text(filename: str, text: str) -> Dict[str, Any]:
+async def _drive_upload_text(filename: str, text: str, folder_name: Optional[str] = None) -> Dict[str, Any]:
     import os as _os
 
     httpx_mod = globals().get("httpx")
@@ -4377,6 +4378,9 @@ async def _drive_upload_text(filename: str, text: str) -> Dict[str, Any]:
         "mime_type": "text/plain",
         "content": text,
     }
+
+    if folder_name:
+        payload["folder_name"] = folder_name
 
     try:
         async with httpx_mod.AsyncClient(timeout=180.0, follow_redirects=True) as client:
@@ -4418,6 +4422,7 @@ async def _drive_upload_text(filename: str, text: str) -> Dict[str, Any]:
 class DriveScreenshotUploadRequest(BaseModel):
     screenshot_id: str
     filename: Optional[str] = None
+    drive_folder_name: Optional[str] = None
 
 
 def _drive_screenshot_default_filename(screenshot_id: str) -> str:
@@ -4474,7 +4479,7 @@ async def _drive_fetch_screenshot_bytes(screenshot_id: str) -> Dict[str, Any]:
     }
 
 
-async def _drive_upload_binary(filename: str, content: bytes, mime_type: str) -> Dict[str, Any]:
+async def _drive_upload_binary(filename: str, content: bytes, mime_type: str, folder_name: Optional[str] = None) -> Dict[str, Any]:
     import os as _os
     import base64 as _base64
 
@@ -4498,6 +4503,9 @@ async def _drive_upload_binary(filename: str, content: bytes, mime_type: str) ->
         "mime_type": mime_type or "image/png",
         "content_base64": _base64.b64encode(content or b"").decode("ascii"),
     }
+
+    if folder_name:
+        payload["folder_name"] = folder_name
 
     try:
         async with httpx_mod.AsyncClient(timeout=180.0, follow_redirects=True) as client:
@@ -4552,6 +4560,7 @@ async def upload_screenshot_to_drive(req: DriveScreenshotUploadRequest, _: None 
         filename=filename,
         content=fetched["content"],
         mime_type=fetched.get("content_type") or "image/png",
+        folder_name=req.drive_folder_name,
     )
 
     upload_id = _uuid.uuid4().hex
@@ -4571,6 +4580,9 @@ async def upload_screenshot_to_drive(req: DriveScreenshotUploadRequest, _: None 
         "drive_file_id": upload.get("file_id"),
         "drive_file_name": upload.get("file_name"),
         "drive_url": upload.get("drive_url"),
+        "drive_folder_id": upload.get("folder_id"),
+        "drive_folder_name": upload.get("folder_name"),
+        "drive_folder_url": upload.get("folder_url"),
         "public_sharing": upload.get("public_sharing"),
         "drive_http_status": upload.get("http_status"),
         "reason": upload.get("reason"),
@@ -4602,7 +4614,11 @@ async def upload_report_to_drive(req: DriveUploadRequest, _: None = Depends(veri
     filename = _drive_safe_filename(req.filename, _drive_default_filename(report_type, report_id))
 
     fetched = await _drive_fetch_report_text(report_type, report_id)
-    upload = await _drive_upload_text(filename, fetched["text"])
+    upload = await _drive_upload_text(
+        filename,
+        fetched["text"],
+        folder_name=req.drive_folder_name,
+    )
 
     upload_id = _uuid.uuid4().hex
 
@@ -4622,6 +4638,9 @@ async def upload_report_to_drive(req: DriveUploadRequest, _: None = Depends(veri
         "drive_file_id": upload.get("file_id"),
         "drive_file_name": upload.get("file_name"),
         "drive_url": upload.get("drive_url"),
+        "drive_folder_id": upload.get("folder_id"),
+        "drive_folder_name": upload.get("folder_name"),
+        "drive_folder_url": upload.get("folder_url"),
         "public_sharing": upload.get("public_sharing"),
         "drive_http_status": upload.get("http_status"),
         "reason": upload.get("reason"),
