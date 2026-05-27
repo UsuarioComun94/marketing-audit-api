@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.5"
+APP_VERSION = "public-presence-collector-mvp-0.9.6"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -5146,6 +5146,342 @@ def _sar_classify_auth_state(platform: str, final_url: Optional[str], title: Opt
     }
 
 
+
+async def _sar_safe_page_title(page: Any) -> str:
+    try:
+        return await page.title()
+    except Exception:
+        return ""
+
+
+async def _sar_safe_page_text(page: Any, timeout_ms: int = 6000, limit: int = 5000) -> str:
+    try:
+        txt = await page.locator("body").inner_text(timeout=timeout_ms)
+        return (txt or "")[:limit]
+    except Exception:
+        return ""
+
+
+async def _sar_fill_first_visible(page: Any, selectors: List[str], value: str, timeout_ms: int = 7000) -> Optional[str]:
+    for selector in selectors:
+        try:
+            loc = page.locator(selector).first
+            await loc.wait_for(state="visible", timeout=timeout_ms)
+            await loc.fill(value, timeout=timeout_ms)
+            return selector
+        except Exception:
+            continue
+    return None
+
+
+async def _sar_click_first_visible(page: Any, selectors: List[str], timeout_ms: int = 5000) -> Optional[str]:
+    for selector in selectors:
+        try:
+            loc = page.locator(selector).first
+            await loc.wait_for(state="visible", timeout=timeout_ms)
+            await loc.click(timeout=timeout_ms)
+            return selector
+        except Exception:
+            continue
+    return None
+
+
+async def _sar_capture_diagnostic_failure(
+    req: SocialAuthRenderRequest,
+    page: Any,
+    platform: str,
+    classification: str,
+    reason: str,
+    auth_stage: str = "login_attempt",
+    extra_limitations: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    import uuid as _uuid
+    from datetime import datetime as _datetime
+
+    try:
+        final_url = page.url
+    except Exception:
+        final_url = None
+
+    page_title = await _sar_safe_page_title(page)
+    visible_text = await _sar_safe_page_text(page, timeout_ms=6000, limit=5000)
+
+    base_classification = _sar_classify_auth_state(
+        platform=platform,
+        final_url=final_url,
+        title=page_title,
+        text=visible_text,
+    )
+
+    if base_classification.get("classification") in {"captcha_required", "checkpoint_required", "login_wall"}:
+        auth_classification = base_classification
+    else:
+        auth_classification = {
+            "classification": classification,
+            "evidence_grade": "not_profile_evidence",
+            "usable_profile_visual_evidence": False,
+            "matched_captcha_markers": base_classification.get("matched_captcha_markers", []),
+            "matched_checkpoint_markers": base_classification.get("matched_checkpoint_markers", []),
+            "matched_login_markers": base_classification.get("matched_login_markers", []),
+            "matched_profile_visible_markers": base_classification.get("matched_profile_visible_markers", []),
+            "reason": reason,
+            "policy": {
+                "captcha_bypass_attempted": False,
+                "checkpoint_bypass_attempted": False,
+                "private_profile_access_attempted": False,
+                "write_actions_attempted": False,
+            },
+        }
+
+    screenshot_id = None
+    drive_upload = None
+
+    try:
+        screenshot_bytes = await page.screenshot(full_page=True, type="png")
+        screenshot_id = "auth_diag_" + _uuid.uuid4().hex
+
+        if req.upload_to_drive and "_drive_upload_binary" in globals():
+            filename = req.filename or f"{platform}_{auth_classification.get('classification')}_{screenshot_id}.png"
+            drive_upload = await _drive_upload_binary(
+                filename=filename,
+                content=screenshot_bytes,
+                mime_type="image/png",
+                folder_name=req.drive_folder_name,
+            )
+    except Exception as shot_exc:
+        if extra_limitations is None:
+            extra_limitations = []
+        extra_limitations.append(f"No se pudo capturar/subir screenshot diagnostico: {shot_exc}")
+
+    limitations = [
+        "Fallo de login/carga diagnosticado sin intentar bypass.",
+        "El screenshot diagnostico, si existe, representa la pantalla alcanzada, no evidencia del perfil.",
+        "No se resuelve CAPTCHA, checkpoint ni 2FA.",
+    ]
+
+    if extra_limitations:
+        limitations.extend(extra_limitations)
+
+    return {
+        "status": "completed_with_limitations",
+        "platform": platform,
+        "company_name": req.company_name,
+        "profile_url": req.profile_url,
+        "auth_stage": auth_stage,
+        "final_url": final_url,
+        "page_title": page_title,
+        "screenshot_id": screenshot_id,
+        "screenshot_stored_in_backend": False,
+        "drive_upload": drive_upload,
+        "auth_render_classification": auth_classification,
+        "text_sample": visible_text[:5000],
+        "retrieved_at": _datetime.utcnow().isoformat() + "Z",
+        "limitations": limitations,
+    }
+
+
+async def _sar_perform_login(platform: str, page: Any, creds: Dict[str, Any], req: SocialAuthRenderRequest) -> Optional[Dict[str, Any]]:
+    if platform == "instagram":
+        login_url = "https://www.instagram.com/accounts/login/"
+        await page.goto(login_url, wait_until="domcontentloaded", timeout=req.timeout_ms)
+        await page.wait_for_timeout(2500)
+
+        await _sar_click_first_visible(
+            page,
+            [
+                "text=Allow all cookies",
+                "text=Permitir todas las cookies",
+                "text=Accept all cookies",
+                "text=Aceptar todas",
+                "button:has-text('Allow all cookies')",
+                "button:has-text('Permitir')",
+                "button:has-text('Aceptar')",
+            ],
+            timeout_ms=1500,
+        )
+
+        username_selector = await _sar_fill_first_visible(
+            page,
+            [
+                'input[name="username"]',
+                'input[autocomplete="username"]',
+                'input[aria-label*="Phone"]',
+                'input[aria-label*="telÃ©fono"]',
+                'input[aria-label*="TelÃ©fono"]',
+                'input[type="text"]',
+            ],
+            str(creds["username"]),
+            timeout_ms=7000,
+        )
+
+        if not username_selector:
+            return await _sar_capture_diagnostic_failure(
+                req=req,
+                page=page,
+                platform=platform,
+                classification="login_form_not_found",
+                reason="No se encontrÃ³ campo visible de usuario en el login de Instagram.",
+                auth_stage="login_form_detection",
+            )
+
+        password_selector = await _sar_fill_first_visible(
+            page,
+            [
+                'input[name="password"]',
+                'input[autocomplete="current-password"]',
+                'input[aria-label*="Password"]',
+                'input[aria-label*="ContraseÃ±a"]',
+                'input[type="password"]',
+            ],
+            str(creds["password"]),
+            timeout_ms=7000,
+        )
+
+        if not password_selector:
+            return await _sar_capture_diagnostic_failure(
+                req=req,
+                page=page,
+                platform=platform,
+                classification="login_form_not_found",
+                reason="No se encontrÃ³ campo visible de password en el login de Instagram.",
+                auth_stage="login_form_detection",
+            )
+
+        clicked = await _sar_click_first_visible(
+            page,
+            [
+                'button[type="submit"]',
+                'button:has-text("Log in")',
+                'button:has-text("Iniciar sesiÃ³n")',
+                'div[role="button"]:has-text("Log in")',
+                'div[role="button"]:has-text("Iniciar sesiÃ³n")',
+            ],
+            timeout_ms=7000,
+        )
+
+        if not clicked:
+            try:
+                await page.keyboard.press("Enter")
+            except Exception:
+                return await _sar_capture_diagnostic_failure(
+                    req=req,
+                    page=page,
+                    platform=platform,
+                    classification="login_submit_not_found",
+                    reason="No se encontrÃ³ botÃ³n submit ni se pudo enviar el formulario de Instagram con Enter.",
+                    auth_stage="login_submit_detection",
+                )
+
+        await page.wait_for_timeout(req.wait_ms)
+        return None
+
+    if platform == "facebook":
+        login_url = "https://www.facebook.com/login"
+        await page.goto(login_url, wait_until="domcontentloaded", timeout=req.timeout_ms)
+        await page.wait_for_timeout(2500)
+
+        await _sar_click_first_visible(
+            page,
+            [
+                "text=Allow all cookies",
+                "text=Permitir todas las cookies",
+                "text=Accept all cookies",
+                "text=Aceptar todas",
+                "button:has-text('Allow all cookies')",
+                "button:has-text('Permitir')",
+                "button:has-text('Aceptar')",
+            ],
+            timeout_ms=1500,
+        )
+
+        email_selector = await _sar_fill_first_visible(
+            page,
+            [
+                'input[name="email"]',
+                'input#email',
+                'input[type="email"]',
+                'input[autocomplete="username"]',
+                'input[aria-label*="Email"]',
+                'input[aria-label*="Correo"]',
+                'input[type="text"]',
+            ],
+            str(creds["username"]),
+            timeout_ms=7000,
+        )
+
+        if not email_selector:
+            return await _sar_capture_diagnostic_failure(
+                req=req,
+                page=page,
+                platform=platform,
+                classification="login_form_not_found",
+                reason="No se encontrÃ³ campo visible de usuario/email en el login de Facebook.",
+                auth_stage="login_form_detection",
+            )
+
+        password_selector = await _sar_fill_first_visible(
+            page,
+            [
+                'input[name="pass"]',
+                'input#pass',
+                'input[autocomplete="current-password"]',
+                'input[aria-label*="Password"]',
+                'input[aria-label*="ContraseÃ±a"]',
+                'input[type="password"]',
+            ],
+            str(creds["password"]),
+            timeout_ms=7000,
+        )
+
+        if not password_selector:
+            return await _sar_capture_diagnostic_failure(
+                req=req,
+                page=page,
+                platform=platform,
+                classification="login_form_not_found",
+                reason="No se encontrÃ³ campo visible de password en el login de Facebook.",
+                auth_stage="login_form_detection",
+            )
+
+        clicked = await _sar_click_first_visible(
+            page,
+            [
+                'button[name="login"]',
+                'button[type="submit"]',
+                'input[type="submit"]',
+                'button:has-text("Log in")',
+                'button:has-text("Iniciar sesiÃ³n")',
+            ],
+            timeout_ms=7000,
+        )
+
+        if not clicked:
+            try:
+                await page.keyboard.press("Enter")
+            except Exception:
+                return await _sar_capture_diagnostic_failure(
+                    req=req,
+                    page=page,
+                    platform=platform,
+                    classification="login_submit_not_found",
+                    reason="No se encontrÃ³ botÃ³n submit ni se pudo enviar el formulario de Facebook con Enter.",
+                    auth_stage="login_submit_detection",
+                )
+
+        await page.wait_for_timeout(req.wait_ms)
+        return None
+
+    return await _sar_capture_diagnostic_failure(
+        req=req,
+        page=page,
+        platform=platform,
+        classification="unsupported_platform",
+        reason="Plataforma no soportada por el login autenticado.",
+        auth_stage="unsupported_platform",
+    )
+
+
+
 async def _sar_login_and_capture(req: SocialAuthRenderRequest) -> Dict[str, Any]:
     import asyncio as _asyncio
     import uuid as _uuid
@@ -5211,23 +5547,12 @@ async def _sar_login_and_capture(req: SocialAuthRenderRequest) -> Dict[str, Any]
             page = await context.new_page()
             page.set_default_timeout(req.timeout_ms)
 
-            if platform == "instagram":
-                login_url = "https://www.instagram.com/accounts/login/"
-                await page.goto(login_url, wait_until="domcontentloaded", timeout=req.timeout_ms)
-                await page.wait_for_timeout(1500)
-                await page.fill('input[name="username"]', str(creds["username"]))
-                await page.fill('input[name="password"]', str(creds["password"]))
-                await page.click('button[type="submit"]')
-                await page.wait_for_timeout(req.wait_ms)
+            login_failure = await _sar_perform_login(platform, page, creds, req)
 
-            elif platform == "facebook":
-                login_url = "https://www.facebook.com/login"
-                await page.goto(login_url, wait_until="domcontentloaded", timeout=req.timeout_ms)
-                await page.wait_for_timeout(1500)
-                await page.fill('input[name="email"]', str(creds["username"]))
-                await page.fill('input[name="pass"]', str(creds["password"]))
-                await page.click('button[name="login"], button[type="submit"]')
-                await page.wait_for_timeout(req.wait_ms)
+            if login_failure is not None:
+                await context.close()
+                await browser.close()
+                return login_failure
 
             post_login_url = page.url
             post_login_title = await page.title()
