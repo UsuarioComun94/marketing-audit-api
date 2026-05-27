@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.13"
+APP_VERSION = "public-presence-collector-mvp-0.9.14"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -6435,14 +6435,23 @@ def _igpm_is_link_tree_candidate(url: str) -> bool:
 
 
 def _igpm_extract_hashtags(text: str) -> _IGList[str]:
-    tags = _ig_re.findall(r"#[\wÃ€-Ã¿0-9_]+", text or "", flags=_ig_re.UNICODE)
+    # Extrae hashtags visibles sin rangos Unicode fragiles.
+    # Evita rangos Unicode que pueden romperse por encoding/mojibake.
+    raw_text = str(text or "")
+    candidates = _ig_re.findall(r"#[^\s#]+", raw_text, flags=_ig_re.UNICODE)
     seen = set()
     out = []
-    for tag in tags:
-        key = tag.lower()
+    trailing_punctuation = '.,;:!?Â¡Â¿)]}>)"â€œâ€â€˜â€™`Â´â€¦'
+    for tag in candidates:
+        clean = tag.strip().rstrip(trailing_punctuation)
+        if len(clean) <= 1:
+            continue
+        if any(x in clean for x in ["<", ">", "=", "http://", "https://", "&quot;"]):
+            continue
+        key = clean.casefold()
         if key not in seen:
             seen.add(key)
-            out.append(tag)
+            out.append(clean)
     return out
 
 
