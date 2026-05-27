@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.7"
+APP_VERSION = "public-presence-collector-mvp-0.9.8"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -5088,8 +5088,32 @@ def _sar_classify_auth_state(platform: str, final_url: Optional[str], title: Opt
         "accounts/login",
         "iniciar sesiÃ³n",
         "inicia sesiÃ³n",
+        "iniciar sesi",
+        "inicia sesi",
         "log in",
         "sign in",
+        "email or phone",
+        "email address",
+        "correo electrÃ³nico",
+        "correo electronico",
+        "correo electr",
+        "nÃºmero de telÃ©fono",
+        "numero de telefono",
+        "contraseÃ±a",
+        "contrasena",
+        "contrase",
+        "forgot password",
+        "olvidaste la cuenta",
+        "olvidaste tu contraseÃ±a",
+        "olvidaste tu contrase",
+        "crear cuenta nueva",
+        "create new account",
+        "escanea el cÃ³digo qr",
+        "escanea el codigo qr",
+        "cÃ³digo qr",
+        "codigo qr",
+        "confirma que coinciden los cÃ³digos",
+        "confirma que coinciden los codigos",
     ]
 
     visible_markers = {
