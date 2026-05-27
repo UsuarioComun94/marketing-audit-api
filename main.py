@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.12"
+APP_VERSION = "public-presence-collector-mvp-0.9.13"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -7072,4 +7072,297 @@ async def auditInstagramProfileMetrics(req: InstagramProfileMetricsRequest):
             "policy": {"captcha_bypass_attempted": False, "checkpoint_bypass_attempted": False, "private_profile_access_attempted": False, "write_actions_attempted": False},
         }
 
+# ============================================================
+# MICRO PATCH 4F.3-E - Instagram posts by URL parser
+# ============================================================
+# ============================================================
+# MICRO PATCH 4F.3-E - Instagram posts by URL parser
+# ============================================================
 
+class InstagramPostsByUrlRequest(_IGBaseModel):
+    post_urls: _IGList[str] = _IGField(..., min_length=1, max_length=50)
+    company_name: _IGOptional[str] = None
+    profile_url: _IGOptional[str] = None
+    max_posts: int = _IGField(20, ge=1, le=50)
+    wait_ms: int = _IGField(2500, ge=1000, le=15000)
+    timeout_ms: int = _IGField(25000, ge=10000, le=90000)
+    upload_to_drive: bool = False
+    drive_folder_name: _IGOptional[str] = None
+    filename_prefix: _IGOptional[str] = None
+
+
+def _igpbu_dedupe_urls(urls: _IGList[str], max_posts: int) -> _IGList[str]:
+    out = []
+    seen = set()
+    for u in urls or []:
+        clean = _igpm_clean_post_url(u)
+        if not clean or not _igpm_is_instagram_post_url(clean):
+            continue
+        key = clean.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(clean)
+        if len(out) >= max_posts:
+            break
+    return out
+
+
+def _igpbu_build_text_report(payload: _IGDict[str, _IGAny]) -> str:
+    lines = []
+    lines.append("INSTAGRAM POSTS BY URL PUBLIC METRICS")
+    lines.append("=" * 70)
+    lines.append("")
+    lines.append(f"company_name: {payload.get('company_name')}")
+    lines.append(f"profile_url: {payload.get('profile_url')}")
+    lines.append(f"status: {payload.get('status')}")
+    lines.append(f"version: {payload.get('version')}")
+    lines.append(f"auth_method: {payload.get('auth_method')}")
+    lines.append("")
+    lines.append("SUMMARY")
+    for k, v in (payload.get("metrics_summary") or {}).items():
+        lines.append(f"- {k}: {v}")
+    lines.append("")
+    lines.append("FREQUENCY")
+    for k, v in (payload.get("frequency") or {}).items():
+        lines.append(f"- {k}: {v}")
+    lines.append("")
+    lines.append("POSTS")
+    for idx, p in enumerate(payload.get("posts") or [], start=1):
+        lines.append(f"{idx}. {p.get('url')}")
+        lines.append(f"   type: {p.get('type')}")
+        lines.append(f"   parse_status: {p.get('parse_status')}")
+        lines.append(f"   date_iso: {p.get('date_iso')} | {p.get('date_status', {}).get('message')}")
+        lines.append(f"   likes_count: {p.get('likes_count')} | {p.get('likes_status', {}).get('message')}")
+        lines.append(f"   hashtags: {', '.join(p.get('hashtags') or [])} | {p.get('hashtags_status', {}).get('message')}")
+        if p.get("error"):
+            lines.append(f"   error: {p.get('error')}")
+    lines.append("")
+    lines.append("MISSING PUBLIC DATA")
+    for item in payload.get("missing_public_data") or []:
+        lines.append(f"- {item.get('field')}: {item.get('message')}")
+    lines.append("")
+    lines.append("LIMITATIONS")
+    for item in payload.get("limitations") or []:
+        lines.append(f"- {item}")
+    return "\n".join(lines)
+
+
+@app.post("/audit/instagram-posts-by-url")
+async def auditInstagramPostsByUrl(req: InstagramPostsByUrlRequest):
+    from playwright.async_api import async_playwright as _ig_async_playwright
+
+    retrieved_at = _ig_datetime.utcnow().isoformat() + "Z"
+    storage_state_info = _sar_storage_state_from_env("instagram")
+    post_urls = _igpbu_dedupe_urls(req.post_urls, req.max_posts)
+
+    limitations = [
+        "Solo se abren URLs de publicaciones/reels publicas provistas por el usuario o por un paso previo de discovery.",
+        "No se accede a datos privados.",
+        "Los likes pueden no estar visibles; el promedio excluye likes no visibles.",
+        "Fechas, likes y hashtags dependen del HTML visible que entregue Instagram en ese momento.",
+        "No se resuelve CAPTCHA, checkpoint ni 2FA.",
+        "No se realizan acciones de escritura: follows, likes, comments, messages ni DMs.",
+    ]
+
+    if not post_urls:
+        return {
+            "collector": "instagram_posts_by_url",
+            "version": APP_VERSION if "APP_VERSION" in globals() else "unknown",
+            "status": "failed_validation",
+            "company_name": req.company_name,
+            "profile_url": req.profile_url,
+            "retrieved_at": retrieved_at,
+            "reason": "No hay URLs validas de posts/reels/tv de Instagram.",
+            "input_count": len(req.post_urls or []),
+            "valid_post_urls": [],
+            "policy": {
+                "captcha_bypass_attempted": False,
+                "checkpoint_bypass_attempted": False,
+                "private_profile_access_attempted": False,
+                "write_actions_attempted": False,
+            },
+        }
+
+    browser = None
+    context = None
+
+    try:
+        async with _ig_async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-blink-features=AutomationControlled"],
+            )
+
+            context_kwargs = {
+                "viewport": {"width": 1365, "height": 1200},
+                "locale": "es-AR",
+                "timezone_id": "America/Argentina/Cordoba",
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            }
+
+            if storage_state_info.get("available") and storage_state_info.get("state") is not None:
+                context_kwargs["storage_state"] = storage_state_info["state"]
+
+            context = await browser.new_context(**context_kwargs)
+
+            posts = []
+            for u in post_urls:
+                post = await _igpm_parse_post(
+                    context=context,
+                    url=u,
+                    timeout_ms=req.timeout_ms,
+                    wait_ms=req.wait_ms,
+                )
+                posts.append(post)
+
+            visible_likes = [p["likes_count"] for p in posts if isinstance(p.get("likes_count"), int)]
+            avg_likes = round(_ig_statistics.mean(visible_likes), 2) if visible_likes else None
+            window = _igpm_get_reporting_window()
+            frequency = _igpm_compute_frequency(posts, window)
+
+            metrics_summary = {
+                "input_urls_count": len(req.post_urls or []),
+                "valid_post_urls_count": len(post_urls),
+                "posts_requested": req.max_posts,
+                "posts_parsed": len(posts),
+                "posts_completed": len([p for p in posts if p.get("parse_status") == "completed"]),
+                "posts_failed": len([p for p in posts if p.get("parse_status") != "completed"]),
+                "likes_visible_count": len(visible_likes),
+                "likes_missing_count": len(posts) - len(visible_likes),
+                "average_likes_last_posts_visible_only": avg_likes,
+                "average_likes_status": _igpm_field_status(
+                    avg_likes,
+                    "Promedio calculado con likes numericos visibles.",
+                    "No se puede calcular promedio de likes porque Instagram no mostro likes numericos visibles en las publicaciones analizadas.",
+                ),
+                "publishing_frequency_window_mode": window["mode"],
+                "publishing_frequency_window_start": window["start_date"],
+                "publishing_frequency_window_end": window["end_date"],
+                "posts_in_frequency_window": frequency["posts_in_window"],
+                "posts_per_week_in_frequency_window": frequency["posts_per_week"],
+                "average_days_between_posts_in_window": frequency["average_days_between_posts"],
+                "frequency_status": {
+                    "visibility": "visible" if frequency["status"] == "calculated" else "not_collected_runtime",
+                    "message": frequency["message"],
+                },
+            }
+
+            visibility_report = {
+                "posts_returned": len(posts),
+                "posts_with_visible_dates": len([p for p in posts if p.get("date_iso")]),
+                "posts_with_visible_likes": len(visible_likes),
+                "posts_with_visible_hashtags": len([p for p in posts if p.get("hashtags")]),
+            }
+
+            payload = {
+                "collector": "instagram_posts_by_url",
+                "version": APP_VERSION if "APP_VERSION" in globals() else "unknown",
+                "status": "completed",
+                "company_name": req.company_name,
+                "profile_url": req.profile_url,
+                "retrieved_at": retrieved_at,
+                "auth_method": "storage_state" if storage_state_info.get("available") else "public_render",
+                "storage_state": _sar_storage_state_public_info(storage_state_info),
+                "valid_post_urls": post_urls,
+                "posts": posts,
+                "metrics_summary": metrics_summary,
+                "frequency": frequency,
+                "visibility_report": visibility_report,
+                "limitations": limitations,
+                "policy": {
+                    "captcha_bypass_attempted": False,
+                    "checkpoint_bypass_attempted": False,
+                    "private_profile_access_attempted": False,
+                    "write_actions_attempted": False,
+                },
+            }
+
+            missing = []
+            for idx, post in enumerate(posts):
+                for field, status, severity in [
+                    ("date_iso", post.get("date_status"), "high"),
+                    ("likes_count", post.get("likes_status"), "medium"),
+                    ("hashtags", post.get("hashtags_status"), "low"),
+                    ("caption_text_sample", post.get("caption_status"), "medium"),
+                ]:
+                    if isinstance(status, dict) and status.get("visibility") != "visible":
+                        missing.append({
+                            "field": f"posts[{idx}].{field}",
+                            "visibility": status.get("visibility"),
+                            "severity": severity,
+                            "message": status.get("message"),
+                        })
+
+            if frequency.get("status") != "calculated":
+                missing.append({
+                    "field": "frequency.posts_per_week",
+                    "visibility": "not_calculable",
+                    "severity": "high",
+                    "message": frequency.get("message") or "No se pudo calcular frecuencia de publicacion.",
+                })
+
+            if avg_likes is None:
+                missing.append({
+                    "field": "metrics_summary.average_likes_last_posts_visible_only",
+                    "visibility": "not_calculable",
+                    "severity": "medium",
+                    "message": "No se puede calcular promedio de likes porque Instagram no mostro likes numericos visibles.",
+                })
+
+            payload["missing_public_data"] = missing
+            payload["human_readable_messages"] = [
+                f"URLs validas analizadas: {len(post_urls)}.",
+                f"Posts parseados: {len(posts)}.",
+                f"Posts con fecha visible: {visibility_report['posts_with_visible_dates']}.",
+                f"Posts con likes visibles: {visibility_report['posts_with_visible_likes']}.",
+                f"Posts con hashtags visibles: {visibility_report['posts_with_visible_hashtags']}.",
+                f"Promedio de likes visibles: {avg_likes}." if avg_likes is not None else "No se pudo calcular promedio de likes visibles.",
+                f"Frecuencia: {frequency.get('posts_per_week')} publicaciones por semana." if frequency.get("status") == "calculated" else frequency.get("message"),
+            ]
+
+            drive_report_upload = None
+            if req.upload_to_drive and "_drive_upload_binary" in globals():
+                prefix = req.filename_prefix or "instagram_posts_by_url"
+                report_txt = _igpbu_build_text_report(payload)
+                drive_report_upload = await _drive_upload_binary(
+                    filename=f"{prefix}.txt",
+                    content=report_txt.encode("utf-8"),
+                    mime_type="text/plain; charset=utf-8",
+                    folder_name=req.drive_folder_name,
+                )
+
+            payload["drive_report_upload"] = drive_report_upload
+
+            await context.close()
+            await browser.close()
+            return payload
+
+    except Exception as exc:
+        try:
+            if context is not None:
+                await context.close()
+        except Exception:
+            pass
+        try:
+            if browser is not None:
+                await browser.close()
+        except Exception:
+            pass
+
+        return {
+            "collector": "instagram_posts_by_url",
+            "version": APP_VERSION if "APP_VERSION" in globals() else "unknown",
+            "status": "failed_runtime",
+            "company_name": req.company_name,
+            "profile_url": req.profile_url,
+            "retrieved_at": retrieved_at,
+            "reason": str(exc),
+            "valid_post_urls": post_urls,
+            "limitations": limitations,
+            "policy": {
+                "captcha_bypass_attempted": False,
+                "checkpoint_bypass_attempted": False,
+                "private_profile_access_attempted": False,
+                "write_actions_attempted": False,
+            },
+        }
