@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.6"
+APP_VERSION = "public-presence-collector-mvp-0.9.7"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -5112,16 +5112,21 @@ def _sar_classify_auth_state(platform: str, final_url: Optional[str], title: Opt
         evidence_grade = "not_profile_evidence"
         usable = False
         reason = "La plataforma solicitÃ³ checkpoint/2FA/verificaciÃ³n adicional. No se intenta evadir."
+    elif matched_visible and matched_login:
+        classification = "profile_visible_with_login_prompt"
+        evidence_grade = "partial_public_profile_evidence"
+        usable = True
+        reason = "El perfil/pÃ¡gina pÃºblica es visible, pero la pantalla conserva prompt de login; sirve como evidencia visual pÃºblica parcial, no como prueba de sesiÃ³n autenticada plena."
     elif matched_login:
         classification = "login_wall"
         evidence_grade = "not_profile_evidence"
         usable = False
-        reason = "La navegaciÃ³n autenticada terminÃ³ en login wall o no mantuvo sesiÃ³n usable."
+        reason = "La navegaciÃ³n terminÃ³ en login wall o no mantuvo sesiÃ³n usable."
     elif matched_visible:
         classification = "authenticated_profile_visible"
         evidence_grade = "authenticated_public_profile_evidence"
         usable = True
-        reason = "El perfil/pÃ¡gina pÃºblica fue visible tras login automÃ¡tico controlado."
+        reason = "El perfil/pÃ¡gina pÃºblica fue visible tras login automÃ¡tico controlado sin prompt de login dominante."
     else:
         classification = "unknown_or_partial"
         evidence_grade = "weak_visual_evidence"
