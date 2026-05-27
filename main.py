@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.8"
+APP_VERSION = "public-presence-collector-mvp-0.9.9"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -5052,6 +5052,111 @@ def _sar_get_credentials(platform: str) -> Dict[str, Any]:
     }
 
 
+
+def _sar_storage_state_from_env(platform: str) -> Dict[str, Any]:
+    import os as _os
+    import base64 as _base64
+    import json as _json
+
+    p = str(platform or "").strip().lower()
+
+    if p == "facebook":
+        env_name = "FACEBOOK_STORAGE_STATE_B64"
+    elif p == "instagram":
+        env_name = "INSTAGRAM_STORAGE_STATE_B64"
+    else:
+        env_name = ""
+
+    mode = str(_os.environ.get("SOCIAL_AUTH_STATE_MODE") or "").strip().lower()
+    raw_value = _os.environ.get(env_name) if env_name else None
+
+    info = {
+        "enabled": mode in {"storage_state", "auto", "1", "true", "yes", "on"},
+        "mode": mode,
+        "platform": p,
+        "env_name": env_name,
+        "configured": bool(str(raw_value or "").strip()),
+        "available": False,
+        "cookies_count": 0,
+        "origins_count": 0,
+        "state": None,
+        "error": None,
+    }
+
+    if not info["enabled"]:
+        return info
+
+    if not info["configured"]:
+        info["error"] = "storage_state_env_missing"
+        return info
+
+    try:
+        decoded = _base64.b64decode(str(raw_value).strip()).decode("utf-8")
+        state = _json.loads(decoded)
+
+        if not isinstance(state, dict):
+            raise ValueError("storage_state decoded value is not a JSON object")
+
+        info["cookies_count"] = len(state.get("cookies") or [])
+        info["origins_count"] = len(state.get("origins") or [])
+        info["state"] = state
+        info["available"] = True
+        return info
+
+    except Exception as exc:
+        info["error"] = f"storage_state_decode_failed: {exc}"
+        return info
+
+
+def _sar_storage_state_public_info(info: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "enabled": bool(info.get("enabled")),
+        "mode": info.get("mode"),
+        "platform": info.get("platform"),
+        "env_name": info.get("env_name"),
+        "configured": bool(info.get("configured")),
+        "available": bool(info.get("available")),
+        "cookies_count": int(info.get("cookies_count") or 0),
+        "origins_count": int(info.get("origins_count") or 0),
+        "error": info.get("error"),
+    }
+
+
+def _sar_auth_state_from_classification(classification: str) -> str:
+    c = str(classification or "").strip()
+
+    if c == "authenticated_profile_visible":
+        return "authenticated_session"
+    if c == "profile_visible_with_login_prompt":
+        return "profile_visible_public_partial"
+    if c in {"login_wall", "login_form_not_found", "login_submit_not_found"}:
+        return "login_wall"
+    if c == "captcha_required":
+        return "captcha_required"
+    if c == "checkpoint_required":
+        return "checkpoint_required"
+    if c in {"failed_runtime", "playwright_unavailable"}:
+        return "failed_runtime"
+    if c in {"blocked_or_unavailable"}:
+        return "blocked_or_unavailable"
+    return "unknown_or_partial"
+
+
+def _sar_visual_access_type(classification: str) -> str:
+    c = str(classification or "").strip()
+
+    if c == "authenticated_profile_visible":
+        return "authenticated_session"
+    if c == "profile_visible_with_login_prompt":
+        return "public_partial"
+    if c == "login_wall":
+        return "none_login_wall"
+    if c in {"captcha_required", "checkpoint_required"}:
+        return "none_challenge"
+    return "none_or_unknown"
+
+
+
 def _sar_classify_auth_state(platform: str, final_url: Optional[str], title: Optional[str], text: Optional[str]) -> Dict[str, Any]:
     p = str(platform or "").lower().strip()
     url = str(final_url or "").lower()
@@ -5562,19 +5667,112 @@ async def _sar_login_and_capture(req: SocialAuthRenderRequest) -> Dict[str, Any]
                 ],
             )
 
-            context = await browser.new_context(
-                viewport={"width": 1365, "height": 900},
-                locale="es-AR",
-                timezone_id="America/Argentina/Cordoba",
-                user_agent=(
+            storage_state_info = _sar_storage_state_from_env(platform)
+
+            context_kwargs = {
+                "viewport": {"width": 1365, "height": 900},
+                "locale": "es-AR",
+                "timezone_id": "America/Argentina/Cordoba",
+                "user_agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/122.0.0.0 Safari/537.36"
                 ),
-            )
+            }
+
+            if storage_state_info.get("available") and storage_state_info.get("state") is not None:
+                context_kwargs["storage_state"] = storage_state_info["state"]
+
+            context = await browser.new_context(**context_kwargs)
 
             page = await context.new_page()
             page.set_default_timeout(req.timeout_ms)
+
+            if storage_state_info.get("available"):
+                await page.goto(str(req.profile_url), wait_until="domcontentloaded", timeout=req.timeout_ms)
+                await page.wait_for_timeout(req.wait_ms)
+
+                final_url = page.url
+                page_title = await page.title()
+
+                visible_text = ""
+                try:
+                    visible_text = await page.locator("body").inner_text(timeout=12000)
+                except Exception:
+                    visible_text = ""
+
+                classification = _sar_classify_auth_state(
+                    platform=platform,
+                    final_url=final_url,
+                    title=page_title,
+                    text=visible_text,
+                )
+
+                class_name = classification.get("classification")
+                auth_state = _sar_auth_state_from_classification(class_name)
+                visual_access_type = _sar_visual_access_type(class_name)
+
+                screenshot_bytes = await page.screenshot(full_page=req.full_page, type="png")
+                screenshot_id = "state_" + _uuid.uuid4().hex
+
+                links_count = 0
+                images_count = 0
+                forms_count = 0
+
+                try:
+                    links_count = await page.locator("a").count()
+                    images_count = await page.locator("img").count()
+                    forms_count = await page.locator("form").count()
+                except Exception:
+                    pass
+
+                drive_upload = None
+                if req.upload_to_drive and "_drive_upload_binary" in globals():
+                    filename = req.filename or f"{platform}_storage_state_render_{screenshot_id}.png"
+                    drive_upload = await _drive_upload_binary(
+                        filename=filename,
+                        content=screenshot_bytes,
+                        mime_type="image/png",
+                        folder_name=req.drive_folder_name,
+                    )
+
+                await context.close()
+                await browser.close()
+
+                return {
+                    "status": "completed" if classification.get("usable_profile_visual_evidence") else "completed_with_limitations",
+                    "platform": platform,
+                    "company_name": req.company_name,
+                    "profile_url": req.profile_url,
+                    "auth_stage": "storage_state_profile_view",
+                    "auth_method": "storage_state",
+                    "storage_state": _sar_storage_state_public_info(storage_state_info),
+                    "login_attempted": False,
+                    "login_successful": class_name == "authenticated_profile_visible",
+                    "session_authenticated": class_name == "authenticated_profile_visible",
+                    "session_reused": True,
+                    "session_expired": class_name in {"login_wall", "login_form_not_found", "login_submit_not_found"},
+                    "auth_state": auth_state,
+                    "visual_access_type": visual_access_type,
+                    "final_url": final_url,
+                    "page_title": page_title,
+                    "screenshot_id": screenshot_id,
+                    "screenshot_stored_in_backend": False,
+                    "drive_upload": drive_upload,
+                    "auth_render_classification": classification,
+                    "text_sample": (visible_text or "")[:5000],
+                    "links_count": links_count,
+                    "forms_count": forms_count,
+                    "images_count": images_count,
+                    "retrieved_at": _datetime.utcnow().isoformat() + "Z",
+                    "limitations": [
+                        "Se usÃ³ storage_state persistente generado localmente.",
+                        "No se expone storage_state, cookies ni credenciales.",
+                        "No se resuelve CAPTCHA, checkpoint ni 2FA.",
+                        "No se realizan acciones de escritura.",
+                        "Si session_expired=true, regenerar storage_state localmente.",
+                    ],
+                }
 
             login_failure = await _sar_perform_login(platform, page, creds, req)
 
