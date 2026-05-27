@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.11"
+APP_VERSION = "public-presence-collector-mvp-0.9.12"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -6332,6 +6332,8 @@ class InstagramProfileMetricsRequest(_IGBaseModel):
     enable_mobile_fallback: bool = True
     enable_html_url_scan: bool = True
     scroll_rounds: int = _IGField(22, ge=4, le=60)
+    parse_posts: bool = True
+    fast_diagnostic: bool = False
 
 
 def _igpm_field_status(value: _IGAny, visible_message: str, not_visible_message: str) -> _IGDict[str, _IGAny]:
@@ -6951,12 +6953,18 @@ async def auditInstagramProfileMetrics(req: InstagramProfileMetricsRequest):
             posts = []
             window = _igpm_get_reporting_window()
             window_start = _ig_date.fromisoformat(window["start_date"])
-            for url in post_urls[:req.max_scan_posts]:
-                post = await _igpm_parse_post(context=context, url=url, timeout_ms=req.timeout_ms, wait_ms=req.wait_ms)
-                posts.append(post)
-                d = _igpm_date_from_iso(post.get("date_iso"))
-                if len(posts) >= req.max_posts and d is not None and d < window_start:
-                    break
+
+            if getattr(req, "parse_posts", True):
+                parse_source_limit = req.max_posts if getattr(req, "fast_diagnostic", False) else req.max_scan_posts
+                for url in post_urls[:parse_source_limit]:
+                    post = await _igpm_parse_post(context=context, url=url, timeout_ms=req.timeout_ms, wait_ms=req.wait_ms)
+                    posts.append(post)
+                    d = _igpm_date_from_iso(post.get("date_iso"))
+                    if len(posts) >= req.max_posts and d is not None and d < window_start:
+                        break
+            else:
+                limitations.append("parse_posts=false: solo se diagnostico perfil y URLs de posts; no se abrieron publicaciones individuales.")
+
             last_posts = posts[:req.max_posts]
             visible_likes = [p["likes_count"] for p in last_posts if isinstance(p.get("likes_count"), int)]
             avg_likes = round(_ig_statistics.mean(visible_likes), 2) if visible_likes else None
@@ -6994,6 +7002,13 @@ async def auditInstagramProfileMetrics(req: InstagramProfileMetricsRequest):
                 "auth_render_classification": classification,
                 "profile_collection_status": "completed" if counts.get("followers_total") or profile_text else "partial_or_failed",
                 "posts_collection_status": "completed" if len(post_urls) > 0 else "no_post_urls_visible_in_render",
+                "request_mode": {
+                    "parse_posts": getattr(req, "parse_posts", True),
+                    "fast_diagnostic": getattr(req, "fast_diagnostic", False),
+                    "enable_mobile_fallback": req.enable_mobile_fallback,
+                    "enable_html_url_scan": req.enable_html_url_scan,
+                    "scroll_rounds": req.scroll_rounds,
+                },
                 "profile_counts": counts,
                 "profile_counts_status": profile_counts_status,
                 "profile_text_sample": profile_text[:5000],
