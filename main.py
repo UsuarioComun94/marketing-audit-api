@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.9"
+APP_VERSION = "public-presence-collector-mvp-0.9.10"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -6306,7 +6306,749 @@ async def get_text_report(report_id: str) -> Response:
     return Response(content=item["content"], media_type="text/plain; charset=utf-8", headers=headers)
 
 
+# ============================================================
+# MICRO PATCH 4F.3-C - Instagram profile public metrics + visibility messages
+# ============================================================
+
+from pydantic import BaseModel as _IGBaseModel, Field as _IGField
+from typing import Optional as _IGOptional, Dict as _IGDict, Any as _IGAny, List as _IGList
+import re as _ig_re
+import statistics as _ig_statistics
+from datetime import datetime as _ig_datetime, date as _ig_date, timedelta as _ig_timedelta, timezone as _ig_timezone
 
 
+class InstagramProfileMetricsRequest(_IGBaseModel):
+    profile_url: str = _IGField(..., description="Instagram public profile URL.")
+    company_name: _IGOptional[str] = None
+    max_posts: int = _IGField(20, ge=1, le=50)
+    max_scan_posts: int = _IGField(80, ge=20, le=150)
+    wait_ms: int = _IGField(7000, ge=1000, le=20000)
+    timeout_ms: int = _IGField(120000, ge=15000, le=180000)
+    full_page: bool = True
+    upload_to_drive: bool = True
+    drive_folder_name: _IGOptional[str] = None
+    filename_prefix: _IGOptional[str] = None
+    include_bio_link_expansion: bool = True
+
+
+def _igpm_field_status(value: _IGAny, visible_message: str, not_visible_message: str) -> _IGDict[str, _IGAny]:
+    if value is None:
+        return {"value": None, "visibility": "not_visible_publicly", "message": not_visible_message}
+    if isinstance(value, str) and not value.strip():
+        return {"value": value, "visibility": "not_visible_publicly", "message": not_visible_message}
+    if isinstance(value, list) and len(value) == 0:
+        return {"value": value, "visibility": "not_visible_publicly", "message": not_visible_message}
+    return {"value": value, "visibility": "visible", "message": visible_message}
+
+
+def _igpm_runtime_status(message: str) -> _IGDict[str, _IGAny]:
+    return {"value": None, "visibility": "not_collected_runtime", "message": message}
+
+
+def _igpm_parse_compact_number(value: _IGOptional[str]) -> _IGOptional[int]:
+    if value is None:
+        return None
+
+    s = str(value).strip().lower()
+    if not s:
+        return None
+
+    s = s.replace("\u00a0", " ").replace(",", ".")
+    multiplier = 1
+
+    if "mill" in s or "millones" in s or s.endswith("m"):
+        multiplier = 1000000
+    elif "mil" in s or s.endswith("k"):
+        multiplier = 1000
+
+    num_match = _ig_re.search(r"(\d+(?:[.,]\d+)?)", s)
+    if not num_match:
+        return None
+
+    try:
+        num = float(num_match.group(1).replace(",", "."))
+        return int(round(num * multiplier))
+    except Exception:
+        return None
+
+
+def _igpm_normalize_url(url: str) -> str:
+    u = str(url or "").strip()
+    if not u:
+        return ""
+    if u.startswith("//"):
+        return "https:" + u
+    return u
+
+
+def _igpm_is_instagram_post_url(url: str) -> bool:
+    u = str(url or "").lower()
+    return ("instagram.com/p/" in u) or ("instagram.com/reel/" in u) or ("instagram.com/tv/" in u)
+
+
+def _igpm_is_external_link(url: str) -> bool:
+    u = str(url or "").lower().strip()
+    if not u:
+        return False
+    if u.startswith("mailto:") or u.startswith("tel:"):
+        return True
+    if not (u.startswith("http://") or u.startswith("https://")):
+        return False
+    return not any(b in u for b in ["instagram.com", "facebook.com", "fb.com", "meta.com"])
+
+
+def _igpm_is_link_tree_candidate(url: str) -> bool:
+    u = str(url or "").lower()
+    domains = ["linktr.ee", "beacons.ai", "bio.site", "campsite.bio", "solo.to", "taplink", "lnk.bio", "linkin.bio", "msha.ke", "flow.page", "hoo.be"]
+    return any(d in u for d in domains)
+
+
+def _igpm_extract_hashtags(text: str) -> _IGList[str]:
+    tags = _ig_re.findall(r"#[\wÃ€-Ã¿0-9_]+", text or "", flags=_ig_re.UNICODE)
+    seen = set()
+    out = []
+    for tag in tags:
+        t = tag.strip()
+        key = t.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(t)
+    return out
+
+
+def _igpm_parse_iso_datetime(value: _IGOptional[str]) -> _IGOptional[str]:
+    if not value:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        _ig_datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return s
+    except Exception:
+        return s
+
+
+def _igpm_date_from_iso(value: _IGOptional[str]) -> _IGOptional[_ig_date]:
+    if not value:
+        return None
+    try:
+        return _ig_datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+    except Exception:
+        return None
+
+
+def _igpm_parse_likes(text: str) -> _IGOptional[int]:
+    t = (text or "").replace("\u00a0", " ")
+    patterns = [
+        r"([\d.,]+(?:\s*(?:mil|k|m|millones))?)\s+Me gusta",
+        r"([\d.,]+(?:\s*(?:mil|k|m|millones))?)\s+likes",
+        r"Le gusta a\s+.+?\s+y\s+([\d.,]+(?:\s*(?:mil|k|m|millones))?)\s+personas\s+m[aÃ¡]s",
+        r"Liked by\s+.+?\s+and\s+([\d.,]+(?:\s*(?:mil|k|m|millions))?)\s+others",
+        r"([\d.,]+(?:\s*(?:mil|k|m|millones))?)\s+personas\s+les\s+gusta",
+    ]
+
+    for pat in patterns:
+        m = _ig_re.search(pat, t, flags=_ig_re.IGNORECASE | _ig_re.DOTALL)
+        if m:
+            return _igpm_parse_compact_number(m.group(1))
+
+    return None
+
+
+def _igpm_profile_counts_from_text(text: str) -> _IGDict[str, _IGOptional[int]]:
+    body = (text or "").replace("\u00a0", " ")
+    lowered = body.lower()
+
+    def find(label_patterns: _IGList[str]) -> _IGOptional[int]:
+        for label in label_patterns:
+            patterns = [
+                rf"([\d.,]+(?:\s*(?:mil|k|m|millones))?)\s+{label}",
+                rf"{label}\s+([\d.,]+(?:\s*(?:mil|k|m|millones))?)",
+            ]
+            for pat in patterns:
+                m = _ig_re.search(pat, lowered, flags=_ig_re.IGNORECASE)
+                if m:
+                    return _igpm_parse_compact_number(m.group(1))
+        return None
+
+    return {
+        "posts_total": find(["publicaciones", "posts"]),
+        "followers_total": find(["seguidores", "followers"]),
+        "following_total": find(["seguidos", "siguiendo", "following"]),
+    }
+
+
+def _igpm_profile_counts_status(counts: _IGDict[str, _IGOptional[int]]) -> _IGDict[str, _IGAny]:
+    return {
+        "posts_total": _igpm_field_status(counts.get("posts_total"), "Publicaciones totales visibles en el perfil.", "El perfil no muestra pÃºblicamente el total de publicaciones en esta vista."),
+        "followers_total": _igpm_field_status(counts.get("followers_total"), "Seguidores totales visibles en el perfil.", "El perfil no muestra pÃºblicamente el total de seguidores en esta vista."),
+        "following_total": _igpm_field_status(counts.get("following_total"), "Seguidos/siguiendo visibles en el perfil.", "El perfil no muestra pÃºblicamente el total de seguidos/siguiendo en esta vista."),
+    }
+
+
+def _igpm_get_reporting_window(today: _IGOptional[_ig_date] = None) -> _IGDict[str, str]:
+    if today is None:
+        today = _ig_datetime.now(_ig_timezone(_ig_timedelta(hours=-3))).date()
+
+    if today.day <= 7:
+        first_this_month = today.replace(day=1)
+        end = first_this_month - _ig_timedelta(days=1)
+        start = end.replace(day=1)
+        mode = "previous_month_because_first_week"
+    else:
+        start = today.replace(day=1)
+        end = today
+        mode = "current_month_to_date"
+
+    return {"mode": mode, "start_date": start.isoformat(), "end_date": end.isoformat(), "days": str((end - start).days + 1)}
+
+
+def _igpm_compute_frequency(posts: _IGList[_IGDict[str, _IGAny]], window: _IGDict[str, str]) -> _IGDict[str, _IGAny]:
+    start = _ig_date.fromisoformat(window["start_date"])
+    end = _ig_date.fromisoformat(window["end_date"])
+    days = max((end - start).days + 1, 1)
+
+    dated = []
+    for p in posts:
+        d = _igpm_date_from_iso(p.get("date_iso"))
+        if d and start <= d <= end:
+            dated.append(d)
+
+    dated_sorted = sorted(dated)
+    intervals = []
+    for i in range(1, len(dated_sorted)):
+        intervals.append((dated_sorted[i] - dated_sorted[i - 1]).days)
+
+    posts_per_week = round((len(dated) / days) * 7, 2) if dated else None
+    average_days = round(_ig_statistics.mean(intervals), 2) if intervals else None
+
+    return {
+        "window": window,
+        "posts_in_window": len(dated),
+        "posts_per_week": posts_per_week,
+        "average_days_between_posts": average_days,
+        "dated_posts_used": [d.isoformat() for d in dated_sorted],
+        "status": "calculated" if dated else "not_calculable",
+        "message": "Frecuencia calculada con fechas visibles." if dated else "No se puede calcular frecuencia porque no hay fechas visibles suficientes en la ventana definida.",
+    }
+
+
+async def _igpm_inner_text(page, timeout_ms: int = 8000, limit: int = 8000) -> str:
+    try:
+        txt = await page.locator("body").inner_text(timeout=timeout_ms)
+        return (txt or "")[:limit]
+    except Exception:
+        return ""
+
+
+async def _igpm_meta_text(page) -> str:
+    parts = []
+    selectors = ['meta[property="og:description"]', 'meta[name="description"]', 'meta[property="og:title"]', 'meta[name="twitter:description"]']
+    for sel in selectors:
+        try:
+            value = await page.locator(sel).first.get_attribute("content", timeout=2000)
+            if value:
+                parts.append(value)
+        except Exception:
+            pass
+    return "\n".join(parts)
+
+
+async def _igpm_collect_links(page) -> _IGDict[str, _IGAny]:
+    try:
+        raw_links = await page.locator("a[href]").evaluate_all("els => els.map(a => ({href: a.href || '', text: (a.innerText || a.textContent || '').trim()}))")
+    except Exception:
+        raw_links = []
+
+    links = []
+    seen = set()
+    for item in raw_links:
+        href = _igpm_normalize_url((item or {}).get("href", ""))
+        text = ((item or {}).get("text", "") or "")[:300]
+        if not href:
+            continue
+        key = href.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        links.append({"url": href, "text": text, "is_external": _igpm_is_external_link(href), "is_link_tree_candidate": _igpm_is_link_tree_candidate(href)})
+
+    external = [x for x in links if x["is_external"]]
+    tree = [x for x in links if x["is_link_tree_candidate"]]
+
+    return {
+        "all_links_count": len(links),
+        "external_links": external,
+        "tree_candidates": tree,
+        "external_links_status": _igpm_field_status(external, "Links externos pÃºblicos visibles en el perfil.", "El perfil no muestra links externos pÃºblicos en la bio en esta vista."),
+        "tree_candidates_status": _igpm_field_status(tree, "Se detectÃ³ un posible Ã¡rbol de links/link-in-bio.", "El perfil no muestra un Ã¡rbol de links pÃºblico detectable en esta vista."),
+    }
+
+
+async def _igpm_expand_tree_links(context, candidates: _IGList[_IGDict[str, _IGAny]], timeout_ms: int = 45000) -> _IGList[_IGDict[str, _IGAny]]:
+    expanded = []
+
+    for c in candidates[:3]:
+        url = c.get("url")
+        if not url:
+            continue
+
+        page = await context.new_page()
+        result = {"source_url": url, "status": "failed", "page_title": None, "final_url": None, "links": [], "links_status": _igpm_runtime_status("No se pudo expandir el Ã¡rbol de links por limitaciÃ³n tÃ©cnica del render."), "error": None}
+
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            await page.wait_for_timeout(2500)
+            result["page_title"] = await page.title()
+            result["final_url"] = page.url
+
+            raw_links = await page.locator("a[href]").evaluate_all("els => els.map(a => ({href: a.href || '', text: (a.innerText || a.textContent || '').trim()}))")
+
+            seen = set()
+            out = []
+            for item in raw_links:
+                href = _igpm_normalize_url((item or {}).get("href", ""))
+                text = ((item or {}).get("text", "") or "")[:300]
+                if not href:
+                    continue
+                key = href.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                if _igpm_is_external_link(href):
+                    out.append({"url": href, "text": text})
+
+            result["links"] = out
+            result["links_status"] = _igpm_field_status(out, "Links internos del Ã¡rbol de links visibles.", "El Ã¡rbol de links no mostrÃ³ enlaces pÃºblicos verificables en esta vista.")
+            result["status"] = "completed"
+        except Exception as exc:
+            result["error"] = str(exc)
+        finally:
+            await page.close()
+
+        expanded.append(result)
+
+    return expanded
+
+
+async def _igpm_collect_post_urls(page, max_scan_posts: int, wait_ms: int) -> _IGList[str]:
+    seen = []
+    seen_set = set()
+
+    for _ in range(16):
+        try:
+            hrefs = await page.locator("a[href]").evaluate_all("els => els.map(a => a.href || '')")
+        except Exception:
+            hrefs = []
+
+        for href in hrefs:
+            u = _igpm_normalize_url(href)
+            if not _igpm_is_instagram_post_url(u):
+                continue
+            clean = u.split("?")[0].rstrip("/") + "/"
+            key = clean.lower()
+            if key not in seen_set:
+                seen_set.add(key)
+                seen.append(clean)
+
+        if len(seen) >= max_scan_posts:
+            break
+
+        try:
+            await page.mouse.wheel(0, 2600)
+            await page.wait_for_timeout(max(1500, min(wait_ms, 5000)))
+        except Exception:
+            break
+
+    return seen[:max_scan_posts]
+
+
+async def _igpm_parse_post(context, url: str, timeout_ms: int, wait_ms: int) -> _IGDict[str, _IGAny]:
+    page = await context.new_page()
+    data = {
+        "url": url,
+        "type": "reel" if "/reel/" in url else ("tv" if "/tv/" in url else "post"),
+        "date_iso": None,
+        "date": None,
+        "likes_count": None,
+        "hashtags": [],
+        "caption_text_sample": "",
+        "parse_status": "failed",
+        "error": None,
+    }
+
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        await page.wait_for_timeout(max(2500, min(wait_ms, 7000)))
+
+        text = await _igpm_inner_text(page, timeout_ms=12000, limit=12000)
+        meta_text = await _igpm_meta_text(page)
+        combined_text = (text + "\n" + meta_text).strip()
+
+        data["caption_text_sample"] = combined_text[:2000]
+        data["hashtags"] = _igpm_extract_hashtags(combined_text)
+
+        try:
+            dt = await page.locator("time[datetime]").first.get_attribute("datetime", timeout=5000)
+        except Exception:
+            dt = None
+
+        data["date_iso"] = _igpm_parse_iso_datetime(dt)
+        d_obj = _igpm_date_from_iso(data["date_iso"])
+        data["date"] = d_obj.isoformat() if d_obj else None
+
+        likes = _igpm_parse_likes(combined_text)
+        data["likes_count"] = likes
+        data["parse_status"] = "completed"
+    except Exception as exc:
+        data["error"] = str(exc)
+    finally:
+        await page.close()
+
+    data["date_status"] = _igpm_field_status(data.get("date_iso"), "Fecha pÃºblica visible en la publicaciÃ³n.", "No se pudo leer una fecha pÃºblica visible para esta publicaciÃ³n.")
+    data["likes_status"] = _igpm_field_status(data.get("likes_count"), "Likes pÃºblicos visibles en la publicaciÃ³n.", "La publicaciÃ³n no muestra pÃºblicamente el nÃºmero de likes en esta vista.")
+    data["hashtags_status"] = _igpm_field_status(data.get("hashtags") or [], "Hashtags visibles en el texto de la publicaciÃ³n.", "No se detectaron hashtags visibles en esta publicaciÃ³n.")
+    data["caption_status"] = _igpm_field_status(data.get("caption_text_sample"), "Texto/caption visible recolectado.", "No se pudo leer texto/caption visible de esta publicaciÃ³n.")
+
+    return data
+
+
+def _igpm_collect_missing_data(payload: _IGDict[str, _IGAny]) -> _IGList[_IGDict[str, _IGAny]]:
+    missing = []
+
+    def add(field: str, status: _IGDict[str, _IGAny], severity: str = "medium"):
+        if not isinstance(status, dict):
+            return
+        if status.get("visibility") != "visible":
+            missing.append({"field": field, "visibility": status.get("visibility"), "severity": severity, "message": status.get("message")})
+
+    for field, status in (payload.get("profile_counts_status") or {}).items():
+        add(f"profile_counts.{field}", status, "high")
+
+    links = payload.get("links") or {}
+    add("links.external_links", links.get("external_links_status"), "medium")
+    add("links.tree_candidates", links.get("tree_candidates_status"), "low")
+
+    for idx, post in enumerate(payload.get("posts") or []):
+        add(f"posts[{idx}].date_iso", post.get("date_status"), "high")
+        add(f"posts[{idx}].likes_count", post.get("likes_status"), "medium")
+        add(f"posts[{idx}].hashtags", post.get("hashtags_status"), "low")
+        add(f"posts[{idx}].caption_text_sample", post.get("caption_status"), "medium")
+
+    frequency = payload.get("frequency") or {}
+    if frequency.get("status") != "calculated":
+        missing.append({"field": "frequency.posts_per_week", "visibility": "not_calculable", "severity": "high", "message": frequency.get("message") or "No se pudo calcular frecuencia de publicaciÃ³n."})
+
+    summary = payload.get("metrics_summary") or {}
+    if summary.get("average_likes_last_posts_visible_only") is None:
+        missing.append({"field": "metrics_summary.average_likes_last_posts_visible_only", "visibility": "not_calculable", "severity": "medium", "message": "No se puede calcular promedio de likes porque Instagram no mostrÃ³ likes numÃ©ricos visibles en las publicaciones analizadas."})
+
+    return missing
+
+
+def _igpm_data_quality(payload: _IGDict[str, _IGAny]) -> _IGDict[str, _IGAny]:
+    profile_counts_status = payload.get("profile_counts_status") or {}
+    summary = payload.get("metrics_summary") or {}
+
+    score = 0
+    visible_counts = sum(1 for s in profile_counts_status.values() if isinstance(s, dict) and s.get("visibility") == "visible")
+    score += min(30, visible_counts * 10)
+
+    if payload.get("auth_render_classification", {}).get("usable_profile_visual_evidence"):
+        score += 20
+
+    returned = int(summary.get("last_posts_returned") or 0)
+    requested = max(1, int(summary.get("posts_requested") or 20))
+    score += min(20, int((returned / requested) * 20))
+
+    likes_visible = int(summary.get("likes_visible_count") or 0)
+    score += min(15, int((likes_visible / max(1, returned)) * 15)) if returned else 0
+
+    dated_posts = len((payload.get("frequency") or {}).get("dated_posts_used") or [])
+    score += min(15, int((dated_posts / max(1, returned)) * 15)) if returned else 0
+
+    if score >= 80:
+        grade = "strong_public_evidence"
+    elif score >= 60:
+        grade = "usable_with_limitations"
+    elif score >= 35:
+        grade = "partial_public_evidence"
+    else:
+        grade = "insufficient_public_evidence"
+
+    return {"score": score, "max_score": 100, "grade": grade, "reason": "Score basado en visibilidad de perfil, cantidad de posts, likes visibles y fechas visibles."}
+
+
+def _igpm_build_human_messages(payload: _IGDict[str, _IGAny]) -> _IGList[str]:
+    messages = []
+    counts_status = payload.get("profile_counts_status") or {}
+    for key in ["posts_total", "followers_total", "following_total"]:
+        status = counts_status.get(key) or {}
+        if status.get("visibility") == "visible":
+            messages.append(f"{key}: visible ({status.get('value')}).")
+        else:
+            messages.append(status.get("message") or f"{key}: no visible pÃºblicamente.")
+
+    summary = payload.get("metrics_summary") or {}
+    if summary.get("average_likes_last_posts_visible_only") is not None:
+        messages.append(f"Promedio de likes visibles: {summary.get('average_likes_last_posts_visible_only')}.")
+    else:
+        messages.append("No se puede calcular promedio de likes porque no hay likes numÃ©ricos visibles suficientes.")
+
+    frequency = payload.get("frequency") or {}
+    if frequency.get("status") == "calculated":
+        messages.append(f"Frecuencia calculada: {frequency.get('posts_per_week')} publicaciones por semana en la ventana definida.")
+    else:
+        messages.append(frequency.get("message") or "No se pudo calcular frecuencia de publicaciÃ³n.")
+
+    return messages
+
+
+def _igpm_build_text_report(payload: _IGDict[str, _IGAny]) -> str:
+    lines = []
+    lines.append("INSTAGRAM PROFILE PUBLIC METRICS")
+    lines.append("=" * 70)
+    lines.append("")
+    lines.append(f"company_name: {payload.get('company_name')}")
+    lines.append(f"profile_url: {payload.get('profile_url')}")
+    lines.append(f"final_url: {payload.get('final_url')}")
+    lines.append(f"page_title: {payload.get('page_title')}")
+    lines.append(f"status: {payload.get('status')}")
+    lines.append(f"classification: {payload.get('classification')}")
+    lines.append("")
+    lines.append("PROFILE COUNTS")
+    for key, status in (payload.get("profile_counts_status") or {}).items():
+        lines.append(f"- {key}: {status.get('value')} | {status.get('visibility')} | {status.get('message')}")
+    lines.append("")
+    lines.append("PUBLIC PROFILE INFO SAMPLE")
+    lines.append((payload.get("profile_text_sample") or "")[:2000])
+    lines.append("")
+    lines.append("LINKS")
+    links = payload.get("links") or {}
+    for l in links.get("external_links", []):
+        lines.append(f"- {l.get('url')} | {l.get('text')}")
+    if not links.get("external_links"):
+        lines.append("- El perfil no muestra links externos pÃºblicos en la bio en esta vista.")
+    lines.append("")
+    lines.append("EXPANDED TREE LINKS")
+    for tree in payload.get("expanded_tree_links", []):
+        lines.append(f"source: {tree.get('source_url')} | status: {tree.get('status')}")
+        for l in tree.get("links", []):
+            lines.append(f"  - {l.get('url')} | {l.get('text')}")
+    lines.append("")
+    lines.append("LAST POSTS")
+    for idx, post in enumerate(payload.get("posts", []), start=1):
+        lines.append(f"{idx}. {post.get('url')}")
+        lines.append(f"   type: {post.get('type')}")
+        lines.append(f"   date_iso: {post.get('date_iso')} | {post.get('date_status', {}).get('message')}")
+        lines.append(f"   likes_count: {post.get('likes_count')} | {post.get('likes_status', {}).get('message')}")
+        lines.append(f"   hashtags: {', '.join(post.get('hashtags') or [])} | {post.get('hashtags_status', {}).get('message')}")
+    lines.append("")
+    lines.append("SUMMARY")
+    for k, v in (payload.get("metrics_summary") or {}).items():
+        lines.append(f"- {k}: {v}")
+    lines.append("")
+    lines.append("VISIBILITY / MISSING PUBLIC DATA")
+    for item in payload.get("missing_public_data", []):
+        lines.append(f"- {item.get('field')}: {item.get('message')}")
+    lines.append("")
+    lines.append("DATA QUALITY")
+    for k, v in (payload.get("data_quality") or {}).items():
+        lines.append(f"- {k}: {v}")
+    lines.append("")
+    lines.append("LIMITATIONS")
+    for item in payload.get("limitations", []):
+        lines.append(f"- {item}")
+    return "\n".join(lines)
+
+
+@app.post("/audit/instagram-profile-metrics")
+async def auditInstagramProfileMetrics(req: InstagramProfileMetricsRequest):
+    from playwright.async_api import async_playwright as _ig_async_playwright
+
+    retrieved_at = _ig_datetime.utcnow().isoformat() + "Z"
+    profile_url = str(req.profile_url)
+
+    limitations = [
+        "Solo se recolecta informaciÃ³n visible en el perfil/render; no se accede a datos privados.",
+        "Los likes pueden no estar visibles en todas las publicaciones; el promedio excluye likes no visibles.",
+        "Fechas, likes y hashtags dependen del HTML visible que entregue Instagram en ese momento.",
+        "No se resuelve CAPTCHA, checkpoint ni 2FA.",
+        "No se realizan acciones de escritura: follows, likes, comments, messages ni DMs.",
+    ]
+
+    storage_state_info = _sar_storage_state_from_env("instagram")
+    browser = None
+    context = None
+
+    try:
+        async with _ig_async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-blink-features=AutomationControlled"],
+            )
+
+            context_kwargs = {
+                "viewport": {"width": 1365, "height": 900},
+                "locale": "es-AR",
+                "timezone_id": "America/Argentina/Cordoba",
+                "user_agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0.0.0 Safari/537.36"
+                ),
+            }
+
+            if storage_state_info.get("available") and storage_state_info.get("state") is not None:
+                context_kwargs["storage_state"] = storage_state_info["state"]
+
+            context = await browser.new_context(**context_kwargs)
+            page = await context.new_page()
+            page.set_default_timeout(req.timeout_ms)
+
+            await page.goto(profile_url, wait_until="domcontentloaded", timeout=req.timeout_ms)
+            await page.wait_for_timeout(req.wait_ms)
+
+            final_url = page.url
+            page_title = await page.title()
+            profile_body_text = await _igpm_inner_text(page, timeout_ms=12000, limit=12000)
+            profile_meta_text = await _igpm_meta_text(page)
+            profile_text = (profile_body_text + "\n" + profile_meta_text).strip()
+
+            counts = _igpm_profile_counts_from_text(profile_text)
+            profile_counts_status = _igpm_profile_counts_status(counts)
+            links = await _igpm_collect_links(page)
+
+            classification = _sar_classify_auth_state(platform="instagram", final_url=final_url, title=page_title, text=profile_text)
+            class_name = classification.get("classification")
+
+            if class_name in {"login_wall", "captcha_required", "checkpoint_required"}:
+                limitations.append("Instagram no entregÃ³ perfil pÃºblico usable en este render; revisar storage_state o challenge.")
+
+            profile_screenshot_bytes = await page.screenshot(full_page=req.full_page, type="png")
+
+            expanded_tree_links = []
+            if req.include_bio_link_expansion:
+                expanded_tree_links = await _igpm_expand_tree_links(context=context, candidates=links.get("tree_candidates", []), timeout_ms=min(req.timeout_ms, 60000))
+
+            post_urls = await _igpm_collect_post_urls(page=page, max_scan_posts=req.max_scan_posts, wait_ms=req.wait_ms)
+
+            posts = []
+            window = _igpm_get_reporting_window()
+            window_start = _ig_date.fromisoformat(window["start_date"])
+
+            for url in post_urls[:req.max_scan_posts]:
+                post = await _igpm_parse_post(context=context, url=url, timeout_ms=req.timeout_ms, wait_ms=req.wait_ms)
+                posts.append(post)
+                d = _igpm_date_from_iso(post.get("date_iso"))
+                if len(posts) >= req.max_posts and d is not None and d < window_start:
+                    break
+
+            last_posts = posts[:req.max_posts]
+            visible_likes = [p["likes_count"] for p in last_posts if isinstance(p.get("likes_count"), int)]
+            avg_likes = round(_ig_statistics.mean(visible_likes), 2) if visible_likes else None
+            frequency = _igpm_compute_frequency(posts, window)
+
+            metrics_summary = {
+                "posts_requested": req.max_posts,
+                "posts_urls_found": len(post_urls),
+                "posts_parsed": len(posts),
+                "last_posts_returned": len(last_posts),
+                "likes_visible_count": len(visible_likes),
+                "likes_missing_count": len(last_posts) - len(visible_likes),
+                "average_likes_last_posts_visible_only": avg_likes,
+                "average_likes_status": _igpm_field_status(avg_likes, "Promedio calculado con likes numÃ©ricos visibles.", "No se puede calcular promedio de likes porque Instagram no mostrÃ³ likes numÃ©ricos visibles en las publicaciones analizadas."),
+                "publishing_frequency_window_mode": window["mode"],
+                "publishing_frequency_window_start": window["start_date"],
+                "publishing_frequency_window_end": window["end_date"],
+                "posts_in_frequency_window": frequency["posts_in_window"],
+                "posts_per_week_in_frequency_window": frequency["posts_per_week"],
+                "average_days_between_posts_in_window": frequency["average_days_between_posts"],
+                "frequency_status": {"visibility": "visible" if frequency["status"] == "calculated" else "not_collected_runtime", "message": frequency["message"]},
+            }
+
+            payload = {
+                "collector": "instagram_profile_public_metrics",
+                "version": APP_VERSION if "APP_VERSION" in globals() else "unknown",
+                "status": "completed" if classification.get("usable_profile_visual_evidence") else "completed_with_limitations",
+                "company_name": req.company_name,
+                "profile_url": profile_url,
+                "final_url": final_url,
+                "page_title": page_title,
+                "retrieved_at": retrieved_at,
+                "auth_method": "storage_state" if storage_state_info.get("available") else "public_or_password_fallback",
+                "storage_state": _sar_storage_state_public_info(storage_state_info),
+                "classification": class_name,
+                "auth_render_classification": classification,
+                "profile_counts": counts,
+                "profile_counts_status": profile_counts_status,
+                "profile_text_sample": profile_text[:5000],
+                "profile_text_status": _igpm_field_status(profile_text, "InformaciÃ³n pÃºblica del perfil visible.", "El perfil no muestra informaciÃ³n pÃºblica de bio/texto en esta vista."),
+                "links": links,
+                "expanded_tree_links": expanded_tree_links,
+                "post_urls_found": post_urls,
+                "posts": last_posts,
+                "all_scanned_posts": posts,
+                "metrics_summary": metrics_summary,
+                "frequency": frequency,
+                "visibility_report": {
+                    "profile_counts_complete": all((profile_counts_status.get(k) or {}).get("visibility") == "visible" for k in ["posts_total", "followers_total", "following_total"]),
+                    "bio_or_profile_text_visible": bool(profile_text.strip()),
+                    "external_links_visible": len(links.get("external_links") or []) > 0,
+                    "tree_links_detected": len(links.get("tree_candidates") or []) > 0,
+                    "posts_found": len(post_urls),
+                    "posts_returned": len(last_posts),
+                    "posts_with_visible_dates": len([p for p in last_posts if p.get("date_iso")]),
+                    "posts_with_visible_likes": len(visible_likes),
+                    "posts_with_visible_hashtags": len([p for p in last_posts if p.get("hashtags")]),
+                },
+                "limitations": limitations,
+            }
+
+            payload["missing_public_data"] = _igpm_collect_missing_data(payload)
+            payload["data_quality"] = _igpm_data_quality(payload)
+            payload["human_readable_messages"] = _igpm_build_human_messages(payload)
+
+            report_txt = _igpm_build_text_report(payload)
+
+            drive_report_upload = None
+            drive_screenshot_upload = None
+
+            if req.upload_to_drive and "_drive_upload_binary" in globals():
+                prefix = req.filename_prefix or "instagram_profile_metrics"
+                drive_report_upload = await _drive_upload_binary(filename=f"{prefix}.txt", content=report_txt.encode("utf-8"), mime_type="text/plain; charset=utf-8", folder_name=req.drive_folder_name)
+                drive_screenshot_upload = await _drive_upload_binary(filename=f"{prefix}_profile_screenshot.png", content=profile_screenshot_bytes, mime_type="image/png", folder_name=req.drive_folder_name)
+
+            payload["drive_report_upload"] = drive_report_upload
+            payload["drive_screenshot_upload"] = drive_screenshot_upload
+
+            await context.close()
+            await browser.close()
+            return payload
+
+    except Exception as exc:
+        try:
+            if context is not None:
+                await context.close()
+        except Exception:
+            pass
+        try:
+            if browser is not None:
+                await browser.close()
+        except Exception:
+            pass
+
+        return {
+            "collector": "instagram_profile_public_metrics",
+            "version": APP_VERSION if "APP_VERSION" in globals() else "unknown",
+            "status": "failed_runtime",
+            "company_name": req.company_name,
+            "profile_url": profile_url,
+            "retrieved_at": retrieved_at,
+            "reason": str(exc),
+            "limitations": limitations,
+            "policy": {"captcha_bypass_attempted": False, "checkpoint_bypass_attempted": False, "private_profile_access_attempted": False, "write_actions_attempted": False},
+        }
 
 
