@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.26"
+APP_VERSION = "public-presence-collector-mvp-0.9.27"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -9933,4 +9933,233 @@ async def getAuditRunReadiness(request: AuditRunReadinessRequest):
         "readiness": _ars_compute_readiness(run),
         "summary": _ars_public_run(run).get("summary"),
     }
+
+# ============================================================
+# HOTFIX 4H.3-B - PDF TABLE CONTRAST
+# ============================================================
+
+def _rpv3_pdf_inline_4h3b(text):
+    text = _rpv3_fix_text("" if text is None else str(text))
+    text = _rpb_html.escape(text, quote=True)
+    text = _rpb_re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = _rpb_re.sub(r"`([^`]+)`", r"<font name='Courier'>\1</font>", text)
+    return text
+
+
+def _rpv3_markdown_to_pdf(path, title, md, company_name, executive=False):
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+    except Exception as exc:
+        raise RuntimeError(f"reportlab unavailable: {exc}")
+
+    title = _rpv3_fix_text(title)
+    company_name = _rpv3_fix_text(company_name)
+    md = _rpv3_fix_text(md or "")
+
+    doc = SimpleDocTemplate(
+        str(path),
+        pagesize=A4,
+        rightMargin=1.25 * cm,
+        leftMargin=1.25 * cm,
+        topMargin=1.35 * cm,
+        bottomMargin=1.25 * cm
+    )
+
+    styles = getSampleStyleSheet()
+
+    styles.add(ParagraphStyle(
+        name="CoverTitle4H3B",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=22,
+        leading=27,
+        textColor=colors.HexColor("#111827"),
+        spaceAfter=18
+    ))
+
+    styles.add(ParagraphStyle(
+        name="CoverSub4H3B",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=10,
+        leading=14,
+        textColor=colors.HexColor("#111827"),
+        spaceAfter=6
+    ))
+
+    styles.add(ParagraphStyle(
+        name="H1_4H3B",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=15 if not executive else 16,
+        leading=19,
+        textColor=colors.HexColor("#111827"),
+        spaceBefore=12,
+        spaceAfter=8
+    ))
+
+    styles.add(ParagraphStyle(
+        name="H2_4H3B",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=12,
+        leading=15,
+        textColor=colors.HexColor("#075985"),
+        spaceBefore=10,
+        spaceAfter=6
+    ))
+
+    styles.add(ParagraphStyle(
+        name="H3_4H3B",
+        parent=styles["Heading3"],
+        fontName="Helvetica-Bold",
+        fontSize=10.5,
+        leading=13,
+        textColor=colors.HexColor("#334155"),
+        spaceBefore=8,
+        spaceAfter=4
+    ))
+
+    styles.add(ParagraphStyle(
+        name="Body4H3B",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=8.4 if not executive else 9.4,
+        leading=11.4 if not executive else 12.8,
+        textColor=colors.HexColor("#111827"),
+        spaceAfter=4
+    ))
+
+    styles.add(ParagraphStyle(
+        name="Small4H3B",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=6.7,
+        leading=8.6,
+        textColor=colors.HexColor("#111827")
+    ))
+
+    styles.add(ParagraphStyle(
+        name="SmallHeader4H3B",
+        parent=styles["BodyText"],
+        fontName="Helvetica-Bold",
+        fontSize=6.8,
+        leading=8.8,
+        textColor=colors.white
+    ))
+
+    story = []
+
+    story.append(Spacer(1, 1.8 * cm))
+    story.append(Paragraph(_rpv3_pdf_inline_4h3b(title), styles["CoverTitle4H3B"]))
+    story.append(Paragraph("Cliente: <b>" + _rpb_html.escape(company_name, quote=True) + "</b>", styles["CoverSub4H3B"]))
+    story.append(Paragraph("Tipo de documento: " + ("Resumen ejecutivo" if executive else "AuditorÃ­a completa"), styles["CoverSub4H3B"]))
+    story.append(Paragraph("Generado: " + _rpb_html.escape(_rpb_now_iso(), quote=True), styles["CoverSub4H3B"]))
+    story.append(Spacer(1, 0.7 * cm))
+    story.append(Paragraph(
+        "Nota metodolÃ³gica: este documento usa evidencia pÃºblica visible y separa hechos, inferencias razonadas y datos que requieren acceso interno.",
+        styles["Body4H3B"]
+    ))
+    story.append(PageBreak())
+
+    try:
+        sections = _rpb_sections_from_markdown(md)
+    except Exception:
+        sections = []
+
+    if sections:
+        story.append(Paragraph("Ãndice", styles["H1_4H3B"]))
+        for idx, sec in enumerate(sections, start=1):
+            story.append(Paragraph(str(idx) + ". " + _rpv3_pdf_inline_4h3b(sec.get("title") or "SecciÃ³n"), styles["Body4H3B"]))
+        story.append(PageBreak())
+
+    lines = md.splitlines()
+    i = 0
+
+    def read_table(start_index):
+        rows = []
+        j = start_index
+        while j < len(lines):
+            ln = lines[j].strip()
+            if not (ln.startswith("|") and ln.endswith("|")):
+                break
+            cells = [c.strip() for c in ln.strip("|").split("|")]
+            if not all(set(c) <= set("-: ") for c in cells):
+                rows.append(cells)
+            j += 1
+        return rows, j
+
+    while i < len(lines):
+        line = lines[i].rstrip()
+        clean = _rpv3_fix_text(line)
+
+        if not clean.strip():
+            story.append(Spacer(1, 3))
+            i += 1
+            continue
+
+        if clean.startswith("|") and clean.endswith("|"):
+            rows, next_i = read_table(i)
+            if rows:
+                max_cols = max(len(r) for r in rows)
+                normalized = []
+                for ridx, r in enumerate(rows):
+                    rr = r + [""] * (max_cols - len(r))
+                    row_style = styles["SmallHeader4H3B"] if ridx == 0 else styles["Small4H3B"]
+                    normalized.append([Paragraph(_rpv3_pdf_inline_4h3b(c), row_style) for c in rr])
+
+                usable_width = A4[0] - 2.5 * cm
+                col_widths = [usable_width / max_cols] * max_cols
+
+                tbl = Table(normalized, colWidths=col_widths, repeatRows=1, splitByRow=1)
+                tbl.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cbd5e1")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                ]))
+                story.append(tbl)
+                story.append(Spacer(1, 8))
+                i = next_i
+                continue
+
+        if clean.startswith("# "):
+            story.append(Paragraph(_rpv3_pdf_inline_4h3b(clean[2:]), styles["H1_4H3B"]))
+        elif clean.startswith("## "):
+            story.append(Paragraph(_rpv3_pdf_inline_4h3b(clean[3:]), styles["H1_4H3B"]))
+        elif clean.startswith("### "):
+            story.append(Paragraph(_rpv3_pdf_inline_4h3b(clean[4:]), styles["H2_4H3B"]))
+        elif clean.startswith("#### "):
+            story.append(Paragraph(_rpv3_pdf_inline_4h3b(clean[5:]), styles["H3_4H3B"]))
+        elif _rpb_re.match(r"^\s*[-*]\s+", clean):
+            item = _rpb_re.sub(r"^\s*[-*]\s+", "- ", clean)
+            story.append(Paragraph(_rpv3_pdf_inline_4h3b(item), styles["Body4H3B"]))
+        elif _rpb_re.match(r"^\s*\d+\.\s+", clean):
+            story.append(Paragraph(_rpv3_pdf_inline_4h3b(clean), styles["Body4H3B"]))
+        elif clean.strip() == "---":
+            story.append(Spacer(1, 8))
+        else:
+            story.append(Paragraph(_rpv3_pdf_inline_4h3b(clean), styles["Body4H3B"]))
+
+        i += 1
+
+    def footer(canvas, doc_obj):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 7)
+        canvas.setFillColor(colors.HexColor("#64748b"))
+        canvas.drawString(1.25 * cm, 0.65 * cm, _rpv3_fix_text(company_name + " - " + title)[:120])
+        canvas.drawRightString(A4[0] - 1.25 * cm, 0.65 * cm, "PÃ¡gina " + str(doc_obj.page))
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=footer, onLaterPages=footer)
 
