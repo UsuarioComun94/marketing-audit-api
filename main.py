@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.19"
+APP_VERSION = "public-presence-collector-mvp-0.9.20"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -8163,3 +8163,458 @@ async def auditInstagramPostsByUrlCompactV2(request: InstagramPostsByUrlCompactR
             "La muestra esta limitada a 12 posts en Render por estabilidad operativa."
         ]
     }
+
+# ============================================================
+# MICRO PATCH 4H.2-A - REPORT PACKAGE BUILDER + DRIVE DOCS
+# ============================================================
+
+try:
+    BaseModel
+except NameError:
+    from pydantic import BaseModel
+
+from typing import Any, Dict, Optional, List
+import os as _rpb_os
+import re as _rpb_re
+import json as _rpb_json
+import html as _rpb_html
+import uuid as _rpb_uuid
+import base64 as _rpb_base64
+import mimetypes as _rpb_mimetypes
+from pathlib import Path as _rpb_Path
+from datetime import datetime as _rpb_datetime, timezone as _rpb_timezone
+
+try:
+    from fastapi.responses import HTMLResponse as _rpb_HTMLResponse, FileResponse as _rpb_FileResponse, JSONResponse as _rpb_JSONResponse
+except Exception:
+    _rpb_HTMLResponse = None
+    _rpb_FileResponse = None
+    _rpb_JSONResponse = None
+
+
+class ReportPackageRequest(BaseModel):
+    company_name: str
+    report_title: str = "Auditoria Publica Integral"
+    client_type: Optional[str] = None
+    markdown_report: str
+    executive_summary_markdown: Optional[str] = None
+    evidence_payload: Dict[str, Any] = {}
+    social_metrics: Dict[str, Any] = {}
+    drive_folder_name: Optional[str] = None
+    documentation_folder_name: str = "DocumentaciÃ³n"
+    technical_folder_name: str = "TÃ©cnico"
+    generate_interactive_html: bool = True
+    generate_full_pdf: bool = True
+    generate_executive_pdf: bool = True
+    upload_to_drive: bool = True
+    public_sharing: bool = True
+    filename_prefix: Optional[str] = None
+
+
+class ReportPackageRegenerateRequest(BaseModel):
+    company_name: str
+    report_title: str = "Auditoria Publica Integral"
+    markdown_report: str
+    executive_summary_markdown: Optional[str] = None
+    evidence_payload: Dict[str, Any] = {}
+    social_metrics: Dict[str, Any] = {}
+    drive_folder_name: Optional[str] = None
+    documentation_folder_name: str = "DocumentaciÃ³n"
+    technical_folder_name: str = "TÃ©cnico"
+    regenerate_interactive_html: bool = True
+    regenerate_full_pdf: bool = True
+    regenerate_executive_pdf: bool = True
+    upload_to_drive: bool = True
+    public_sharing: bool = True
+    filename_prefix: Optional[str] = None
+
+
+_RPB_ROOT = _rpb_Path(_rpb_os.getenv("REPORT_PACKAGE_ROOT", "/tmp/marketing_audit_report_packages"))
+_RPB_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _rpb_now_iso():
+    return _rpb_datetime.now(_rpb_timezone.utc).isoformat()
+
+
+def _rpb_public_base_url():
+    return (_rpb_os.getenv("PUBLIC_BASE_URL") or _rpb_os.getenv("RENDER_EXTERNAL_URL") or "https://marketing-audit-api.onrender.com").rstrip("/")
+
+
+def _rpb_slug(value: str) -> str:
+    value = (value or "reporte").lower()
+    for a, b in {"Ã¡":"a","Ã©":"e","Ã­":"i","Ã³":"o","Ãº":"u","Ã±":"n","Ã¼":"u"}.items():
+        value = value.replace(a, b)
+    value = _rpb_re.sub(r"[^a-z0-9]+", "_", value).strip("_")
+    return (value or "reporte")[:80]
+
+
+def _rpb_report_id(company_name: str) -> str:
+    return f"{_rpb_slug(company_name)}_{_rpb_datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{_rpb_uuid.uuid4().hex[:8]}"
+
+
+def _rpb_escape(value: Any) -> str:
+    return _rpb_html.escape("" if value is None else str(value), quote=True)
+
+
+def _rpb_markdown_to_basic_html(md: str) -> str:
+    lines = (md or "").splitlines()
+    out = []
+    in_ul = False
+    in_table = False
+
+    def close_ul():
+        nonlocal in_ul
+        if in_ul:
+            out.append("</ul>")
+            in_ul = False
+
+    def close_table():
+        nonlocal in_table
+        if in_table:
+            out.append("</tbody></table></div>")
+            in_table = False
+
+    for raw in lines:
+        line = raw.rstrip()
+        if not line.strip():
+            close_ul()
+            close_table()
+            continue
+        if line.startswith("|") and line.endswith("|"):
+            close_ul()
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if all(set(c) <= set("-: ") for c in cells):
+                continue
+            if not in_table:
+                out.append('<div class="table-wrap"><table><tbody>')
+                in_table = True
+            out.append("<tr>" + "".join(f"<td>{_rpb_escape(c)}</td>" for c in cells) + "</tr>")
+            continue
+        close_table()
+        if line.startswith("### "):
+            close_ul()
+            out.append(f"<h3>{_rpb_escape(line[4:])}</h3>")
+        elif line.startswith("## "):
+            close_ul()
+            out.append(f"<h2>{_rpb_escape(line[3:])}</h2>")
+        elif line.startswith("# "):
+            close_ul()
+            out.append(f"<h1>{_rpb_escape(line[2:])}</h1>")
+        elif _rpb_re.match(r"^\s*[-*]\s+", line):
+            if not in_ul:
+                out.append("<ul>")
+                in_ul = True
+            item = _rpb_re.sub(r"^\s*[-*]\s+", "", line)
+            out.append(f"<li>{_rpb_escape(item)}</li>")
+        else:
+            close_ul()
+            text = _rpb_escape(line)
+            text = _rpb_re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+            out.append(f"<p>{text}</p>")
+    close_ul()
+    close_table()
+    return "\n".join(out)
+
+
+def _rpb_sections_from_markdown(md: str) -> List[Dict[str, str]]:
+    sections = []
+    title = "Inicio"
+    buf = []
+    for line in (md or "").splitlines():
+        if line.startswith("## "):
+            if buf:
+                sections.append({"title": title, "markdown": "\n".join(buf).strip()})
+            title = line[3:].strip()
+            buf = [line]
+        else:
+            buf.append(line)
+    if buf:
+        sections.append({"title": title, "markdown": "\n".join(buf).strip()})
+    return sections
+
+
+def _rpb_build_interactive_html(req: ReportPackageRequest, report_id: str, created_at: str) -> str:
+    sections = _rpb_sections_from_markdown(req.markdown_report)
+    nav = []
+    panels = []
+    for i, sec in enumerate(sections):
+        sid = f"sec_{i}"
+        active = "active" if i == 0 else ""
+        nav.append(f"<button class='tab {active}' data-target='{sid}'>{_rpb_escape(sec['title'])}</button>")
+        panels.append(f"<section id='{sid}' class='panel {active}'>{_rpb_markdown_to_basic_html(sec['markdown'])}</section>")
+    evidence = _rpb_escape(_rpb_json.dumps(req.evidence_payload or {}, ensure_ascii=False, indent=2))
+    metrics = _rpb_escape(_rpb_json.dumps(req.social_metrics or {}, ensure_ascii=False, indent=2))
+    css = ":root{--bg:#020617;--card:#0f172a;--line:#334155;--text:#e5e7eb;--muted:#94a3b8;--acc:#38bdf8}*{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--text)}header{padding:28px;background:#0f172a;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}h1{margin:0 0 8px;font-size:28px}.meta{color:var(--muted);font-size:13px;display:flex;gap:14px;flex-wrap:wrap}.layout{display:grid;grid-template-columns:290px 1fr}nav{border-right:1px solid var(--line);padding:18px;background:#030712;position:sticky;top:94px;height:calc(100vh - 94px);overflow:auto}.tab{display:block;width:100%;text-align:left;margin:0 0 8px;padding:11px 12px;background:#0f172a;color:var(--text);border:1px solid var(--line);border-radius:12px;cursor:pointer}.tab.active,.tab:hover{border-color:var(--acc);background:#082f49}main{padding:24px;max-width:1320px}.panel{display:none;background:#0f172a;border:1px solid var(--line);border-radius:18px;padding:24px;box-shadow:0 12px 40px #0006}.panel.active{display:block}h2{border-bottom:1px solid var(--line);padding-bottom:8px}h3{color:#bae6fd}p,li{line-height:1.55}.table-wrap{overflow:auto;margin:14px 0;border:1px solid var(--line);border-radius:12px}table{border-collapse:collapse;width:100%;min-width:760px}td,th{border-bottom:1px solid var(--line);padding:10px;vertical-align:top}tr:first-child td{font-weight:700;color:#e0f2fe;background:#0b1220}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:18px 0}.card{background:#0b1220;border:1px solid var(--line);border-radius:14px;padding:14px}details{margin:14px 0;border:1px solid var(--line);border-radius:12px;padding:12px;background:#0b1220}summary{cursor:pointer;color:#bae6fd;font-weight:700}pre{white-space:pre-wrap;overflow:auto;max-height:480px;background:#020617;border:1px solid var(--line);border-radius:12px;padding:12px}@media(max-width:900px){.layout{grid-template-columns:1fr}nav{position:relative;top:0;height:auto}}"
+    js = "document.querySelectorAll('.tab').forEach(function(btn){btn.addEventListener('click',function(){document.querySelectorAll('.tab').forEach(function(b){b.classList.remove('active')});document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('active')});btn.classList.add('active');var t=document.getElementById(btn.dataset.target);if(t){t.classList.add('active')}})})"
+    return "\n".join([
+        "<!doctype html><html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>",
+        f"<title>{_rpb_escape(req.report_title)} - {_rpb_escape(req.company_name)}</title><style>{css}</style></head><body>",
+        "<header>",
+        f"<h1>{_rpb_escape(req.report_title)}</h1>",
+        f"<div class='meta'><span>Cliente: <strong>{_rpb_escape(req.company_name)}</strong></span><span>Report ID: {report_id}</span><span>Creado: {created_at}</span><span>Tipo: {_rpb_escape(req.client_type or 'auditoria_publica')}</span></div>",
+        "</header><div class='layout'><nav>",
+        "".join(nav),
+        "</nav><main>",
+        "<div class='cards'><div class='card'><strong>HTML interactivo</strong><p>AuditorÃ­a completa navegable.</p></div><div class='card'><strong>PDF completo</strong><p>Mismo contenido, fijo.</p></div><div class='card'><strong>PDF ejecutivo</strong><p>Resumen para dueÃ±os.</p></div></div>",
+        "".join(panels),
+        f"<section class='panel active' style='display:block;margin-top:18px'><h2>Anexos tÃ©cnicos</h2><details><summary>Evidencia tÃ©cnica JSON</summary><pre>{evidence}</pre></details><details><summary>MÃ©tricas sociales JSON</summary><pre>{metrics}</pre></details></section>",
+        "</main></div><footer style='padding:24px;color:#94a3b8'>Generado por Marketing Auditor. MÃ©tricas pÃºblicas parciales, no performance interna.</footer>",
+        f"<script>{js}</script></body></html>"
+    ])
+
+
+def _rpb_extract_executive_md(full_md: str) -> str:
+    keys = ["resumen ejecutivo", "semÃ¡foro", "semaforo", "mÃ©tricas pÃºblicas", "metricas publicas", "plan 30", "prÃ³ximos pasos", "proximos pasos", "decisiÃ³n", "decision"]
+    selected = []
+    for sec in _rpb_sections_from_markdown(full_md):
+        if any(k in sec["title"].lower() for k in keys):
+            selected.append(sec["markdown"])
+    return "\n\n".join(selected[:6]) if selected else "\n".join((full_md or "").splitlines()[:120])
+
+
+def _rpb_parse_table(lines: List[str], start: int):
+    rows = []
+    i = start
+    while i < len(lines):
+        line = lines[i].strip()
+        if not (line.startswith("|") and line.endswith("|")):
+            break
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if not all(set(c) <= set("-: ") for c in cells):
+            rows.append(cells)
+        i += 1
+    return rows, i
+
+
+def _rpb_markdown_to_pdf(path: _rpb_Path, title: str, md: str, company_name: str, executive: bool = False):
+    try:
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    except Exception as exc:
+        raise RuntimeError(f"reportlab unavailable: {exc}")
+    page_size = A4 if executive else landscape(A4)
+    doc = SimpleDocTemplate(str(path), pagesize=page_size, rightMargin=1.2*cm, leftMargin=1.2*cm, topMargin=1.2*cm, bottomMargin=1.2*cm)
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="SmallBodyRPB", parent=styles["BodyText"], fontSize=8 if not executive else 9, leading=10 if not executive else 12))
+    styles.add(ParagraphStyle(name="TinyRPB", parent=styles["BodyText"], fontSize=7, leading=9))
+    story = [Paragraph(_rpb_escape(title), styles["Heading1"]), Paragraph(f"Cliente: {_rpb_escape(company_name)}", styles["SmallBodyRPB"]), Paragraph(f"Generado: {_rpb_now_iso()}", styles["TinyRPB"]), Spacer(1, 10)]
+    lines = (md or "").splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip()
+        if not line.strip():
+            story.append(Spacer(1, 4)); i += 1; continue
+        if line.startswith("|") and line.endswith("|"):
+            rows, nxt = _rpb_parse_table(lines, i)
+            if rows:
+                max_cols = max(len(r) for r in rows)
+                norm = []
+                for r in rows:
+                    rr = r + [""] * (max_cols - len(r))
+                    norm.append([Paragraph(_rpb_escape(c), styles["TinyRPB"]) for c in rr])
+                usable = page_size[0] - 2.4*cm
+                tbl = Table(norm, colWidths=[max(2.2*cm, usable / max_cols)] * max_cols, repeatRows=1)
+                tbl.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#0f172a")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("GRID",(0,0),(-1,-1),0.25,colors.HexColor("#cbd5e1")),("VALIGN",(0,0),(-1,-1),"TOP"),("LEFTPADDING",(0,0),(-1,-1),4),("RIGHTPADDING",(0,0),(-1,-1),4),("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4)]))
+                story.append(tbl); story.append(Spacer(1, 8)); i = nxt; continue
+        if line.startswith("# "):
+            story.append(Paragraph(_rpb_escape(line[2:]), styles["Heading1"]))
+        elif line.startswith("## "):
+            story.append(Paragraph(_rpb_escape(line[3:]), styles["Heading2"]))
+        elif line.startswith("### "):
+            story.append(Paragraph(_rpb_escape(line[4:]), styles["Heading3"]))
+        else:
+            story.append(Paragraph(_rpb_escape(line), styles["SmallBodyRPB"]))
+        i += 1
+    doc.build(story)
+
+
+def _rpb_service_account_info():
+    keys = ["GOOGLE_SERVICE_ACCOUNT_JSON","GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON","GDRIVE_SERVICE_ACCOUNT_JSON","DRIVE_SERVICE_ACCOUNT_JSON","GOOGLE_CREDENTIALS_JSON","GOOGLE_APPLICATION_CREDENTIALS_JSON"]
+    for key in keys:
+        val = _rpb_os.getenv(key)
+        if not val: continue
+        try: return _rpb_json.loads(val)
+        except Exception: pass
+        try: return _rpb_json.loads(_rpb_base64.b64decode(val).decode("utf-8"))
+        except Exception: pass
+    p = _rpb_os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if p and _rpb_Path(p).exists():
+        return _rpb_json.loads(_rpb_Path(p).read_text(encoding="utf-8"))
+    return None
+
+
+def _rpb_drive_parent_id():
+    for key in ["GOOGLE_DRIVE_PARENT_FOLDER_ID","DRIVE_PARENT_FOLDER_ID","GOOGLE_DRIVE_FOLDER_ID","DRIVE_FOLDER_ID","GDRIVE_FOLDER_ID"]:
+        val = _rpb_os.getenv(key)
+        if val: return val.strip()
+    return None
+
+
+def _rpb_drive_headers():
+    try:
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request
+    except Exception as exc:
+        raise RuntimeError(f"google-auth unavailable: {exc}")
+    info = _rpb_service_account_info()
+    if not info:
+        raise RuntimeError("No Google service account JSON found in environment aliases.")
+    creds = service_account.Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/drive"])
+    creds.refresh(Request())
+    return {"Authorization": f"Bearer {creds.token}"}
+
+
+def _rpb_drive_find_or_create_folder(name: str, parent_id: Optional[str], public_sharing: bool = True):
+    import requests
+    headers = _rpb_drive_headers()
+    safe = (name or "").replace("\\", "\\\\").replace("'", "\\'")
+    q = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='{safe}'"
+    if parent_id: q += f" and '{parent_id}' in parents"
+    params = {"q": q, "fields": "files(id,name,webViewLink)", "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"}
+    r = requests.get("https://www.googleapis.com/drive/v3/files", headers=headers, params=params, timeout=60); r.raise_for_status()
+    files = r.json().get("files") or []
+    if files: return files[0]
+    meta = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
+    if parent_id: meta["parents"] = [parent_id]
+    r = requests.post("https://www.googleapis.com/drive/v3/files", headers={**headers, "Content-Type":"application/json"}, params={"fields":"id,name,webViewLink","supportsAllDrives":"true"}, json=meta, timeout=60); r.raise_for_status()
+    folder = r.json()
+    if public_sharing:
+        try:
+            requests.post(f"https://www.googleapis.com/drive/v3/files/{folder['id']}/permissions", headers={**headers, "Content-Type":"application/json"}, params={"supportsAllDrives":"true"}, json={"role":"reader","type":"anyone"}, timeout=60)
+        except Exception: pass
+    return folder
+
+
+def _rpb_drive_upload_file(path: _rpb_Path, folder_id: str, public_sharing: bool = True):
+    import requests
+    headers = _rpb_drive_headers()
+    mime = _rpb_mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    boundary = "rpb_" + _rpb_uuid.uuid4().hex
+    meta = _rpb_json.dumps({"name": path.name, "parents": [folder_id]}).encode("utf-8")
+    body = (f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n").encode("utf-8") + meta + (f"\r\n--{boundary}\r\nContent-Type: {mime}\r\n\r\n").encode("utf-8") + path.read_bytes() + f"\r\n--{boundary}--\r\n".encode("utf-8")
+    r = requests.post("https://www.googleapis.com/upload/drive/v3/files", headers={**headers, "Content-Type": f"multipart/related; boundary={boundary}"}, params={"uploadType":"multipart","fields":"id,name,webViewLink,webContentLink","supportsAllDrives":"true"}, data=body, timeout=180); r.raise_for_status()
+    info = r.json()
+    if public_sharing:
+        try:
+            requests.post(f"https://www.googleapis.com/drive/v3/files/{info['id']}/permissions", headers={**headers, "Content-Type":"application/json"}, params={"supportsAllDrives":"true"}, json={"role":"reader","type":"anyone"}, timeout=60)
+        except Exception as exc:
+            info["permission_warning"] = str(exc)
+    return info
+
+
+def _rpb_build_package(req: ReportPackageRequest):
+    created_at = _rpb_now_iso()
+    report_id = _rpb_report_id(req.company_name)
+    prefix = _rpb_slug(req.filename_prefix or req.company_name)
+    workdir = _RPB_ROOT / report_id
+    techdir = workdir / "tecnico"
+    techdir.mkdir(parents=True, exist_ok=True)
+    files = {}
+    errors = []
+    md_path = techdir / f"04_{prefix}_reporte_fuente.md"
+    json_path = techdir / f"05_{prefix}_evidencia_tecnica.json"
+    md_path.write_text(req.markdown_report or "", encoding="utf-8")
+    json_path.write_text(_rpb_json.dumps({"report_id":report_id,"company_name":req.company_name,"report_title":req.report_title,"created_at":created_at,"evidence_payload":req.evidence_payload or {},"social_metrics":req.social_metrics or {}}, ensure_ascii=False, indent=2), encoding="utf-8")
+    files["markdown_source"] = {"status":"created","path":str(md_path)}
+    files["evidence_json"] = {"status":"created","path":str(json_path)}
+    html_path = workdir / f"01_{prefix}_auditoria_interactiva_completa.html"
+    full_pdf_path = workdir / f"02_{prefix}_auditoria_completa.pdf"
+    exec_pdf_path = workdir / f"03_{prefix}_resumen_ejecutivo_duenos.pdf"
+    if req.generate_interactive_html:
+        try:
+            html_path.write_text(_rpb_build_interactive_html(req, report_id, created_at), encoding="utf-8")
+            files["interactive_html"] = {"status":"created","path":str(html_path)}
+        except Exception as exc:
+            files["interactive_html"] = {"status":"failed","reason":str(exc),"regenerable":True}; errors.append(f"interactive_html failed: {exc}")
+    if req.generate_full_pdf:
+        try:
+            _rpb_markdown_to_pdf(full_pdf_path, f"{req.report_title} - Completa", req.markdown_report, req.company_name, executive=False)
+            files["full_pdf"] = {"status":"created","path":str(full_pdf_path)}
+        except Exception as exc:
+            files["full_pdf"] = {"status":"failed","reason":str(exc),"regenerable":True}; errors.append(f"full_pdf failed: {exc}")
+    if req.generate_executive_pdf:
+        try:
+            _rpb_markdown_to_pdf(exec_pdf_path, f"{req.report_title} - Resumen Ejecutivo", req.executive_summary_markdown or _rpb_extract_executive_md(req.markdown_report), req.company_name, executive=True)
+            files["executive_pdf"] = {"status":"created","path":str(exec_pdf_path)}
+        except Exception as exc:
+            files["executive_pdf"] = {"status":"failed","reason":str(exc),"regenerable":True}; errors.append(f"executive_pdf failed: {exc}")
+    base = _rpb_public_base_url()
+    local_urls = {"interactive_html_url":f"{base}/deliverables/report-package/{report_id}/html","full_pdf_url":f"{base}/deliverables/report-package/{report_id}/pdf-full","executive_pdf_url":f"{base}/deliverables/report-package/{report_id}/pdf-executive","markdown_source_url":f"{base}/deliverables/report-package/{report_id}/md","evidence_json_url":f"{base}/deliverables/report-package/{report_id}/json"}
+    drive = {"requested":bool(req.upload_to_drive),"status":"not_requested","parent_folder_name":req.drive_folder_name,"documentation_folder_name":req.documentation_folder_name,"technical_folder_name":req.technical_folder_name,"files":{}}
+    if req.upload_to_drive:
+        try:
+            parent_name = req.drive_folder_name or f"{req.company_name} - Auditoria Publica Integral - {_rpb_datetime.utcnow().strftime('%Y-%m-%d')}"
+            parent = _rpb_drive_find_or_create_folder(parent_name, _rpb_drive_parent_id(), req.public_sharing)
+            doc = _rpb_drive_find_or_create_folder(req.documentation_folder_name or "DocumentaciÃ³n", parent.get("id"), req.public_sharing)
+            tech = _rpb_drive_find_or_create_folder(req.technical_folder_name or "TÃ©cnico", doc.get("id"), req.public_sharing)
+            drive.update({"status":"uploading","parent_folder_id":parent.get("id"),"parent_folder_url":parent.get("webViewLink"),"documentation_folder_id":doc.get("id"),"documentation_folder_url":doc.get("webViewLink"),"technical_folder_id":tech.get("id"),"technical_folder_url":tech.get("webViewLink")})
+            upload_plan = {"interactive_html":(html_path,doc.get("id")),"full_pdf":(full_pdf_path,doc.get("id")),"executive_pdf":(exec_pdf_path,doc.get("id")),"markdown_source":(md_path,tech.get("id")),"evidence_json":(json_path,tech.get("id"))}
+            for key, (p, folder_id) in upload_plan.items():
+                if p.exists() and files.get(key, {}).get("status") == "created":
+                    try:
+                        up = _rpb_drive_upload_file(p, folder_id, req.public_sharing)
+                        drive["files"][key] = {"status":"uploaded","drive_file_id":up.get("id"),"drive_file_name":up.get("name"),"drive_url":up.get("webViewLink"),"download_url":up.get("webContentLink")}
+                        files[key]["drive_url"] = up.get("webViewLink")
+                        files[key]["drive_file_id"] = up.get("id")
+                    except Exception as exc:
+                        drive["files"][key] = {"status":"failed","reason":str(exc),"regenerable":True}; errors.append(f"drive upload {key} failed: {exc}")
+            drive["status"] = "partial_failed" if any(v.get("status") == "failed" for v in drive["files"].values()) else "completed"
+        except Exception as exc:
+            drive["status"] = "failed"; drive["reason"] = str(exc); errors.append(f"drive setup failed: {exc}")
+    return {"collector":"report_package_builder","version":APP_VERSION,"status":"completed" if not errors else "partial_completed","report_id":report_id,"company_name":req.company_name,"report_title":req.report_title,"created_at":created_at,"documentation_folder_name":req.documentation_folder_name,"technical_folder_name":req.technical_folder_name,"local_urls":local_urls,"files":files,"drive":drive,"errors":errors,"regeneration_available":True,"notes":["HTML interactivo completo y PDF completo comparten el mismo markdown_source.","PDF completo contiene la misma auditoria en formato fijo/no interactivo.","PDF ejecutivo es un documento separado para dueÃ±os/gerencia.","JSON tecnico y MD fuente sirven para trazabilidad y regeneracion."]}
+
+
+@app.post("/deliverables/report-package")
+def createReportPackage(request: ReportPackageRequest):
+    return _rpb_build_package(request)
+
+
+@app.post("/deliverables/report-package/regenerate")
+def regenerateReportPackage(request: ReportPackageRegenerateRequest):
+    req = ReportPackageRequest(company_name=request.company_name, report_title=request.report_title, markdown_report=request.markdown_report, executive_summary_markdown=request.executive_summary_markdown, evidence_payload=request.evidence_payload, social_metrics=request.social_metrics, drive_folder_name=request.drive_folder_name, documentation_folder_name=request.documentation_folder_name, technical_folder_name=request.technical_folder_name, generate_interactive_html=request.regenerate_interactive_html, generate_full_pdf=request.regenerate_full_pdf, generate_executive_pdf=request.regenerate_executive_pdf, upload_to_drive=request.upload_to_drive, public_sharing=request.public_sharing, filename_prefix=request.filename_prefix)
+    return _rpb_build_package(req)
+
+
+@app.get("/deliverables/report-package/{report_id}/html")
+def getReportPackageHtml(report_id: str):
+    matches = list((_RPB_ROOT / report_id).glob("01_*_auditoria_interactiva_completa.html"))
+    if not matches:
+        return _rpb_JSONResponse({"status":"not_found","report_id":report_id}, status_code=404) if _rpb_JSONResponse else {"status":"not_found","report_id":report_id}
+    return _rpb_HTMLResponse(matches[0].read_text(encoding="utf-8")) if _rpb_HTMLResponse else matches[0].read_text(encoding="utf-8")
+
+
+@app.get("/deliverables/report-package/{report_id}/pdf-full")
+def getReportPackageFullPdf(report_id: str):
+    matches = list((_RPB_ROOT / report_id).glob("02_*_auditoria_completa.pdf"))
+    if not matches:
+        return _rpb_JSONResponse({"status":"not_found","report_id":report_id}, status_code=404) if _rpb_JSONResponse else {"status":"not_found","report_id":report_id}
+    return _rpb_FileResponse(str(matches[0]), media_type="application/pdf", filename=matches[0].name) if _rpb_FileResponse else {"status":"available","path":str(matches[0])}
+
+
+@app.get("/deliverables/report-package/{report_id}/pdf-executive")
+def getReportPackageExecutivePdf(report_id: str):
+    matches = list((_RPB_ROOT / report_id).glob("03_*_resumen_ejecutivo_duenos.pdf"))
+    if not matches:
+        return _rpb_JSONResponse({"status":"not_found","report_id":report_id}, status_code=404) if _rpb_JSONResponse else {"status":"not_found","report_id":report_id}
+    return _rpb_FileResponse(str(matches[0]), media_type="application/pdf", filename=matches[0].name) if _rpb_FileResponse else {"status":"available","path":str(matches[0])}
+
+
+@app.get("/deliverables/report-package/{report_id}/md")
+def getReportPackageMarkdownSource(report_id: str):
+    matches = list((_RPB_ROOT / report_id / "tecnico").glob("04_*_reporte_fuente.md"))
+    if not matches:
+        return _rpb_JSONResponse({"status":"not_found","report_id":report_id}, status_code=404) if _rpb_JSONResponse else {"status":"not_found","report_id":report_id}
+    return _rpb_FileResponse(str(matches[0]), media_type="text/markdown", filename=matches[0].name) if _rpb_FileResponse else matches[0].read_text(encoding="utf-8")
+
+
+@app.get("/deliverables/report-package/{report_id}/json")
+def getReportPackageEvidenceJson(report_id: str):
+    matches = list((_RPB_ROOT / report_id / "tecnico").glob("05_*_evidencia_tecnica.json"))
+    if not matches:
+        return _rpb_JSONResponse({"status":"not_found","report_id":report_id}, status_code=404) if _rpb_JSONResponse else {"status":"not_found","report_id":report_id}
+    return _rpb_FileResponse(str(matches[0]), media_type="application/json", filename=matches[0].name) if _rpb_FileResponse else _rpb_json.loads(matches[0].read_text(encoding="utf-8"))
+
