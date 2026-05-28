@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.21"
+APP_VERSION = "public-presence-collector-mvp-0.9.22"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -8616,7 +8616,9 @@ def getReportPackageEvidenceJson(report_id: str):
     matches = list((_RPB_ROOT / report_id / "tecnico").glob("05_*_evidencia_tecnica.json"))
     if not matches:
         return _rpb_JSONResponse({"status":"not_found","report_id":report_id}, status_code=404) if _rpb_JSONResponse else {"status":"not_found","report_id":report_id}
-    return _rpb_FileResponse(str(matches[0]), media_type="application/json", filename=matches[0].name) if _rpb_FileResponse else _rpb_json.loads(matches[0].read_text(encoding="utf-8"))\n\n# ============================================================
+    return _rpb_FileResponse(str(matches[0]), media_type="application/json", filename=matches[0].name) if _rpb_FileResponse else _rpb_json.loads(matches[0].read_text(encoding="utf-8"))
+
+# ============================================================
 # MICRO PATCH 4H.2-B - REPORT PACKAGE DRIVE VIA EXISTING WEBAPP
 # ============================================================
 
@@ -8793,4 +8795,3 @@ async def regenerateReportPackageV2(request: ReportPackageRegenerateRequest):
         filename_prefix=request.filename_prefix
     )
     return await createReportPackageV2(req)
-\n
