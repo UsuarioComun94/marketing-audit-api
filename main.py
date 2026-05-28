@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.24"
+APP_VERSION = "public-presence-collector-mvp-0.9.25"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -9398,4 +9398,86 @@ async def regenerateReportPackageV4(request: ReportPackageRegenerateRequest):
         filename_prefix=request.filename_prefix
     )
     return await createReportPackageV4(req)
+
+# ============================================================
+# HOTFIX 4H.2-F - V4 COMPATIBILITY HELPERS
+# ============================================================
+
+def _rpv3_fix_text(value):
+    if not isinstance(value, str):
+        return value
+    text = value
+    replacements = {
+        "ÃƒÂ¡": "Ã¡", "ÃƒÂ©": "Ã©", "ÃƒÂ­": "Ã­", "ÃƒÂ³": "Ã³", "ÃƒÂº": "Ãº",
+        "ÃƒÂ": "Ã", "Ãƒâ€°": "Ã‰", "ÃƒÂ": "Ã", "Ãƒâ€œ": "Ã“", "ÃƒÅ¡": "Ãš",
+        "ÃƒÂ±": "Ã±", "Ãƒâ€˜": "Ã‘", "ÃƒÂ¼": "Ã¼", "ÃƒÅ“": "Ãœ",
+        "Ã‚Â¿": "Â¿", "Ã‚Â¡": "Â¡", "Ã‚Â°": "Â°",
+        "Ã¢â‚¬â€œ": "-", "Ã¢â‚¬â€": "-", "Ã¢â‚¬Ëœ": "'", "Ã¢â‚¬â„¢": "'", "Ã¢â‚¬Å“": '"', "Ã¢â‚¬Â": '"',
+        "Ã¢â‚¬Â¦": "...", "Ã¢â‚¬Â¢": "-",
+        "ÃƒÂƒÃ‚Â¡": "Ã¡", "ÃƒÂƒÃ‚Â©": "Ã©", "ÃƒÂƒÃ‚Â­": "Ã­", "ÃƒÂƒÃ‚Â³": "Ã³", "ÃƒÂƒÃ‚Âº": "Ãº",
+        "ÃƒÂƒÃ‚Â±": "Ã±", "ÃƒÂƒÃ‚Â¼": "Ã¼",
+        "DocumentaciÃƒÂ³n": "DocumentaciÃ³n", "TÃƒÂ©cnico": "TÃ©cnico",
+        "AuditorÃƒÂ­a": "AuditorÃ­a", "PÃƒÂºblica": "PÃºblica", "MÃƒÂ©tricas": "MÃ©tricas", "dueÃƒÂ±os": "dueÃ±os"
+    }
+    for _ in range(3):
+        before = text
+        for bad, good in replacements.items():
+            text = text.replace(bad, good)
+        if text == before:
+            break
+    symbol_replacements = {
+        "ðŸ›’": "carrito", "â°": "horario", "âœ…": "OK", "âŒ": "NO",
+        "âš ï¸": "ALERTA", "âš ": "ALERTA", "ðŸ“Œ": "Nota", "ðŸ“Š": "MÃ©tricas",
+        "ðŸ”¥": "Prioridad", "ðŸš€": "Escalar", "ðŸ’¡": "Idea"
+    }
+    for bad, good in symbol_replacements.items():
+        text = text.replace(bad, good)
+    return text
+
+
+def _rpv3_fix_obj(obj):
+    if isinstance(obj, str):
+        return _rpv3_fix_text(obj)
+    if isinstance(obj, list):
+        return [_rpv3_fix_obj(x) for x in obj]
+    if isinstance(obj, tuple):
+        return tuple(_rpv3_fix_obj(x) for x in obj)
+    if isinstance(obj, dict):
+        fixed = {}
+        for k, v in obj.items():
+            fixed_key = _rpv3_fix_text(k) if isinstance(k, str) else k
+            fixed[fixed_key] = _rpv3_fix_obj(v)
+        return fixed
+    return obj
+
+
+def _rpv3_request_clean_copy(req):
+    try:
+        data = req.model_dump()
+    except Exception:
+        try:
+            data = req.dict()
+        except Exception:
+            data = dict(req)
+
+    data = _rpv3_fix_obj(data)
+    data["documentation_folder_name"] = "Documentacion"
+    data["technical_folder_name"] = "Tecnico"
+
+    return ReportPackageRequest(**data)
+
+
+def _rpv3_extract_executive_md(full_md):
+    full_md = _rpv3_fix_text(full_md or "")
+    try:
+        return _rpb_extract_executive_md(full_md)
+    except Exception:
+        return "\n".join(full_md.splitlines()[:160])
+
+
+def _rpv3_markdown_to_pdf(path, title, md, company_name, executive=False):
+    title = _rpv3_fix_text(title)
+    md = _rpv3_fix_text(md or "")
+    company_name = _rpv3_fix_text(company_name)
+    return _rpb_markdown_to_pdf(path, title, md, company_name, executive=executive)
 
