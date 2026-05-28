@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.23"
+APP_VERSION = "public-presence-collector-mvp-0.9.24"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -9085,4 +9085,317 @@ async def regenerateReportPackageV3(request: ReportPackageRegenerateRequest):
         filename_prefix=request.filename_prefix
     )
     return await createReportPackageV3(req)
+
+# ============================================================
+# HOTFIX 4H.2-E - SAFE HTML BUILDER + REPORT PACKAGE V4
+# ============================================================
+
+def _rpv4_inline_md(text):
+    text = _rpv3_fix_text("" if text is None else str(text))
+    text = _rpb_html.escape(text, quote=True)
+    text = _rpb_re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    text = _rpb_re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+    return text
+
+
+def _rpv4_markdown_to_basic_html(md):
+    lines = (_rpv3_fix_text(md or "")).splitlines()
+    out = []
+    in_ul = False
+    in_ol = False
+    in_table = False
+
+    def close_lists():
+        nonlocal in_ul, in_ol
+        if in_ul:
+            out.append("</ul>")
+            in_ul = False
+        if in_ol:
+            out.append("</ol>")
+            in_ol = False
+
+    def close_table():
+        nonlocal in_table
+        if in_table:
+            out.append("</tbody></table></div>")
+            in_table = False
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+
+        if not line.strip():
+            close_lists()
+            close_table()
+            out.append("<div class=\"space\"></div>")
+            continue
+
+        if line.startswith("|") and line.endswith("|"):
+            close_lists()
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if all(set(c) <= set("-: ") for c in cells):
+                continue
+            if not in_table:
+                out.append('<div class="table-wrap"><table><tbody>')
+                in_table = True
+            out.append("<tr>" + "".join("<td>" + _rpv4_inline_md(c) + "</td>" for c in cells) + "</tr>")
+            continue
+        else:
+            close_table()
+
+        if line.startswith("### "):
+            close_lists()
+            out.append("<h3>" + _rpv4_inline_md(line[4:]) + "</h3>")
+        elif line.startswith("## "):
+            close_lists()
+            out.append("<h2>" + _rpv4_inline_md(line[3:]) + "</h2>")
+        elif line.startswith("# "):
+            close_lists()
+            out.append("<h1>" + _rpv4_inline_md(line[2:]) + "</h1>")
+        elif _rpb_re.match(r"^\s*[-*]\s+", line):
+            if not in_ul:
+                close_lists()
+                out.append("<ul>")
+                in_ul = True
+            item = _rpb_re.sub(r"^\s*[-*]\s+", "", line)
+            out.append("<li>" + _rpv4_inline_md(item) + "</li>")
+        elif _rpb_re.match(r"^\s*\d+\.\s+", line):
+            if not in_ol:
+                close_lists()
+                out.append("<ol>")
+                in_ol = True
+            item = _rpb_re.sub(r"^\s*\d+\.\s+", "", line)
+            out.append("<li>" + _rpv4_inline_md(item) + "</li>")
+        else:
+            close_lists()
+            out.append("<p>" + _rpv4_inline_md(line) + "</p>")
+
+    close_lists()
+    close_table()
+    return "\n".join(out)
+
+
+def _rpv4_sections_from_markdown(md):
+    md = _rpv3_fix_text(md or "")
+    sections = []
+    current_title = "Resumen"
+    current_lines = []
+    for line in md.splitlines():
+        if line.startswith("## "):
+            if current_lines:
+                sections.append({"title": current_title, "markdown": "\n".join(current_lines).strip()})
+            current_title = line[3:].strip()
+            current_lines = [line]
+        else:
+            current_lines.append(line)
+    if current_lines:
+        sections.append({"title": current_title, "markdown": "\n".join(current_lines).strip()})
+    return sections or [{"title": "Reporte", "markdown": md}]
+
+
+def _rpv4_build_interactive_html(req, report_id, created_at):
+    title = _rpv3_fix_text(req.report_title)
+    company = _rpv3_fix_text(req.company_name)
+    md = _rpv3_fix_text(req.markdown_report or "")
+    sections = _rpv4_sections_from_markdown(md)
+
+    nav_parts = []
+    panel_parts = []
+
+    for idx, sec in enumerate(sections):
+        sid = "sec_" + str(idx)
+        active = "active" if idx == 0 else ""
+        sec_title = _rpv3_fix_text(sec.get("title") or ("SecciÃ³n " + str(idx + 1)))
+        nav_parts.append('<button class="tab ' + active + '" data-target="' + sid + '">' + _rpb_html.escape(sec_title, quote=True) + '</button>')
+        panel_parts.append('<section id="' + sid + '" class="panel ' + active + '">' + _rpv4_markdown_to_basic_html(sec.get("markdown") or "") + '</section>')
+
+    evidence_json = _rpb_html.escape(_rpb_json.dumps(_rpv3_fix_obj(req.evidence_payload or {}), ensure_ascii=False, indent=2), quote=True)
+    metrics_json = _rpb_html.escape(_rpb_json.dumps(_rpv3_fix_obj(req.social_metrics or {}), ensure_ascii=False, indent=2), quote=True)
+
+    head = [
+        "<!doctype html>",
+        '<html lang="es">',
+        "<head>",
+        '<meta charset="utf-8">',
+        '<meta http-equiv="Content-Type" content="text/html; charset=utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        "<title>" + _rpb_html.escape(title, quote=True) + " - " + _rpb_html.escape(company, quote=True) + "</title>",
+        "<style>",
+        ":root{--bg:#f8fafc;--ink:#0f172a;--muted:#64748b;--line:#cbd5e1;--primary:#0f172a;--accent:#0369a1;--soft:#e0f2fe;--card:#ffffff;}",
+        "*{box-sizing:border-box;}body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--ink);}",
+        "header{padding:28px 32px;background:linear-gradient(135deg,#0f172a,#1e293b);color:white;position:sticky;top:0;z-index:5;box-shadow:0 4px 20px rgba(15,23,42,.22);}",
+        "h1{margin:0 0 8px;font-size:30px;letter-spacing:-.02em}.meta{color:#cbd5e1;font-size:13px;display:flex;gap:14px;flex-wrap:wrap;}",
+        ".layout{display:grid;grid-template-columns:300px 1fr;min-height:calc(100vh - 98px);}nav{border-right:1px solid var(--line);padding:18px;background:#fff;position:sticky;top:98px;height:calc(100vh - 98px);overflow:auto;}",
+        ".tab{display:block;width:100%;text-align:left;margin:0 0 8px;padding:11px 12px;background:#f8fafc;color:var(--ink);border:1px solid var(--line);border-radius:12px;cursor:pointer;font-weight:600;}",
+        ".tab.active,.tab:hover{border-color:var(--accent);background:var(--soft);}main{padding:24px;max-width:1360px;}",
+        ".panel{display:none;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px;box-shadow:0 10px 30px rgba(15,23,42,.08);}.panel.active{display:block;}",
+        "h2{color:var(--primary);margin-top:8px;border-bottom:2px solid var(--soft);padding-bottom:8px;}h3{color:var(--accent);margin-top:24px;}p,li{line-height:1.58}.space{height:8px;}",
+        ".table-wrap{overflow:auto;margin:14px 0;border:1px solid var(--line);border-radius:12px;}table{border-collapse:collapse;width:100%;min-width:760px;font-size:14px;}td,th{border-bottom:1px solid var(--line);padding:10px;vertical-align:top;}tr:first-child td{font-weight:700;color:white;background:var(--primary);}",
+        ".badge{display:inline-block;padding:4px 9px;border:1px solid var(--line);border-radius:999px;color:var(--accent);background:var(--soft);font-weight:700;}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0;}.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 6px 16px rgba(15,23,42,.06);}",
+        "details{margin:14px 0;border:1px solid var(--line);border-radius:12px;padding:12px;background:#f8fafc;}summary{cursor:pointer;color:var(--accent);font-weight:700;}pre{white-space:pre-wrap;overflow:auto;max-height:480px;background:#0f172a;border-radius:12px;padding:12px;color:#e2e8f0;}footer{color:var(--muted);font-size:12px;padding:24px;text-align:center;}@media(max-width:900px){.layout{grid-template-columns:1fr;}nav{position:relative;top:0;height:auto;}}",
+        "</style>",
+        "</head>",
+        "<body>",
+        "<header>",
+        "<h1>" + _rpb_html.escape(title, quote=True) + "</h1>",
+        '<div class="meta"><span>Cliente: <strong>' + _rpb_html.escape(company, quote=True) + "</strong></span><span>Report ID: " + _rpb_html.escape(report_id, quote=True) + "</span><span>Creado: " + _rpb_html.escape(created_at, quote=True) + "</span><span>Tipo: " + _rpb_html.escape(_rpv3_fix_text(req.client_type or "auditorÃ­a pÃºblica"), quote=True) + "</span></div>",
+        "</header>",
+        '<div class="layout">',
+        "<nav>" + "".join(nav_parts) + "</nav>",
+        "<main>",
+        '<div class="cards"><div class="card"><span class="badge">Informe completo</span><p>AuditorÃ­a pÃºblica integral con evidencia, diagnÃ³stico y plan de acciÃ³n.</p></div><div class="card"><span class="badge">VersiÃ³n PDF</span><p>El PDF completo conserva el mismo contenido, sin interacciÃ³n.</p></div><div class="card"><span class="badge">Resumen ejecutivo</span><p>Documento separado para dueÃ±os y gerencia.</p></div></div>',
+        "".join(panel_parts),
+        '<section class="panel active" style="display:block;margin-top:18px;"><h2>Anexos tÃ©cnicos</h2><details><summary>Evidencia tÃ©cnica JSON</summary><pre>' + evidence_json + '</pre></details><details><summary>MÃ©tricas sociales JSON</summary><pre>' + metrics_json + '</pre></details></section>',
+        "</main></div>",
+        "<footer>Generado por Marketing Auditor. Las mÃ©tricas pÃºblicas son parciales y no representan performance interna.</footer>",
+        "<script>document.querySelectorAll('.tab').forEach(function(btn){btn.addEventListener('click',function(){document.querySelectorAll('.tab').forEach(function(b){b.classList.remove('active');});document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('active');});btn.classList.add('active');var target=document.getElementById(btn.dataset.target);if(target)target.classList.add('active');});});</script>",
+        "</body></html>"
+    ]
+    return "\n".join(head)
+
+
+def _rpv4_build_package(req):
+    req = _rpv3_request_clean_copy(req)
+    created_at = _rpb_now_iso()
+    report_id = _rpb_report_id(req.company_name)
+    prefix = _rpb_slug(req.filename_prefix or req.company_name)
+    workdir = _RPB_ROOT / report_id
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    technical_dir = workdir / "tecnico"
+    technical_dir.mkdir(exist_ok=True)
+
+    files = {}
+    errors = []
+
+    markdown_report = _rpv3_fix_text(req.markdown_report or "")
+    evidence_payload = _rpv3_fix_obj(req.evidence_payload or {})
+    social_metrics = _rpv3_fix_obj(req.social_metrics or {})
+
+    md_path = technical_dir / f"04_{prefix}_reporte_fuente.md"
+    json_path = technical_dir / f"05_{prefix}_evidencia_tecnica.json"
+
+    md_path.write_text(markdown_report, encoding="utf-8")
+    json_payload = {
+        "report_id": report_id,
+        "company_name": _rpv3_fix_text(req.company_name),
+        "report_title": _rpv3_fix_text(req.report_title),
+        "client_type": _rpv3_fix_text(req.client_type),
+        "created_at": created_at,
+        "evidence_payload": evidence_payload,
+        "social_metrics": social_metrics,
+        "encoding_policy": "utf8_nfc_mojibake_fixed",
+        "folder_policy": "ascii_safe_drive_folder_names",
+        "html_policy": "safe_non_recursive_renderer_v4"
+    }
+    json_path.write_text(_rpb_json.dumps(json_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    files["markdown_source"] = {"status": "created", "path": str(md_path)}
+    files["evidence_json"] = {"status": "created", "path": str(json_path)}
+
+    html_path = workdir / f"01_{prefix}_auditoria_interactiva_completa.html"
+    full_pdf_path = workdir / f"02_{prefix}_auditoria_completa.pdf"
+    executive_pdf_path = workdir / f"03_{prefix}_resumen_ejecutivo_duenos.pdf"
+
+    if req.generate_interactive_html:
+        try:
+            html = _rpv4_build_interactive_html(req, report_id, created_at)
+            html_path.write_text(html, encoding="utf-8")
+            files["interactive_html"] = {"status": "created", "path": str(html_path)}
+        except Exception as exc:
+            files["interactive_html"] = {"status": "failed", "reason": str(exc), "regenerable": True}
+            errors.append(f"interactive_html failed: {exc}")
+
+    if req.generate_full_pdf:
+        try:
+            _rpv3_markdown_to_pdf(full_pdf_path, f"{req.report_title} - Completa", markdown_report, req.company_name, executive=False)
+            files["full_pdf"] = {"status": "created", "path": str(full_pdf_path)}
+        except Exception as exc:
+            files["full_pdf"] = {"status": "failed", "reason": str(exc), "regenerable": True}
+            errors.append(f"full_pdf failed: {exc}")
+
+    if req.generate_executive_pdf:
+        try:
+            exec_md = _rpv3_fix_text(req.executive_summary_markdown or _rpv3_extract_executive_md(markdown_report))
+            _rpv3_markdown_to_pdf(executive_pdf_path, f"{req.report_title} - Resumen Ejecutivo", exec_md, req.company_name, executive=True)
+            files["executive_pdf"] = {"status": "created", "path": str(executive_pdf_path)}
+        except Exception as exc:
+            files["executive_pdf"] = {"status": "failed", "reason": str(exc), "regenerable": True}
+            errors.append(f"executive_pdf failed: {exc}")
+
+    base = _rpb_public_base_url()
+    local_urls = {
+        "interactive_html_url": f"{base}/deliverables/report-package/{report_id}/html",
+        "full_pdf_url": f"{base}/deliverables/report-package/{report_id}/pdf-full",
+        "executive_pdf_url": f"{base}/deliverables/report-package/{report_id}/pdf-executive",
+        "markdown_source_url": f"{base}/deliverables/report-package/{report_id}/md",
+        "evidence_json_url": f"{base}/deliverables/report-package/{report_id}/json"
+    }
+
+    return {
+        "collector": "report_package_builder_v4",
+        "version": APP_VERSION,
+        "status": "completed" if not errors else "partial_completed",
+        "report_id": report_id,
+        "company_name": _rpv3_fix_text(req.company_name),
+        "report_title": _rpv3_fix_text(req.report_title),
+        "created_at": created_at,
+        "documentation_folder_name": req.documentation_folder_name,
+        "technical_folder_name": req.technical_folder_name,
+        "local_urls": local_urls,
+        "files": files,
+        "drive": {
+            "requested": bool(req.upload_to_drive),
+            "status": "not_requested",
+            "integration": "existing_drive_webapp"
+        },
+        "errors": errors,
+        "regeneration_available": True,
+        "notes": [
+            "4H.2-E: HTML usa renderer independiente no recursivo.",
+            "PDF completo y ejecutivo se mantienen desde el renderer mejorado v3.",
+            "Contenido espaÃ±ol normalizado y carpetas Drive ASCII seguras."
+        ]
+    }
+
+
+@app.post("/deliverables/report-package-v4")
+async def createReportPackageV4(request: ReportPackageRequest):
+    clean_req = _rpv3_request_clean_copy(request)
+    local_req = _rpb_model_copy_no_drive(clean_req)
+    result = _rpv4_build_package(local_req)
+    result["version"] = APP_VERSION
+
+    if clean_req.upload_to_drive:
+        drive = await _rpb_upload_package_with_existing_drive(clean_req, result)
+        result["drive"] = drive
+        if drive.get("status") != "completed":
+            result["status"] = "partial_completed"
+            existing_errors = result.get("errors") or []
+            for err in drive.get("errors") or []:
+                existing_errors.append(f"drive_webapp upload: {err}")
+            result["errors"] = existing_errors
+
+    return result
+
+
+@app.post("/deliverables/report-package/regenerate-v4")
+async def regenerateReportPackageV4(request: ReportPackageRegenerateRequest):
+    req = ReportPackageRequest(
+        company_name=request.company_name,
+        report_title=request.report_title,
+        markdown_report=request.markdown_report,
+        executive_summary_markdown=request.executive_summary_markdown,
+        evidence_payload=request.evidence_payload,
+        social_metrics=request.social_metrics,
+        drive_folder_name=request.drive_folder_name,
+        documentation_folder_name="Documentacion",
+        technical_folder_name="Tecnico",
+        generate_interactive_html=request.regenerate_interactive_html,
+        generate_full_pdf=request.regenerate_full_pdf,
+        generate_executive_pdf=request.regenerate_executive_pdf,
+        upload_to_drive=request.upload_to_drive,
+        public_sharing=request.public_sharing,
+        filename_prefix=request.filename_prefix
+    )
+    return await createReportPackageV4(req)
 
