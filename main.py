@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.15"
+APP_VERSION = "public-presence-collector-mvp-0.9.16"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -7379,3 +7379,357 @@ async def auditInstagramPostsByUrl(req: InstagramPostsByUrlRequest):
                 "write_actions_attempted": False,
             },
         }
+
+# ============================================================
+# MICRO PATCH 4H.1-A - SOCIAL PUBLIC AVERAGES
+# ============================================================
+
+try:
+    BaseModel
+except NameError:
+    from pydantic import BaseModel
+
+class SocialPublicAveragesRequest(BaseModel):
+    company_name: str | None = None
+    platform: str = "instagram"
+    profile_url: str | None = None
+    followers_total: int | float | str | None = None
+    posts: list = []
+    upload_to_drive: bool = False
+    drive_folder_name: str | None = None
+    filename_prefix: str | None = None
+
+
+def _spa_num(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    if not s:
+        return None
+    lower = s.lower().replace(" ", "")
+    mult = 1.0
+    if lower.endswith("k"):
+        mult = 1000.0
+        lower = lower[:-1]
+    elif lower.endswith("m"):
+        mult = 1000000.0
+        lower = lower[:-1]
+    lower = lower.replace(".", "").replace(",", ".")
+    cleaned = "".join(ch for ch in lower if ch.isdigit() or ch in ".-")
+    try:
+        return float(cleaned) * mult if cleaned not in ("", "-", ".") else None
+    except Exception:
+        return None
+
+
+def _spa_int(value):
+    n = _spa_num(value)
+    return int(round(n)) if n is not None else None
+
+
+def _spa_avg(values, digits=2):
+    nums = []
+    for v in values or []:
+        n = _spa_num(v)
+        if n is not None:
+            nums.append(n)
+    if not nums:
+        return None
+    return round(sum(nums) / len(nums), digits)
+
+
+def _spa_date(value):
+    if not value:
+        return None
+    from datetime import datetime
+    s = str(value).strip()
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        pass
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s[:10], fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _spa_post_url(post):
+    return str(post.get("url") or post.get("post_url") or post.get("permalink") or "")
+
+
+def _spa_post_type(post):
+    t = str(post.get("type") or post.get("post_type") or "").strip().lower()
+    url = _spa_post_url(post).lower()
+    if not t:
+        if "/reel/" in url:
+            t = "reel"
+        elif "/p/" in url:
+            t = "post"
+        else:
+            t = "unknown"
+    return t
+
+
+def _spa_post_date(post):
+    for k in ("date_iso", "published_at", "created_time", "date", "timestamp"):
+        dt = _spa_date(post.get(k))
+        if dt is not None:
+            return dt
+    return None
+
+
+def _spa_hashtags(post):
+    raw = post.get("hashtags")
+    if raw is None:
+        raw = []
+    if isinstance(raw, str):
+        parts = [x.strip() for x in raw.replace("\n", " ").split(",")]
+        if len(parts) == 1:
+            parts = [x.strip() for x in raw.replace("\n", " ").split(" ")]
+        tags = [x for x in parts if x.startswith("#")]
+    elif isinstance(raw, list):
+        tags = [str(x).strip() for x in raw if str(x).strip().startswith("#")]
+    else:
+        tags = []
+    clean = []
+    seen = set()
+    for tag in tags:
+        key = tag.casefold()
+        if key not in seen:
+            seen.add(key)
+            clean.append(tag)
+    return clean
+
+
+def _spa_topic_from_post(post):
+    tags = [t.lower() for t in _spa_hashtags(post)]
+    text = str(post.get("caption") or post.get("caption_sample") or post.get("text") or "").lower()
+    blob = " ".join(tags) + " " + text
+    topics = []
+    mapping = [
+        ("navidad", ["navidad", "fiestas2025", "cajasnavide", "pan dulce", "budines"]),
+        ("carnaval", ["carnaval", "fiesta"]),
+        ("pascuas", ["pascuas"]),
+        ("san_valentin", ["sanvalentin", "14defebrero", "amor"]),
+        ("mayorista_b2b", ["mayorista", "revendedor", "emprendedores", "regalosempresariales"]),
+        ("reposteria", ["reposteria", "reposterÃ­a", "mesasnavide", "bazar"]),
+        ("equipo_confianza", ["trabajoenequipo", "compaÃ±eros", "companeros", "atencionalpublico", "atenciÃ³nalpÃºblico"]),
+        ("efemeride", ["diadel", "dÃ­adel", "diadelmate", "diadelchicle"])
+    ]
+    for topic, keys in mapping:
+        if any(k in blob for k in keys):
+            topics.append(topic)
+    if not topics:
+        topics.append("sin_tematica_detectada")
+    return topics
+
+
+def _spa_group_avg(posts, value_getter, group_getter):
+    groups = {}
+    for p in posts:
+        v = value_getter(p)
+        if v is None:
+            continue
+        groups.setdefault(group_getter(p), []).append(v)
+    return {k: _spa_avg(v) for k, v in groups.items() if v}
+
+
+def _spa_average_days_between(dates):
+    if not dates or len(dates) < 2:
+        return None
+    ordered = sorted(dates)
+    diffs = []
+    for i in range(1, len(ordered)):
+        try:
+            diffs.append(abs((ordered[i] - ordered[i-1]).total_seconds()) / 86400.0)
+        except Exception:
+            pass
+    return round(sum(diffs) / len(diffs), 2) if diffs else None
+
+
+def _spa_posts_per_month_visible(dates):
+    if not dates:
+        return None
+    buckets = {}
+    for d in dates:
+        key = f"{d.year:04d}-{d.month:02d}"
+        buckets[key] = buckets.get(key, 0) + 1
+    if not buckets:
+        return None
+    return {
+        "months_detected": buckets,
+        "average_posts_per_detected_month": round(sum(buckets.values()) / len(buckets), 2)
+    }
+
+
+def _spa_frequency_window(dates):
+    if not dates:
+        return {"status": "not_calculable", "reason": "No hay fechas visibles suficientes para calcular frecuencia."}
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    if now.day <= 7:
+        year = now.year
+        month = now.month - 1
+        if month == 0:
+            year -= 1
+            month = 12
+        start = datetime(year, month, 1, tzinfo=timezone.utc)
+        end = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        mode = "previous_month"
+    else:
+        start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        end = now
+        mode = "current_month_to_date"
+    in_window = [d for d in dates if d.tzinfo and start <= d <= end]
+    if not in_window:
+        return {
+            "status": "not_calculable", "mode": mode,
+            "window_start": start.date().isoformat(), "window_end": end.date().isoformat(),
+            "posts_in_window": 0, "posts_per_week": None,
+            "reason": "No hay publicaciones visibles dentro de la ventana definida."
+        }
+    days = max((end - start).total_seconds() / 86400.0, 1)
+    weeks = max(days / 7.0, 0.14)
+    return {
+        "status": "calculated", "mode": mode,
+        "window_start": start.date().isoformat(), "window_end": end.date().isoformat(),
+        "posts_in_window": len(in_window), "posts_per_week": round(len(in_window) / weeks, 2)
+    }
+
+
+def _spa_build_public_averages(platform, followers_total, posts):
+    platform = str(platform or "").lower().strip()
+    followers = _spa_num(followers_total)
+    posts = posts or []
+    dates = [_spa_post_date(p) for p in posts]
+    dates = [d for d in dates if d is not None]
+    hashtags_by_post = [_spa_hashtags(p) for p in posts]
+    content_types = [_spa_post_type(p) for p in posts]
+
+    result = {
+        "status": "partial_public_visible_metrics",
+        "platform": platform,
+        "total_posts_analyzed": len(posts),
+        "posts_with_visible_dates": len(dates),
+        "average_days_between_posts": _spa_average_days_between(dates),
+        "publishing_frequency_window": _spa_frequency_window(dates),
+        "posts_per_month_visible_sample": _spa_posts_per_month_visible(dates),
+        "content_types_count": {t: content_types.count(t) for t in sorted(set(content_types))},
+        "average_hashtags_per_post": round(sum(len(x) for x in hashtags_by_post) / len(posts), 2) if posts else None,
+        "posts_with_hashtags": sum(1 for x in hashtags_by_post if x),
+        "average_content_age_days": None,
+        "limitations": [
+            "Promedios calculados solo con datos publicos visibles.",
+            "No representan alcance, reproducciones, guardados, clics, ventas ni performance real.",
+            "Si una plataforma oculta una metrica, se excluye del promedio correspondiente."
+        ]
+    }
+
+    if dates:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        ages = []
+        for d in dates:
+            try:
+                ages.append(abs((now - d).total_seconds()) / 86400.0)
+            except Exception:
+                pass
+        result["average_content_age_days"] = round(sum(ages) / len(ages), 2) if ages else None
+
+    if platform == "instagram":
+        def like_getter(p):
+            n = _spa_num(p.get("likes_count"))
+            return n if n is not None else _spa_num(p.get("likes"))
+        likes = [like_getter(p) for p in posts if like_getter(p) is not None]
+        by_type_likes = _spa_group_avg(posts, like_getter, _spa_post_type)
+        by_type_hashtags = {}
+        for t in sorted(set(content_types)):
+            selected = [p for p in posts if _spa_post_type(p) == t]
+            if selected:
+                by_type_hashtags[t] = round(sum(len(_spa_hashtags(p)) for p in selected) / len(selected), 2)
+        topic_values = {}
+        for p in posts:
+            lv = like_getter(p)
+            if lv is None:
+                continue
+            for topic in _spa_topic_from_post(p):
+                topic_values.setdefault(topic, []).append(lv)
+        result.update({
+            "likes_visible_count": len(likes),
+            "likes_missing_count": max(len(posts) - len(likes), 0),
+            "total_visible_likes": int(sum(likes)) if likes else None,
+            "average_likes_visible_only": _spa_avg(likes),
+            "average_likes_by_content_type": by_type_likes,
+            "average_hashtags_by_content_type": by_type_hashtags,
+            "average_likes_by_topic": {k: _spa_avg(v) for k, v in topic_values.items()},
+            "visible_like_to_follower_ratio": round((_spa_avg(likes) / followers), 6) if likes and followers else None
+        })
+        sorted_liked = [p for p in posts if like_getter(p) is not None]
+        sorted_liked.sort(key=lambda p: like_getter(p), reverse=True)
+        result["top_posts_by_visible_likes"] = [
+            {"url": _spa_post_url(p), "likes_count": _spa_int(like_getter(p)), "type": _spa_post_type(p)}
+            for p in sorted_liked[:3]
+        ]
+        result["lowest_posts_by_visible_likes"] = [
+            {"url": _spa_post_url(p), "likes_count": _spa_int(like_getter(p)), "type": _spa_post_type(p)}
+            for p in list(reversed(sorted_liked[-3:]))
+        ]
+    elif platform == "facebook":
+        reactions = [_spa_num(p.get("reactions_count")) for p in posts if _spa_num(p.get("reactions_count")) is not None]
+        comments = [_spa_num(p.get("comments_count")) for p in posts if _spa_num(p.get("comments_count")) is not None]
+        shares = [_spa_num(p.get("shares_count")) for p in posts if _spa_num(p.get("shares_count")) is not None]
+        interactions = []
+        for p in posts:
+            r = _spa_num(p.get("reactions_count")) or 0
+            c = _spa_num(p.get("comments_count")) or 0
+            s = _spa_num(p.get("shares_count")) or 0
+            if any(_spa_num(p.get(k)) is not None for k in ("reactions_count", "comments_count", "shares_count")):
+                interactions.append(r + c + s)
+        result.update({
+            "reactions_visible_count": len(reactions),
+            "comments_visible_count": len(comments),
+            "shares_visible_count": len(shares),
+            "average_reactions_visible_only": _spa_avg(reactions),
+            "average_comments_visible_only": _spa_avg(comments),
+            "average_shares_visible_only": _spa_avg(shares),
+            "average_visible_interactions_per_post": _spa_avg(interactions),
+            "visible_interaction_to_follower_ratio": round((_spa_avg(interactions) / followers), 6) if interactions and followers else None
+        })
+        if not interactions:
+            result["status"] = "not_calculable"
+            result["reason"] = "Facebook no expuso metricas publicas suficientes en los posts provistos."
+    else:
+        result["reason"] = "Plataforma generica: se calcularon solo promedios transversales disponibles."
+    return result
+
+
+@app.post("/audit/social-public-averages")
+def auditSocialPublicAverages(request: SocialPublicAveragesRequest):
+    posts = request.posts or []
+    public_averages = _spa_build_public_averages(
+        platform=request.platform,
+        followers_total=request.followers_total,
+        posts=posts
+    )
+    return {
+        "collector": "social_public_averages",
+        "version": APP_VERSION,
+        "status": "completed",
+        "company_name": request.company_name,
+        "platform": request.platform,
+        "profile_url": request.profile_url,
+        "posts_received": len(posts),
+        "public_averages": public_averages,
+        "drive_upload": None,
+        "drive_upload_status": "not_integrated_in_this_endpoint",
+        "human_readable_messages": [
+            "Promedios calculados solo sobre datos publicos visibles.",
+            "No representan performance real sin datos nativos de la plataforma.",
+            "Usar como senal parcial para priorizacion, no como verdad de negocio."
+        ]
+    }
+
