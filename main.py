@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.22"
+APP_VERSION = "public-presence-collector-mvp-0.9.23"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -8795,3 +8795,294 @@ async def regenerateReportPackageV2(request: ReportPackageRegenerateRequest):
         filename_prefix=request.filename_prefix
     )
     return await createReportPackageV2(req)
+
+# ============================================================
+# MICRO PATCH 4H.2-D - SPANISH ENCODING + BETTER PDF
+# ============================================================
+
+import unicodedata as _rpv3_unicodedata
+
+
+def _rpv3_mojibake_score(text: str) -> int:
+    if not isinstance(text, str):
+        return 0
+    markers = ["Ãƒ", "Ã‚", "Ã¢â‚¬", "Ã¢â‚¬â„¢", "Ã¢â‚¬Å“", "Ã¢â‚¬Â", "Ã¢â‚¬â€œ", "Ã¢â‚¬â€", "Ã°Å¸", "ï¿½"]
+    return sum(text.count(m) for m in markers)
+
+
+def _rpv3_fix_text(value):
+    if not isinstance(value, str):
+        return value
+    text = value
+    manual = {
+        "ÃƒÂ¡":"Ã¡", "ÃƒÂ©":"Ã©", "ÃƒÂ­":"Ã­", "ÃƒÂ³":"Ã³", "ÃƒÂº":"Ãº",
+        "ÃƒÂ":"Ã", "Ãƒâ€°":"Ã‰", "ÃƒÂ":"Ã", "Ãƒâ€œ":"Ã“", "ÃƒÅ¡":"Ãš",
+        "ÃƒÂ±":"Ã±", "Ãƒâ€˜":"Ã‘", "ÃƒÂ¼":"Ã¼", "ÃƒÅ“":"Ãœ",
+        "Ã‚Â¿":"Â¿", "Ã‚Â¡":"Â¡", "Ã‚Â°":"Â°", "Ã‚Âº":"Âº", "Ã‚Âª":"Âª",
+        "Ã¢â‚¬â€œ":"-", "Ã¢â‚¬â€":"-", "Ã¢â‚¬Ëœ":"'", "Ã¢â‚¬â„¢":"'", "Ã¢â‚¬Å“":"\"", "Ã¢â‚¬Â":"\"",
+        "Ã¢â‚¬Â¦":"...", "Ã¢â‚¬Â¢":"-", "Ã‚Â·":"-",
+        "ÃƒÂƒÃ‚Â¡":"Ã¡", "ÃƒÂƒÃ‚Â©":"Ã©", "ÃƒÂƒÃ‚Â­":"Ã­", "ÃƒÂƒÃ‚Â³":"Ã³", "ÃƒÂƒÃ‚Âº":"Ãº",
+        "ÃƒÂƒÃ‚Â±":"Ã±", "ÃƒÂƒÃ‚Â¼":"Ã¼", "ÃƒÂƒÃ¢â‚¬Ëœ":"Ã‘",
+        "DocumentaciÃƒÂƒÃ‚Â³n":"DocumentaciÃ³n", "TÃƒÂƒÃ‚Â©cnico":"TÃ©cnico",
+        "AuditorÃƒÂƒÃ‚Â­a":"AuditorÃ­a", "PÃƒÂƒÃ‚Âºblica":"PÃºblica", "MÃƒÂƒÃ‚Â©tricas":"MÃ©tricas",
+        "dueÃƒÂƒÃ‚Â±os":"dueÃ±os", "acciÃƒÂƒÃ‚Â³n":"acciÃ³n", "decisiÃƒÂƒÃ‚Â³n":"decisiÃ³n"
+    }
+    for _ in range(4):
+        before = text
+        for bad, good in manual.items():
+            text = text.replace(bad, good)
+        if _rpv3_mojibake_score(text) > 0:
+            try:
+                candidate = text.encode("latin1", errors="strict").decode("utf-8", errors="strict")
+                if _rpv3_mojibake_score(candidate) < _rpv3_mojibake_score(text):
+                    text = candidate
+            except Exception:
+                pass
+        if text == before:
+            break
+    replacements = {
+        "ðŸ›’":"carrito", "â°":"horario", "âœ…":"OK", "âŒ":"NO", "âš ï¸":"ALERTA",
+        "âš ":"ALERTA", "ðŸ“Œ":"Nota", "ðŸ“Š":"MÃ©tricas", "ðŸ”¥":"Prioridad", "ðŸš€":"Escalar", "ðŸ’¡":"Idea"
+    }
+    for bad, good in replacements.items():
+        text = text.replace(bad, good)
+    text = _rpv3_unicodedata.normalize("NFC", text)
+    return "".join(ch for ch in text if ch in ("\n", "\t") or ord(ch) >= 32)
+
+
+def _rpv3_fix_obj(obj):
+    if isinstance(obj, str):
+        return _rpv3_fix_text(obj)
+    if isinstance(obj, list):
+        return [_rpv3_fix_obj(x) for x in obj]
+    if isinstance(obj, tuple):
+        return tuple(_rpv3_fix_obj(x) for x in obj)
+    if isinstance(obj, dict):
+        return {_rpv3_fix_text(k) if isinstance(k, str) else k: _rpv3_fix_obj(v) for k, v in obj.items()}
+    return obj
+
+
+def _rpv3_clean_report_request(req, upload_to_drive=None):
+    try:
+        data = req.model_dump()
+    except Exception:
+        data = req.dict() if hasattr(req, "dict") else dict(req)
+    data = _rpv3_fix_obj(data)
+    data["documentation_folder_name"] = "Documentacion"
+    data["technical_folder_name"] = "Tecnico"
+    if upload_to_drive is not None:
+        data["upload_to_drive"] = bool(upload_to_drive)
+    return ReportPackageRequest(**data)
+
+
+def _rpv3_pdf_safe(text):
+    text = _rpv3_fix_text(text or "")
+    return text.replace("â†’", "->").replace("â€“", "-").replace("â€”", "-")
+
+
+def _rpv3_table_rows(lines, start):
+    rows = []
+    i = start
+    while i < len(lines):
+        line = lines[i].strip()
+        if not (line.startswith("|") and line.endswith("|")):
+            break
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if not all(set(c) <= set("-: ") for c in cells):
+            rows.append(cells)
+        i += 1
+    return rows, i
+
+
+def _rpv3_markdown_to_pdf(path: _rpb_Path, title: str, md: str, company_name: str, executive: bool = False):
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+    except Exception as exc:
+        raise RuntimeError(f"reportlab unavailable: {exc}")
+
+    title = _rpv3_pdf_safe(title)
+    company_name = _rpv3_pdf_safe(company_name)
+    md = _rpv3_pdf_safe(md)
+
+    doc = SimpleDocTemplate(
+        str(path),
+        pagesize=A4,
+        rightMargin=1.35*cm,
+        leftMargin=1.35*cm,
+        topMargin=1.45*cm,
+        bottomMargin=1.35*cm
+    )
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="CoverTitleV3", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=24, leading=30, textColor=colors.HexColor("#0f172a"), spaceAfter=18))
+    styles.add(ParagraphStyle(name="CoverSubV3", parent=styles["BodyText"], fontName="Helvetica", fontSize=11, leading=15, textColor=colors.HexColor("#334155"), spaceAfter=6))
+    styles.add(ParagraphStyle(name="H1V3", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=15 if not executive else 16, leading=20, textColor=colors.HexColor("#0f172a"), spaceBefore=12, spaceAfter=8))
+    styles.add(ParagraphStyle(name="H2V3", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=12.5, leading=16, textColor=colors.HexColor("#075985"), spaceBefore=10, spaceAfter=6))
+    styles.add(ParagraphStyle(name="H3V3", parent=styles["Heading3"], fontName="Helvetica-Bold", fontSize=10.8, leading=14, textColor=colors.HexColor("#334155"), spaceBefore=8, spaceAfter=4))
+    styles.add(ParagraphStyle(name="BodyV3", parent=styles["BodyText"], fontName="Helvetica", fontSize=8.7 if not executive else 9.5, leading=12 if not executive else 13, textColor=colors.HexColor("#111827"), spaceAfter=4))
+    styles.add(ParagraphStyle(name="SmallV3", parent=styles["BodyText"], fontName="Helvetica", fontSize=7.1, leading=9.2, textColor=colors.HexColor("#111827")))
+
+    story = []
+    story.append(Spacer(1, 2.0*cm))
+    story.append(Paragraph(_rpb_html.escape(title), styles["CoverTitleV3"]))
+    story.append(Paragraph(f"Cliente: <b>{_rpb_html.escape(company_name)}</b>", styles["CoverSubV3"]))
+    story.append(Paragraph(f"Tipo de documento: {'Resumen ejecutivo' if executive else 'AuditorÃ­a completa'}", styles["CoverSubV3"]))
+    story.append(Paragraph(f"Generado: {_rpb_now_iso()}", styles["CoverSubV3"]))
+    story.append(Spacer(1, 1.0*cm))
+    story.append(Paragraph("Nota metodolÃ³gica: este documento usa evidencia pÃºblica visible. No representa mÃ©tricas privadas ni performance interna sin accesos del cliente.", styles["BodyV3"]))
+    story.append(PageBreak())
+
+    sections = _rpb_sections_from_markdown(md)
+    if sections:
+        story.append(Paragraph("Ãndice", styles["H1V3"]))
+        for idx, sec in enumerate(sections, start=1):
+            story.append(Paragraph(f"{idx}. {_rpb_html.escape(_rpv3_pdf_safe(sec.get('title') or 'SecciÃ³n'))}", styles["BodyV3"]))
+        story.append(PageBreak())
+
+    lines = md.splitlines()
+    i = 0
+    while i < len(lines):
+        line = _rpv3_pdf_safe(lines[i].rstrip())
+        if not line.strip():
+            story.append(Spacer(1, 3))
+            i += 1
+            continue
+
+        if line.startswith("|") and line.endswith("|"):
+            rows, next_i = _rpv3_table_rows(lines, i)
+            if rows:
+                max_cols = max(len(r) for r in rows)
+                norm = []
+                for r in rows:
+                    rr = r + [""] * (max_cols - len(r))
+                    norm.append([Paragraph(_rpb_html.escape(_rpv3_pdf_safe(c)), styles["SmallV3"]) for c in rr])
+                usable_width = A4[0] - 2.7*cm
+                col_widths = [usable_width / max_cols] * max_cols
+                tbl = Table(norm, colWidths=col_widths, repeatRows=1, splitByRow=1)
+                tbl.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cbd5e1")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                ]))
+                story.append(tbl)
+                story.append(Spacer(1, 8))
+                i = next_i
+                continue
+
+        escaped = _rpb_html.escape(line)
+        escaped = _rpb_re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+        if line.startswith("# "):
+            story.append(Paragraph(_rpb_html.escape(line[2:]), styles["H1V3"]))
+        elif line.startswith("## "):
+            story.append(Paragraph(_rpb_html.escape(line[3:]), styles["H1V3"]))
+        elif line.startswith("### "):
+            story.append(Paragraph(_rpb_html.escape(line[4:]), styles["H2V3"]))
+        elif _rpb_re.match(r"^\s*[-*]\s+", line):
+            item = _rpb_re.sub(r"^\s*[-*]\s+", "- ", line)
+            story.append(Paragraph(_rpb_html.escape(item), styles["BodyV3"]))
+        else:
+            story.append(Paragraph(escaped, styles["BodyV3"]))
+        i += 1
+
+    def _footer(canvas, doc_obj):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 7)
+        canvas.setFillColor(colors.HexColor("#64748b"))
+        canvas.drawString(1.35*cm, 0.75*cm, _rpv3_pdf_safe(f"{company_name} - {title}")[:95])
+        canvas.drawRightString(A4[0] - 1.35*cm, 0.75*cm, f"PÃ¡gina {doc_obj.page}")
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
+
+
+def _rpv3_extract_executive_md(full_md: str) -> str:
+    full_md = _rpv3_fix_text(full_md or "")
+    selected = _rpb_extract_executive_md(full_md)
+    if len(selected.strip()) < 600:
+        selected = "\n".join(full_md.splitlines()[:160])
+    return selected
+
+
+def _rpv3_build_html(req, report_id, created_at):
+    req.markdown_report = _rpv3_fix_text(req.markdown_report or "")
+    req.company_name = _rpv3_fix_text(req.company_name or "")
+    req.report_title = _rpv3_fix_text(req.report_title or "")
+    html = _rpb_build_interactive_html(req, report_id, created_at)
+    html = _rpv3_fix_text(html)
+    if '<meta charset="utf-8">' not in html.lower():
+        html = html.replace("<head>", "<head>\n<meta charset=\"utf-8\">", 1)
+    return html
+
+
+@app.post("/deliverables/report-package-v3")
+async def createReportPackageV3(request: ReportPackageRequest):
+    clean_req = _rpv3_clean_report_request(request, upload_to_drive=request.upload_to_drive)
+    local_req = _rpv3_clean_report_request(clean_req, upload_to_drive=False)
+
+    old_pdf = globals().get("_rpb_markdown_to_pdf")
+    old_html = globals().get("_rpb_build_interactive_html")
+    globals()["_rpb_markdown_to_pdf"] = _rpv3_markdown_to_pdf
+    globals()["_rpb_build_interactive_html"] = _rpv3_build_html
+    try:
+        result = _rpb_build_package(local_req)
+    finally:
+        if old_pdf:
+            globals()["_rpb_markdown_to_pdf"] = old_pdf
+        if old_html:
+            globals()["_rpb_build_interactive_html"] = old_html
+
+    result["collector"] = "report_package_builder_v3"
+    result["version"] = APP_VERSION
+    result["documentation_folder_name"] = "Documentacion"
+    result["technical_folder_name"] = "Tecnico"
+    result["notes"] = (result.get("notes") or []) + [
+        "4H.2-D: contenido espaÃ±ol normalizado a UTF-8/NFC y correcciÃ³n bÃ¡sica de mojibake.",
+        "PDF completo mejorado: portada, Ã­ndice, estilos, tablas legibles y pie de pÃ¡gina.",
+        "Carpetas Drive ASCII seguras: Documentacion/Tecnico."
+    ]
+
+    if clean_req.upload_to_drive:
+        drive = await _rpb_upload_package_with_existing_drive(clean_req, result)
+        result["drive"] = drive
+        if drive.get("status") != "completed":
+            result["status"] = "partial_completed"
+            errors = result.get("errors") or []
+            for err in drive.get("errors") or []:
+                errors.append(f"drive_webapp upload: {err}")
+            result["errors"] = errors
+
+    return result
+
+
+@app.post("/deliverables/report-package/regenerate-v3")
+async def regenerateReportPackageV3(request: ReportPackageRegenerateRequest):
+    req = ReportPackageRequest(
+        company_name=request.company_name,
+        report_title=request.report_title,
+        markdown_report=request.markdown_report,
+        executive_summary_markdown=request.executive_summary_markdown,
+        evidence_payload=request.evidence_payload,
+        social_metrics=request.social_metrics,
+        drive_folder_name=request.drive_folder_name,
+        documentation_folder_name="Documentacion",
+        technical_folder_name="Tecnico",
+        generate_interactive_html=request.regenerate_interactive_html,
+        generate_full_pdf=request.regenerate_full_pdf,
+        generate_executive_pdf=request.regenerate_executive_pdf,
+        upload_to_drive=request.upload_to_drive,
+        public_sharing=request.public_sharing,
+        filename_prefix=request.filename_prefix
+    )
+    return await createReportPackageV3(req)
+
