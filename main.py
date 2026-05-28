@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.20"
+APP_VERSION = "public-presence-collector-mvp-0.9.21"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -8616,5 +8616,181 @@ def getReportPackageEvidenceJson(report_id: str):
     matches = list((_RPB_ROOT / report_id / "tecnico").glob("05_*_evidencia_tecnica.json"))
     if not matches:
         return _rpb_JSONResponse({"status":"not_found","report_id":report_id}, status_code=404) if _rpb_JSONResponse else {"status":"not_found","report_id":report_id}
-    return _rpb_FileResponse(str(matches[0]), media_type="application/json", filename=matches[0].name) if _rpb_FileResponse else _rpb_json.loads(matches[0].read_text(encoding="utf-8"))
+    return _rpb_FileResponse(str(matches[0]), media_type="application/json", filename=matches[0].name) if _rpb_FileResponse else _rpb_json.loads(matches[0].read_text(encoding="utf-8"))\n\n# ============================================================
+# MICRO PATCH 4H.2-B - REPORT PACKAGE DRIVE VIA EXISTING WEBAPP
+# ============================================================
 
+def _rpb_model_copy_no_drive(req):
+    try:
+        return req.model_copy(update={"upload_to_drive": False})
+    except Exception:
+        try:
+            return req.copy(update={"upload_to_drive": False})
+        except Exception:
+            data = req.dict() if hasattr(req, "dict") else dict(req)
+            data["upload_to_drive"] = False
+            return ReportPackageRequest(**data)
+
+
+def _rpb_folder_path(*parts):
+    clean = []
+    for p in parts:
+        s = str(p or "").strip().strip("/").strip("\\")
+        if s:
+            clean.append(s)
+    return "/".join(clean)
+
+
+async def _rpb_upload_package_with_existing_drive(req, package_result):
+    if "_drive_upload_binary" not in globals():
+        return {
+            "requested": bool(getattr(req, "upload_to_drive", False)),
+            "status": "failed",
+            "reason": "_drive_upload_binary not available",
+            "integration": "existing_drive_webapp"
+        }
+
+    parent_folder = getattr(req, "drive_folder_name", None) or f"{getattr(req, 'company_name', 'Cliente')} - Auditoria Publica Integral - {_rpb_datetime.utcnow().strftime('%Y-%m-%d')}"
+    documentation_name = getattr(req, "documentation_folder_name", None) or "DocumentaciÃ³n"
+    technical_name = getattr(req, "technical_folder_name", None) or "TÃ©cnico"
+
+    documentation_folder = _rpb_folder_path(parent_folder, documentation_name)
+    technical_folder = _rpb_folder_path(parent_folder, documentation_name, technical_name)
+
+    files = package_result.get("files") or {}
+
+    plan = {
+        "interactive_html": ("text/html; charset=utf-8", documentation_folder),
+        "full_pdf": ("application/pdf", documentation_folder),
+        "executive_pdf": ("application/pdf", documentation_folder),
+        "markdown_source": ("text/markdown; charset=utf-8", technical_folder),
+        "evidence_json": ("application/json; charset=utf-8", technical_folder),
+    }
+
+    drive = {
+        "requested": True,
+        "status": "uploading",
+        "integration": "existing_drive_webapp",
+        "parent_folder_name": parent_folder,
+        "documentation_folder_name": documentation_name,
+        "technical_folder_name": technical_name,
+        "documentation_folder_path": documentation_folder,
+        "technical_folder_path": technical_folder,
+        "files": {}
+    }
+
+    errors = []
+
+    for key, tuple_value in plan.items():
+        mime_type, folder_name = tuple_value
+        item = files.get(key) or {}
+        path_value = item.get("path")
+        if not path_value:
+            drive["files"][key] = {"status": "skipped", "reason": "file path missing"}
+            continue
+
+        try:
+            p = _rpb_Path(path_value)
+            if not p.exists():
+                drive["files"][key] = {"status": "failed", "reason": f"file not found: {path_value}", "regenerable": True}
+                errors.append(f"{key}: file not found")
+                continue
+
+            upload = await _drive_upload_binary(
+                filename=p.name,
+                content=p.read_bytes(),
+                mime_type=mime_type,
+                folder_name=folder_name
+            )
+
+            file_status = upload.get("status") or upload.get("drive_status") or "unknown"
+            drive_url = upload.get("drive_url") or upload.get("file_url") or upload.get("webViewLink")
+            folder_url = upload.get("drive_folder_url") or upload.get("folder_url")
+
+            drive["files"][key] = {
+                "status": file_status,
+                "drive_url": drive_url,
+                "folder_url": folder_url,
+                "raw_upload_status": upload
+            }
+
+            if key in files:
+                files[key]["drive_url"] = drive_url
+                files[key]["drive_folder_url"] = folder_url
+                files[key]["drive_upload_status"] = file_status
+
+            if str(file_status).lower() not in ("completed", "uploaded", "ok", "success"):
+                errors.append(f"{key}: upload status {file_status}")
+
+        except Exception as exc:
+            drive["files"][key] = {"status": "failed", "reason": str(exc), "regenerable": True}
+            errors.append(f"{key}: {exc}")
+
+    uploaded_ok = [
+        k for k, v in drive["files"].items()
+        if str(v.get("status")).lower() in ("completed", "uploaded", "ok", "success")
+    ]
+    failed = [
+        k for k, v in drive["files"].items()
+        if str(v.get("status")).lower() not in ("completed", "uploaded", "ok", "success")
+    ]
+
+    drive["uploaded_count"] = len(uploaded_ok)
+    drive["failed_count"] = len(failed)
+    drive["status"] = "completed" if len(uploaded_ok) == 5 and not errors else ("partial_failed" if uploaded_ok else "failed")
+    if errors:
+        drive["errors"] = errors
+
+    return drive
+
+
+@app.post("/deliverables/report-package-v2")
+async def createReportPackageV2(request: ReportPackageRequest):
+    local_req = _rpb_model_copy_no_drive(request)
+    result = _rpb_build_package(local_req)
+    result["collector"] = "report_package_builder_v2"
+    result["version"] = APP_VERSION
+    result["drive"] = {
+        "requested": bool(request.upload_to_drive),
+        "status": "not_requested",
+        "integration": "existing_drive_webapp"
+    }
+
+    if request.upload_to_drive:
+        drive = await _rpb_upload_package_with_existing_drive(request, result)
+        result["drive"] = drive
+        if drive.get("status") != "completed":
+            result["status"] = "partial_completed"
+            existing_errors = result.get("errors") or []
+            for err in drive.get("errors") or []:
+                existing_errors.append(f"drive_webapp upload: {err}")
+            result["errors"] = existing_errors
+
+    notes = result.get("notes") or []
+    notes.append("4H.2-B: Drive upload uses existing DRIVE_UPLOAD_WEBAPP_URL/DRIVE_UPLOAD_SECRET integration.")
+    notes.append("Documentation folder is requested as parent/DocumentaciÃ³n and technical files as parent/DocumentaciÃ³n/TÃ©cnico.")
+    result["notes"] = notes
+    return result
+
+
+@app.post("/deliverables/report-package/regenerate-v2")
+async def regenerateReportPackageV2(request: ReportPackageRegenerateRequest):
+    req = ReportPackageRequest(
+        company_name=request.company_name,
+        report_title=request.report_title,
+        markdown_report=request.markdown_report,
+        executive_summary_markdown=request.executive_summary_markdown,
+        evidence_payload=request.evidence_payload,
+        social_metrics=request.social_metrics,
+        drive_folder_name=request.drive_folder_name,
+        documentation_folder_name=request.documentation_folder_name,
+        technical_folder_name=request.technical_folder_name,
+        generate_interactive_html=request.regenerate_interactive_html,
+        generate_full_pdf=request.regenerate_full_pdf,
+        generate_executive_pdf=request.regenerate_executive_pdf,
+        upload_to_drive=request.upload_to_drive,
+        public_sharing=request.public_sharing,
+        filename_prefix=request.filename_prefix
+    )
+    return await createReportPackageV2(req)
+\n
