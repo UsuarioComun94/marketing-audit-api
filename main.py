@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import base64
@@ -7954,7 +7954,9 @@ def auditInstagramPostsByUrlCompact(request: InstagramPostsByUrlCompactRequest):
             "Usar Drive/report_id para evidencia completa si el endpoint base la genero.",
             "La muestra esta limitada a 12 posts en Render por estabilidad operativa."
         ]
-    }\n\n# ============================================================
+    }
+
+# ============================================================
 # MICRO PATCH 4H.1-B.1 - INSTAGRAM POSTS COMPACT V2 ASYNC FIX
 # ============================================================
 
