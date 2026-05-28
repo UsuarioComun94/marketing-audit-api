@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.27"
+APP_VERSION = "public-presence-collector-mvp-0.9.28"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -9315,7 +9315,7 @@ def _rpv4_build_package(req):
 
     if req.generate_executive_pdf:
         try:
-            exec_md = _rpv3_fix_text(req.executive_summary_markdown or _rpv3_extract_executive_md(markdown_report))
+            exec_md = _rpv4_executive_md_4h3c(markdown_report, req.executive_summary_markdown)
             _rpv3_markdown_to_pdf(executive_pdf_path, f"{req.report_title} - Resumen Ejecutivo", exec_md, req.company_name, executive=True)
             files["executive_pdf"] = {"status": "created", "path": str(executive_pdf_path)}
         except Exception as exc:
@@ -10162,4 +10162,153 @@ def _rpv3_markdown_to_pdf(path, title, md, company_name, executive=False):
         canvas.restoreState()
 
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
+
+# ============================================================
+# HOTFIX 4H.3-C - HTML ENCODING + EXECUTIVE SUMMARY
+# ============================================================
+
+def _rpv3_fix_text(value):
+    if not isinstance(value, str):
+        return value
+    text = value
+    replacements = {
+        "\u00c3\u00a1": "\u00e1", "\u00c3\u00a9": "\u00e9", "\u00c3\u00ad": "\u00ed", "\u00c3\u00b3": "\u00f3", "\u00c3\u00ba": "\u00fa",
+        "\u00c3\u00b1": "\u00f1", "\u00c3\u0091": "\u00d1", "\u00c3\u00bc": "\u00fc", "\u00c3\u009c": "\u00dc",
+        "\u00c2\u00bf": "\u00bf", "\u00c2\u00a1": "\u00a1", "\u00c2\u00b0": "\u00b0",
+        "\u00e2\u0080\u0093": "-", "\u00e2\u0080\u0094": "-", "\u00e2\u0080\u0098": "'", "\u00e2\u0080\u0099": "'",
+        "\u00e2\u0080\u009c": '"', "\u00e2\u0080\u009d": '"', "\u00e2\u0080\u00a6": "...", "\u00e2\u0080\u00a2": "-",
+        "Auditor\u00c3\u00ada": "Auditor\u00eda",
+        "auditor\u00c3\u00ada": "auditor\u00eda",
+        "p\u00c3\u00bablica": "p\u00fablica",
+        "P\u00c3\u00bablica": "P\u00fablica",
+        "M\u00c3\u00a9tricas": "M\u00e9tricas",
+        "m\u00c3\u00a9tricas": "m\u00e9tricas",
+        "t\u00c3\u00a9cnicos": "t\u00e9cnicos",
+        "t\u00c3\u00a9cnica": "t\u00e9cnica",
+        "due\u00c3\u00b1os": "due\u00f1os",
+        "Versi\u00c3\u00b3n": "Versi\u00f3n",
+        "interacci\u00c3\u00b3n": "interacci\u00f3n",
+        "diagn\u00c3\u00b3stico": "diagn\u00f3stico",
+        "acci\u00c3\u00b3n": "acci\u00f3n",
+        "Documentaci\u00c3\u00b3n": "Documentaci\u00f3n",
+        "T\u00c3\u00a9cnico": "T\u00e9cnico",
+    }
+    for _ in range(5):
+        before = text
+        for bad, good in replacements.items():
+            text = text.replace(bad, good)
+        if text == before:
+            break
+    return text
+
+
+def _rpv3_fix_obj(obj):
+    if isinstance(obj, str):
+        return _rpv3_fix_text(obj)
+    if isinstance(obj, list):
+        return [_rpv3_fix_obj(x) for x in obj]
+    if isinstance(obj, tuple):
+        return tuple(_rpv3_fix_obj(x) for x in obj)
+    if isinstance(obj, dict):
+        return {(_rpv3_fix_text(k) if isinstance(k, str) else k): _rpv3_fix_obj(v) for k, v in obj.items()}
+    return obj
+
+
+def _rpv4_section_by_title_4h3c(full_md, needles):
+    full_md = _rpv3_fix_text(full_md or "")
+    sections = _rpv4_sections_from_markdown(full_md)
+    for sec in sections:
+        title = _rpv3_fix_text(sec.get("title") or "").lower()
+        if any(n.lower() in title for n in needles):
+            return _rpv3_fix_text(sec.get("markdown") or "").strip()
+    return ""
+
+
+def _rpv4_take_lines_4h3c(text, max_lines=55):
+    lines = [ln for ln in (_rpv3_fix_text(text or "")).splitlines() if ln.strip()]
+    return "\n".join(lines[:max_lines]).strip()
+
+
+def _rpv4_executive_md_4h3c(full_md, provided=None):
+    provided = _rpv3_fix_text(provided or "").strip()
+    if len(provided) >= 1200 and ("##" in provided or "|" in provided):
+        return provided
+
+    full_md = _rpv3_fix_text(full_md or "")
+    resumen = _rpv4_section_by_title_4h3c(full_md, ["resumen ejecutivo"])
+    estado = _rpv4_section_by_title_4h3c(full_md, ["estado de recoleccion", "estado de recolecciÃ³n"])
+    evidencia = _rpv4_section_by_title_4h3c(full_md, ["evidencia publica", "evidencia pÃºblica"])
+    semaforo = _rpv4_section_by_title_4h3c(full_md, ["semaforo", "semÃ¡foro"])
+    metricas = _rpv4_section_by_title_4h3c(full_md, ["metricas publicas", "mÃ©tricas pÃºblicas"])
+    lectura = _rpv4_section_by_title_4h3c(full_md, ["lectura ejecutiva"])
+    proximos = _rpv4_section_by_title_4h3c(full_md, ["proximos pasos", "prÃ³ximos pasos"])
+
+    parts = [
+        "## Resumen ejecutivo ampliado",
+        _rpv4_take_lines_4h3c(resumen or provided or full_md, 38),
+        "## Datos pÃºblicos relevantes",
+        _rpv4_take_lines_4h3c(evidencia, 32),
+        "## Estado de recolecciÃ³n y limitaciones",
+        _rpv4_take_lines_4h3c(estado, 34),
+        "## SemÃ¡foro de prioridades",
+        _rpv4_take_lines_4h3c(semaforo, 36),
+        "## MÃ©tricas pÃºblicas de redes",
+        _rpv4_take_lines_4h3c(metricas, 34),
+        "## Lectura para dueÃ±os",
+        _rpv4_take_lines_4h3c(lectura, 18),
+        "## PrÃ³ximos pasos",
+        _rpv4_take_lines_4h3c(proximos, 20),
+    ]
+    return _rpv3_fix_text("\n\n".join([p for p in parts if p and p.strip()]))
+
+
+def _rpv4_build_interactive_html(req, report_id, created_at):
+    title = _rpv3_fix_text(req.report_title)
+    company = _rpv3_fix_text(req.company_name)
+    md = _rpv3_fix_text(req.markdown_report or "")
+    sections = _rpv4_sections_from_markdown(md)
+
+    nav_parts = []
+    panel_parts = []
+    for idx, sec in enumerate(sections):
+        sid = "sec_" + str(idx)
+        active = "active" if idx == 0 else ""
+        sec_title = _rpv3_fix_text(sec.get("title") or ("Seccion " + str(idx + 1)))
+        nav_parts.append('<button class="tab ' + active + '" data-target="' + sid + '">' + _rpb_html.escape(sec_title, quote=True) + '</button>')
+        panel_parts.append('<section id="' + sid + '" class="panel ' + active + '">' + _rpv4_markdown_to_basic_html(_rpv3_fix_text(sec.get("markdown") or "")) + '</section>')
+
+    evidence_json = _rpb_html.escape(_rpb_json.dumps(_rpv3_fix_obj(req.evidence_payload or {}), ensure_ascii=False, indent=2), quote=True)
+    metrics_json = _rpb_html.escape(_rpb_json.dumps(_rpv3_fix_obj(req.social_metrics or {}), ensure_ascii=False, indent=2), quote=True)
+
+    head = [
+        "<!doctype html>", '<html lang="es">', "<head>", '<meta charset="utf-8">',
+        '<meta http-equiv="Content-Type" content="text/html; charset=utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        "<title>" + _rpb_html.escape(title, quote=True) + " - " + _rpb_html.escape(company, quote=True) + "</title>",
+        "<style>",
+        ":root{--bg:#f8fafc;--ink:#0f172a;--muted:#64748b;--line:#cbd5e1;--primary:#0f172a;--accent:#0369a1;--soft:#e0f2fe;--card:#ffffff;}",
+        "*{box-sizing:border-box;}body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--ink);}",
+        "header{padding:28px 32px;background:linear-gradient(135deg,#0f172a,#1e293b);color:white;position:sticky;top:0;z-index:5;box-shadow:0 4px 20px rgba(15,23,42,.22);}",
+        "h1{margin:0 0 8px;font-size:30px;letter-spacing:-.02em}.meta{color:#e2e8f0;font-size:13px;display:flex;gap:14px;flex-wrap:wrap;}",
+        ".layout{display:grid;grid-template-columns:300px 1fr;min-height:calc(100vh - 98px);}nav{border-right:1px solid var(--line);padding:18px;background:#fff;position:sticky;top:98px;height:calc(100vh - 98px);overflow:auto;}",
+        ".tab{display:block;width:100%;text-align:left;margin:0 0 8px;padding:11px 12px;background:#f8fafc;color:var(--ink);border:1px solid var(--line);border-radius:12px;cursor:pointer;font-weight:700;}",
+        ".tab.active,.tab:hover{border-color:var(--accent);background:var(--soft);}main{padding:24px;max-width:1360px;}",
+        ".panel{display:none;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px;box-shadow:0 10px 30px rgba(15,23,42,.08);}.panel.active{display:block;}",
+        "h2{color:var(--primary);margin-top:8px;border-bottom:2px solid var(--soft);padding-bottom:8px;}h3{color:var(--accent);margin-top:24px;}p,li{line-height:1.58}.space{height:8px;}",
+        ".table-wrap{overflow:auto;margin:14px 0;border:1px solid var(--line);border-radius:12px;}table{border-collapse:collapse;width:100%;min-width:760px;font-size:14px;}td,th{border-bottom:1px solid var(--line);padding:10px;vertical-align:top;}tr:first-child td{font-weight:700;color:white;background:var(--primary);}",
+        ".badge{display:inline-block;padding:4px 9px;border:1px solid var(--line);border-radius:999px;color:var(--accent);background:var(--soft);font-weight:700;}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0;}.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 6px 16px rgba(15,23,42,.06);}",
+        "details{margin:14px 0;border:1px solid var(--line);border-radius:12px;padding:12px;background:#f8fafc;}summary{cursor:pointer;color:var(--accent);font-weight:700;}pre{white-space:pre-wrap;overflow:auto;max-height:480px;background:#0f172a;border-radius:12px;padding:12px;color:#e2e8f0;}footer{color:var(--muted);font-size:12px;padding:24px;text-align:center;}@media(max-width:900px){.layout{grid-template-columns:1fr;}nav{position:relative;top:0;height:auto;}}",
+        "</style>", "</head>", "<body>", "<header>",
+        "<h1>" + _rpb_html.escape(title, quote=True) + "</h1>",
+        '<div class="meta"><span>Cliente: <strong>' + _rpb_html.escape(company, quote=True) + "</strong></span><span>Report ID: " + _rpb_html.escape(report_id, quote=True) + "</span><span>Creado: " + _rpb_html.escape(created_at, quote=True) + "</span><span>Tipo: " + _rpb_html.escape(_rpv3_fix_text(req.client_type or "auditoria publica"), quote=True) + "</span></div>",
+        "</header>", '<div class="layout">', "<nav>" + "".join(nav_parts) + "</nav>", "<main>",
+        '<div class="cards"><div class="card"><span class="badge">Informe completo</span><p>Auditor&iacute;a p&uacute;blica integral con evidencia, diagn&oacute;stico y plan de acci&oacute;n.</p></div><div class="card"><span class="badge">Versi&oacute;n PDF</span><p>El PDF completo conserva el mismo contenido, sin interacci&oacute;n.</p></div><div class="card"><span class="badge">Resumen ejecutivo</span><p>Documento separado para due&ntilde;os y gerencia.</p></div></div>',
+        "".join(panel_parts),
+        '<section class="panel active" style="display:block;margin-top:18px;"><h2>Anexos t&eacute;cnicos</h2><details><summary>Evidencia t&eacute;cnica JSON</summary><pre>' + evidence_json + '</pre></details><details><summary>M&eacute;tricas sociales JSON</summary><pre>' + metrics_json + '</pre></details></section>',
+        "</main></div>",
+        "<footer>Generado por Marketing Auditor. Las m&eacute;tricas p&uacute;blicas son parciales y no representan performance interna.</footer>",
+        "<script>document.querySelectorAll('.tab').forEach(function(btn){btn.addEventListener('click',function(){document.querySelectorAll('.tab').forEach(function(b){b.classList.remove('active');});document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('active');});btn.classList.add('active');var target=document.getElementById(btn.dataset.target);if(target)target.classList.add('active');});});</script>",
+        "</body></html>"
+    ]
+    return _rpv3_fix_text("\n".join(head))
 
