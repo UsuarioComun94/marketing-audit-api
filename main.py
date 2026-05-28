@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.25"
+APP_VERSION = "public-presence-collector-mvp-0.9.26"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -9480,4 +9480,457 @@ def _rpv3_markdown_to_pdf(path, title, md, company_name, executive=False):
     md = _rpv3_fix_text(md or "")
     company_name = _rpv3_fix_text(company_name)
     return _rpb_markdown_to_pdf(path, title, md, company_name, executive=executive)
+
+# ============================================================
+# MICRO PATCH 4H.3-A - AUDIT RUN STATE / COLLECTION VISIBILITY
+# ============================================================
+
+from datetime import datetime as _ars_datetime, timezone as _ars_timezone
+from uuid import uuid4 as _ars_uuid4
+from pydantic import BaseModel as _ARSBaseModel
+
+
+_AUDIT_RUN_STATE_STORE = {}
+
+
+_AUDIT_DEFAULT_MODULES = [
+    {
+        "module": "api_status",
+        "label": "Estado backend",
+        "category": "system",
+        "endpoint": "GET /api/status",
+        "required_for": ["complete_audit", "partial_audit"],
+        "blocking_if_failed": True,
+    },
+    {
+        "module": "collector_config",
+        "label": "ConfiguraciÃ³n collectors",
+        "category": "system",
+        "endpoint": "GET /debug/collector-config",
+        "required_for": ["complete_audit"],
+        "blocking_if_failed": False,
+    },
+    {
+        "module": "public_presence_compact",
+        "label": "Presencia pÃºblica compacta",
+        "category": "public_presence",
+        "endpoint": "POST /collect/public-presence-compact",
+        "required_for": ["complete_audit", "partial_audit"],
+        "blocking_if_failed": False,
+    },
+    {
+        "module": "text_report",
+        "label": "TXT fuente de presencia pÃºblica",
+        "category": "public_presence",
+        "endpoint": "GET /deliverables/text/{report_id}.txt",
+        "required_for": ["complete_audit"],
+        "blocking_if_failed": False,
+    },
+    {
+        "module": "visual_site",
+        "label": "AuditorÃ­a visual del sitio",
+        "category": "website",
+        "endpoint": "POST /audit/visual-site",
+        "required_for": ["complete_audit"],
+        "blocking_if_failed": False,
+    },
+    {
+        "module": "instagram_profile_metrics",
+        "label": "Instagram perfil pÃºblico",
+        "category": "instagram",
+        "endpoint": "POST /audit/instagram-profile-metrics",
+        "required_for": ["complete_audit", "partial_audit"],
+        "blocking_if_failed": False,
+    },
+    {
+        "module": "instagram_posts_compact_v2",
+        "label": "Instagram publicaciones compactas",
+        "category": "instagram",
+        "endpoint": "POST /audit/instagram-posts-by-url-compact-v2",
+        "required_for": ["complete_audit"],
+        "blocking_if_failed": False,
+    },
+    {
+        "module": "social_public_averages_instagram",
+        "label": "Promedios pÃºblicos visibles de Instagram",
+        "category": "instagram",
+        "endpoint": "POST /audit/social-public-averages",
+        "required_for": ["complete_audit"],
+        "blocking_if_failed": False,
+    },
+    {
+        "module": "facebook_public",
+        "label": "Facebook pÃºblico",
+        "category": "facebook",
+        "endpoint": "POST /audit/social-public",
+        "required_for": ["complete_audit"],
+        "blocking_if_failed": False,
+    },
+    {
+        "module": "linkedin_public",
+        "label": "LinkedIn pÃºblico",
+        "category": "linkedin",
+        "endpoint": "POST /audit/social-public",
+        "required_for": ["complete_audit"],
+        "blocking_if_failed": False,
+    },
+    {
+        "module": "marketplace_manual_evidence",
+        "label": "Marketplace / Mercado Libre evidencia",
+        "category": "marketplace",
+        "endpoint": "manual_or_external_evidence",
+        "required_for": ["complete_audit"],
+        "blocking_if_failed": False,
+    },
+    {
+        "module": "tracking_internal_access",
+        "label": "Tracking / accesos internos",
+        "category": "internal_access",
+        "endpoint": "owner_access_required",
+        "required_for": ["complete_audit"],
+        "blocking_if_failed": False,
+        "default_status": "requires_access",
+    },
+    {
+        "module": "report_package_v4",
+        "label": "Paquete documental final",
+        "category": "deliverables",
+        "endpoint": "POST /deliverables/report-package-v4",
+        "required_for": ["deliverable"],
+        "blocking_if_failed": False,
+    },
+]
+
+
+_AUDIT_VALID_STATUSES = {
+    "pending",
+    "running",
+    "completed",
+    "partial",
+    "failed",
+    "skipped",
+    "requires_access",
+    "not_available",
+    "not_calculable",
+}
+
+
+class AuditRunStartRequest(_ARSBaseModel):
+    company_name: str | None = None
+    assets: dict | None = None
+    required_modules: list[str] | None = None
+    notes: list[str] | None = None
+
+
+class AuditRunModuleUpdateRequest(_ARSBaseModel):
+    run_id: str
+    module: str
+    status: str
+    endpoint: str | None = None
+    evidence: dict | None = None
+    limitations: list[str] | None = None
+    drive_urls: dict | None = None
+    next_action: str | None = None
+    confidence: str | None = None
+
+
+class AuditRunBulkUpdateRequest(_ARSBaseModel):
+    run_id: str
+    updates: list[AuditRunModuleUpdateRequest]
+
+
+class AuditRunReadinessRequest(_ARSBaseModel):
+    run_id: str
+
+
+def _ars_now():
+    return _ars_datetime.now(_ars_timezone.utc).isoformat()
+
+
+def _ars_slug(value):
+    text = str(value or "audit").strip().lower()
+    out = []
+    for ch in text:
+        if ch.isalnum():
+            out.append(ch)
+        elif ch in (" ", "-", "_"):
+            out.append("_")
+    slug = "".join(out).strip("_")
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    return slug or "audit"
+
+
+def _ars_initial_modules(required_modules=None):
+    wanted = set(required_modules or [])
+    modules = {}
+    for item in _AUDIT_DEFAULT_MODULES:
+        module_name = item["module"]
+        status = item.get("default_status") or "pending"
+        if wanted and module_name not in wanted and "system" not in item.get("category", ""):
+            status = "skipped"
+        modules[module_name] = {
+            "module": module_name,
+            "label": item.get("label"),
+            "category": item.get("category"),
+            "endpoint": item.get("endpoint"),
+            "status": status,
+            "required_for": item.get("required_for", []),
+            "blocking_if_failed": bool(item.get("blocking_if_failed", False)),
+            "evidence": {},
+            "limitations": [],
+            "drive_urls": {},
+            "next_action": None,
+            "confidence": None,
+            "updated_at": None,
+        }
+    return modules
+
+
+def _ars_compute_readiness(run):
+    modules = run.get("modules", {})
+
+    completed_like = {"completed", "partial"}
+    evidence_modules = [
+        "public_presence_compact",
+        "visual_site",
+        "instagram_profile_metrics",
+        "instagram_posts_compact_v2",
+        "social_public_averages_instagram",
+        "facebook_public",
+        "linkedin_public",
+        "marketplace_manual_evidence",
+    ]
+
+    system_blockers = []
+    for name, mod in modules.items():
+        if mod.get("blocking_if_failed") and mod.get("status") in ("failed", "not_available"):
+            system_blockers.append(name)
+
+    collected_evidence = [
+        name for name in evidence_modules
+        if modules.get(name, {}).get("status") in completed_like
+    ]
+
+    failed_modules = [
+        name for name, mod in modules.items()
+        if mod.get("status") == "failed"
+    ]
+
+    pending_modules = [
+        name for name, mod in modules.items()
+        if mod.get("status") in ("pending", "running")
+    ]
+
+    requires_access_modules = [
+        name for name, mod in modules.items()
+        if mod.get("status") == "requires_access"
+    ]
+
+    instagram_profile_ok = modules.get("instagram_profile_metrics", {}).get("status") in completed_like
+    instagram_posts_ok = modules.get("instagram_posts_compact_v2", {}).get("status") in completed_like
+    instagram_averages_ok = modules.get("social_public_averages_instagram", {}).get("status") in completed_like
+
+    social_state = "not_started"
+    if instagram_profile_ok and instagram_posts_ok and instagram_averages_ok:
+        social_state = "instagram_public_metrics_ready"
+    elif instagram_profile_ok and not instagram_posts_ok:
+        social_state = "instagram_profile_ready_posts_pending"
+    elif instagram_profile_ok and instagram_posts_ok and not instagram_averages_ok:
+        social_state = "instagram_posts_ready_averages_pending"
+    elif any(modules.get(x, {}).get("status") == "failed" for x in ["instagram_profile_metrics", "instagram_posts_compact_v2", "social_public_averages_instagram"]):
+        social_state = "instagram_partial_or_failed"
+
+    if system_blockers:
+        readiness = "blocked"
+        can_generate = False
+        reason = "Hay bloqueadores tÃ©cnicos del sistema."
+    elif len(collected_evidence) >= 3:
+        readiness = "ready_for_complete_or_strong_partial_report"
+        can_generate = True
+        reason = "Hay suficiente evidencia pÃºblica recolectada para generar auditorÃ­a con limitaciones declaradas."
+    elif len(collected_evidence) >= 1:
+        readiness = "ready_for_partial_report"
+        can_generate = True
+        reason = "Hay evidencia pÃºblica mÃ­nima; el reporte debe marcar limitaciones y mÃ³dulos pendientes."
+    else:
+        readiness = "not_ready"
+        can_generate = False
+        reason = "No hay evidencia pÃºblica suficiente para generar una auditorÃ­a defendible."
+
+    next_actions = []
+    priority_order = [
+        "api_status",
+        "collector_config",
+        "public_presence_compact",
+        "text_report",
+        "visual_site",
+        "instagram_profile_metrics",
+        "instagram_posts_compact_v2",
+        "social_public_averages_instagram",
+        "facebook_public",
+        "linkedin_public",
+        "marketplace_manual_evidence",
+        "report_package_v4",
+    ]
+
+    for name in priority_order:
+        mod = modules.get(name)
+        if not mod:
+            continue
+        if mod.get("status") in ("pending", "running", "failed"):
+            next_actions.append({
+                "module": name,
+                "status": mod.get("status"),
+                "endpoint": mod.get("endpoint"),
+                "action": mod.get("next_action") or f"Ejecutar o corregir {mod.get('label')}",
+            })
+
+    return {
+        "readiness": readiness,
+        "can_generate_report": can_generate,
+        "reason": reason,
+        "social_collection_state": social_state,
+        "completed_or_partial_modules": collected_evidence,
+        "failed_modules": failed_modules,
+        "pending_modules": pending_modules,
+        "requires_access_modules": requires_access_modules,
+        "system_blockers": system_blockers,
+        "next_actions": next_actions[:8],
+        "guardrail": "Si can_generate_report=true pero hay mÃ³dulos pending/failed/requires_access, el informe final debe marcar esos puntos como limitaciones y no inventar mÃ©tricas privadas.",
+    }
+
+
+def _ars_public_run(run):
+    readiness = _ars_compute_readiness(run)
+    summary = {
+        "total_modules": len(run.get("modules", {})),
+        "completed": len([m for m in run.get("modules", {}).values() if m.get("status") == "completed"]),
+        "partial": len([m for m in run.get("modules", {}).values() if m.get("status") == "partial"]),
+        "failed": len([m for m in run.get("modules", {}).values() if m.get("status") == "failed"]),
+        "pending": len([m for m in run.get("modules", {}).values() if m.get("status") == "pending"]),
+        "running": len([m for m in run.get("modules", {}).values() if m.get("status") == "running"]),
+        "requires_access": len([m for m in run.get("modules", {}).values() if m.get("status") == "requires_access"]),
+        "skipped": len([m for m in run.get("modules", {}).values() if m.get("status") == "skipped"]),
+    }
+    return {
+        **run,
+        "summary": summary,
+        "readiness": readiness,
+    }
+
+
+@app.post("/audit/run-state/start")
+async def startAuditRunState(request: AuditRunStartRequest):
+    run_id = f"{_ars_slug(request.company_name)}_{_ars_datetime.now(_ars_timezone.utc).strftime('%Y%m%d_%H%M%S')}_{str(_ars_uuid4())[:8]}"
+    run = {
+        "run_id": run_id,
+        "company_name": request.company_name,
+        "assets": request.assets or {},
+        "status": "running",
+        "created_at": _ars_now(),
+        "updated_at": _ars_now(),
+        "notes": request.notes or [],
+        "modules": _ars_initial_modules(request.required_modules),
+    }
+    _AUDIT_RUN_STATE_STORE[run_id] = run
+    return _ars_public_run(run)
+
+
+@app.post("/audit/run-state/update")
+async def updateAuditRunState(request: AuditRunModuleUpdateRequest):
+    run = _AUDIT_RUN_STATE_STORE.get(request.run_id)
+    if not run:
+        return {
+            "status": "not_found",
+            "reason": "run_id not found",
+            "run_id": request.run_id,
+        }
+
+    status = (request.status or "").strip().lower()
+    if status not in _AUDIT_VALID_STATUSES:
+        return {
+            "status": "invalid_status",
+            "valid_statuses": sorted(list(_AUDIT_VALID_STATUSES)),
+            "received": request.status,
+        }
+
+    modules = run.setdefault("modules", {})
+    mod = modules.get(request.module) or {
+        "module": request.module,
+        "label": request.module,
+        "category": "custom",
+        "endpoint": request.endpoint,
+        "required_for": [],
+        "blocking_if_failed": False,
+        "evidence": {},
+        "limitations": [],
+        "drive_urls": {},
+    }
+
+    mod["status"] = status
+    if request.endpoint:
+        mod["endpoint"] = request.endpoint
+    if request.evidence is not None:
+        mod["evidence"] = request.evidence
+    if request.limitations is not None:
+        mod["limitations"] = request.limitations
+    if request.drive_urls is not None:
+        mod["drive_urls"] = request.drive_urls
+    if request.next_action is not None:
+        mod["next_action"] = request.next_action
+    if request.confidence is not None:
+        mod["confidence"] = request.confidence
+
+    mod["updated_at"] = _ars_now()
+    modules[request.module] = mod
+    run["updated_at"] = _ars_now()
+
+    if request.module == "report_package_v4" and status == "completed":
+        run["status"] = "completed"
+
+    return _ars_public_run(run)
+
+
+@app.post("/audit/run-state/bulk-update")
+async def bulkUpdateAuditRunState(request: AuditRunBulkUpdateRequest):
+    results = []
+    for update in request.updates:
+        update.run_id = request.run_id
+        results.append(await updateAuditRunState(update))
+    run = _AUDIT_RUN_STATE_STORE.get(request.run_id)
+    if not run:
+        return {"status": "not_found", "run_id": request.run_id}
+    return _ars_public_run(run)
+
+
+@app.get("/audit/run-state/{run_id}")
+async def getAuditRunState(run_id: str):
+    run = _AUDIT_RUN_STATE_STORE.get(run_id)
+    if not run:
+        return {
+            "status": "not_found",
+            "run_id": run_id,
+            "reason": "No audit run state exists for this run_id.",
+        }
+    return _ars_public_run(run)
+
+
+@app.post("/audit/run-state/readiness")
+async def getAuditRunReadiness(request: AuditRunReadinessRequest):
+    run = _AUDIT_RUN_STATE_STORE.get(request.run_id)
+    if not run:
+        return {
+            "status": "not_found",
+            "run_id": request.run_id,
+            "reason": "No audit run state exists for this run_id.",
+        }
+    return {
+        "run_id": request.run_id,
+        "company_name": run.get("company_name"),
+        "status": run.get("status"),
+        "updated_at": run.get("updated_at"),
+        "readiness": _ars_compute_readiness(run),
+        "summary": _ars_public_run(run).get("summary"),
+    }
 
