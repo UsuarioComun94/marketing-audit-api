@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.17"
+APP_VERSION = "public-presence-collector-mvp-0.9.18"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -7954,5 +7954,211 @@ def auditInstagramPostsByUrlCompact(request: InstagramPostsByUrlCompactRequest):
             "Usar Drive/report_id para evidencia completa si el endpoint base la genero.",
             "La muestra esta limitada a 12 posts en Render por estabilidad operativa."
         ]
+    }\n\n# ============================================================
+# MICRO PATCH 4H.1-B.1 - INSTAGRAM POSTS COMPACT V2 ASYNC FIX
+# ============================================================
+
+def _igpuc_v2_jsonable(obj):
+    import json
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "body"):
+        try:
+            body = obj.body
+            if isinstance(body, bytes):
+                body = body.decode("utf-8", errors="replace")
+            return json.loads(body)
+        except Exception:
+            pass
+    if hasattr(obj, "model_dump"):
+        try:
+            return obj.model_dump()
+        except Exception:
+            pass
+    if hasattr(obj, "dict"):
+        try:
+            return obj.dict()
+        except Exception:
+            pass
+    return {}
+
+
+def _igpuc_v2_count_metrics(posts_compact):
+    likes = []
+    dates = 0
+    hashtags = 0
+    completed = 0
+    failed = 0
+    for p in posts_compact or []:
+        status = p.get("parse_status")
+        if status == "failed":
+            failed += 1
+        else:
+            completed += 1
+        if p.get("date_iso"):
+            dates += 1
+        if p.get("hashtags"):
+            hashtags += 1
+        lv = p.get("likes_count")
+        if lv is not None and str(lv).strip() != "":
+            try:
+                likes.append(float(str(lv).replace(",", ".")))
+            except Exception:
+                pass
+    avg_likes = round(sum(likes) / len(likes), 2) if likes else None
+    return {
+        "posts_completed": completed,
+        "posts_failed": failed,
+        "likes_visible_count": len(likes),
+        "likes_missing_count": max(len(posts_compact or []) - len(likes), 0),
+        "posts_with_visible_dates": dates,
+        "posts_with_visible_likes": len(likes),
+        "posts_with_visible_hashtags": hashtags,
+        "average_likes_last_posts_visible_only": avg_likes
     }
 
+
+@app.post("/audit/instagram-posts-by-url-compact-v2")
+async def auditInstagramPostsByUrlCompactV2(request: InstagramPostsByUrlCompactRequest):
+    import inspect
+
+    raw_urls = list(request.post_urls or [])
+    urls = []
+    seen = set()
+    for u in raw_urls:
+        s = str(u).strip()
+        if not s:
+            continue
+        if "instagram.com/" not in s:
+            continue
+        if s not in seen:
+            seen.add(s)
+            urls.append(s)
+        if len(urls) >= min(int(request.max_posts or 12), 12):
+            break
+
+    if not urls:
+        return {
+            "collector": "instagram_posts_by_url_compact_v2",
+            "version": APP_VERSION,
+            "status": "failed_validation",
+            "reason": "No valid Instagram post URLs provided.",
+            "posts_received": 0
+        }
+
+    if "InstagramPostsByUrlRequest" not in globals() or "auditInstagramPostsByUrl" not in globals():
+        return {
+            "collector": "instagram_posts_by_url_compact_v2",
+            "version": APP_VERSION,
+            "status": "failed_runtime",
+            "reason": "Base endpoint auditInstagramPostsByUrl is not available.",
+            "posts_received": len(urls)
+        }
+
+    base_payload = {
+        "post_urls": urls,
+        "company_name": request.company_name,
+        "profile_url": request.profile_url,
+        "max_posts": min(int(request.max_posts or 12), 12),
+        "wait_ms": request.wait_ms,
+        "timeout_ms": request.timeout_ms,
+        "upload_to_drive": request.upload_to_drive,
+        "drive_folder_name": request.drive_folder_name,
+        "filename_prefix": request.filename_prefix or "instagram_posts_by_url_compact_v2"
+    }
+
+    base_req = InstagramPostsByUrlRequest(**base_payload)
+
+    try:
+        base_result = auditInstagramPostsByUrl(base_req)
+        if inspect.isawaitable(base_result):
+            base_result = await base_result
+        full_dict = _igpuc_v2_jsonable(base_result)
+    except Exception as exc:
+        return {
+            "collector": "instagram_posts_by_url_compact_v2",
+            "version": APP_VERSION,
+            "status": "failed_runtime",
+            "reason": f"Base endpoint call failed: {exc}",
+            "posts_requested": len(urls)
+        }
+
+    posts_full = _igpuc_extract_posts(full_dict) if "_igpuc_extract_posts" in globals() else []
+    posts_compact = [
+        _igpuc_slim_post(p, max_hashtags=int(request.max_hashtags_per_post or 20))
+        for p in posts_full
+    ] if "_igpuc_slim_post" in globals() else []
+
+    fallback_counts = _igpuc_v2_count_metrics(posts_compact)
+
+    public_averages = None
+    if "_spa_build_public_averages" in globals():
+        try:
+            public_averages = _spa_build_public_averages(
+                platform="instagram",
+                followers_total=request.followers_total,
+                posts=posts_compact
+            )
+        except Exception as exc:
+            public_averages = {
+                "status": "failed_runtime",
+                "reason": f"public averages failed: {exc}"
+            }
+
+    metrics_summary = full_dict.get("metrics_summary") if isinstance(full_dict.get("metrics_summary"), dict) else {}
+    visibility_report = full_dict.get("visibility_report") if isinstance(full_dict.get("visibility_report"), dict) else {}
+
+    def pick(primary, fallback_key):
+        val = primary
+        if val is None or val == "":
+            return fallback_counts.get(fallback_key)
+        return val
+
+    drive_keys = {}
+    for k in ("drive_report_upload", "drive_upload", "report_drive_url", "report_folder_url"):
+        if k in full_dict:
+            drive_keys[k] = full_dict.get(k)
+
+    return {
+        "collector": "instagram_posts_by_url_compact_v2",
+        "version": APP_VERSION,
+        "status": full_dict.get("status", "completed"),
+        "base_collector_status": full_dict.get("status"),
+        "company_name": request.company_name,
+        "profile_url": request.profile_url,
+        "posts_requested": len(urls),
+        "posts_returned_compact": len(posts_compact),
+        "posts_parsed": pick(metrics_summary.get("posts_parsed"), "posts_completed"),
+        "posts_completed": pick(metrics_summary.get("posts_completed"), "posts_completed"),
+        "posts_failed": pick(metrics_summary.get("posts_failed"), "posts_failed"),
+        "likes_visible_count": pick(metrics_summary.get("likes_visible_count"), "likes_visible_count"),
+        "likes_missing_count": pick(metrics_summary.get("likes_missing_count"), "likes_missing_count"),
+        "posts_with_visible_dates": pick(visibility_report.get("posts_with_visible_dates"), "posts_with_visible_dates"),
+        "posts_with_visible_likes": pick(visibility_report.get("posts_with_visible_likes"), "posts_with_visible_likes"),
+        "posts_with_visible_hashtags": pick(visibility_report.get("posts_with_visible_hashtags"), "posts_with_visible_hashtags"),
+        "average_likes_last_posts_visible_only": pick(metrics_summary.get("average_likes_last_posts_visible_only"), "average_likes_last_posts_visible_only"),
+        "frequency_status": metrics_summary.get("frequency_status"),
+        "publishing_frequency_window_start": metrics_summary.get("publishing_frequency_window_start"),
+        "publishing_frequency_window_end": metrics_summary.get("publishing_frequency_window_end"),
+        "posts_in_frequency_window": metrics_summary.get("posts_in_frequency_window"),
+        "posts_per_week_in_frequency_window": metrics_summary.get("posts_per_week_in_frequency_window"),
+        "average_days_between_posts_in_window": metrics_summary.get("average_days_between_posts_in_window"),
+        "public_averages": public_averages,
+        "posts_compact": posts_compact if request.include_posts_compact else [],
+        "drive": drive_keys,
+        "compact_response": True,
+        "human_readable_messages": [
+            "Respuesta compacta v2 para Actions.",
+            "La llamada interna al endpoint base soporta funciones async/sync.",
+            "Los promedios son publicos visibles parciales.",
+            "No representan alcance, views, engagement total, clics, ventas ni performance real."
+        ],
+        "limitations": [
+            "Caption completo y HTML bruto se omiten para evitar exceder limite de respuesta de Actions.",
+            "Usar Drive/report_id para evidencia completa si el endpoint base la genero.",
+            "La muestra esta limitada a 12 posts en Render por estabilidad operativa."
+        ]
+    }
+\n
