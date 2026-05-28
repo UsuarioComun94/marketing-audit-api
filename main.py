@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.18"
+APP_VERSION = "public-presence-collector-mvp-0.9.19"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -8163,4 +8163,3 @@ async def auditInstagramPostsByUrlCompactV2(request: InstagramPostsByUrlCompactR
             "La muestra esta limitada a 12 posts en Render por estabilidad operativa."
         ]
     }
-\n
