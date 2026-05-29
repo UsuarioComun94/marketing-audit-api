@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.32"
+APP_VERSION = "public-presence-collector-mvp-0.9.33"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -10318,7 +10318,6 @@ def _rpv4_build_interactive_html(req, report_id, created_at):
 # HOTFIX 4H.3-D - REPORT QUALITY GATE + CLEAN PDF/HTML OUTPUT
 # ============================================================
 
-APP_VERSION = "public-presence-collector-mvp-0.9.29"
 
 import unicodedata as _rpv4_unicodedata
 import re as _rpv4_re
@@ -11214,3 +11213,5 @@ async def _rpb_upload_package_with_existing_drive(req, package_result):
 # HOTFIX 4H.3-I: mojibake cleanup without blocking prompt.
 
 # HOTFIX 4H.3-J: ASCII-safe source encoding guard.
+
+# HOTFIX 4H.3-O: removed duplicate APP_VERSION override.
