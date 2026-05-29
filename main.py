@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import base64
@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.28"
+APP_VERSION = "public-presence-collector-mvp-0.9.32"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -192,81 +192,81 @@ EXPECTED_FIELDS: Dict[str, List[str]] = {
 }
 
 REASON_MESSAGES_ES = {
-    "missing_input": "No se recibió un link para esta fuente.",
-    "missing_api_key": "La herramienta necesaria no está configurada en el backend mediante variable de entorno.",
-    "blocked_by_platform": "La plataforma limitó la lectura pública, requirió login o bloqueó el acceso automatizado.",
-    "not_publicly_available": "El dato no está disponible públicamente de forma confiable.",
-    "requires_owner_access": "Este dato requiere autorización del propietario de la cuenta o acceso del cliente.",
+    "missing_input": "No se recibi\u00f3 un link para esta fuente.",
+    "missing_api_key": "La herramienta necesaria no est\u00e1 configurada en el backend mediante variable de entorno.",
+    "blocked_by_platform": "La plataforma limit\u00f3 la lectura p\u00fablica, requiri\u00f3 login o bloque\u00f3 el acceso automatizado.",
+    "not_publicly_available": "El dato no est\u00e1 disponible p\u00fablicamente de forma confiable.",
+    "requires_owner_access": "Este dato requiere autorizaci\u00f3n del propietario de la cuenta o acceso del cliente.",
     "robots_disallowed": "El archivo robots.txt no permite recolectar esta URL con el user-agent actual.",
-    "http_error": "La URL respondió con error HTTP.",
-    "timeout": "La solicitud agotó el tiempo de espera.",
+    "http_error": "La URL respondi\u00f3 con error HTTP.",
+    "timeout": "La solicitud agot\u00f3 el tiempo de espera.",
     "parse_error": "Se pudo descargar contenido, pero no se pudo interpretar de forma confiable.",
-    "js_render_required": "El contenido parece depender de JavaScript/renderizado dinámico.",
-    "rate_limited": "La plataforma o API limitó la cantidad de solicitudes.",
-    "unsupported_platform": "La plataforma no está soportada por este MVP.",
-    "collector_not_implemented": "El collector está reconocido, pero todavía no está implementado en esta versión mínima.",
-    "insufficient_public_data": "La fuente pública entregó información insuficiente para ese campo.",
-    "private_metric": "Es una métrica privada de performance; no puede obtenerse desde links públicos.",
-    "all_search_providers_failed": "Todos los proveedores de búsqueda configurados fallaron o no devolvieron resultados útiles.",
-    "no_search_results": "La búsqueda pública no devolvió resultados útiles con los proveedores configurados.",
+    "js_render_required": "El contenido parece depender de JavaScript/renderizado din\u00e1mico.",
+    "rate_limited": "La plataforma o API limit\u00f3 la cantidad de solicitudes.",
+    "unsupported_platform": "La plataforma no est\u00e1 soportada por este MVP.",
+    "collector_not_implemented": "El collector est\u00e1 reconocido, pero todav\u00eda no est\u00e1 implementado en esta versi\u00f3n m\u00ednima.",
+    "insufficient_public_data": "La fuente p\u00fablica entreg\u00f3 informaci\u00f3n insuficiente para ese campo.",
+    "private_metric": "Es una m\u00e9trica privada de performance; no puede obtenerse desde links p\u00fablicos.",
+    "all_search_providers_failed": "Todos los proveedores de b\u00fasqueda configurados fallaron o no devolvieron resultados \u00fatiles.",
+    "no_search_results": "La b\u00fasqueda p\u00fablica no devolvi\u00f3 resultados \u00fatiles con los proveedores configurados.",
 }
 
 HOW_TO_COLLECT_ES = {
     "website": {
         "generic": [
-            "Verificar que la URL sea pública y correcta.",
-            "Probar lectura con Firecrawl si el HTML público viene pobre.",
+            "Verificar que la URL sea p\u00fablica y correcta.",
+            "Probar lectura con Firecrawl si el HTML p\u00fablico viene pobre.",
             "Usar Browserbase/Playwright si el contenido depende de JavaScript.",
-            "Pedir al cliente la landing exacta si la página pública no contiene la información comercial.",
+            "Pedir al cliente la landing exacta si la p\u00e1gina p\u00fablica no contiene la informaci\u00f3n comercial.",
         ]
     },
     "instagram": {
         "generic": [
-            "Solicitar link correcto del perfil público.",
-            "Si se requieren métricas reales, conectar cuenta profesional mediante Meta/Instagram API con autorización del cliente.",
+            "Solicitar link correcto del perfil p\u00fablico.",
+            "Si se requieren m\u00e9tricas reales, conectar cuenta profesional mediante Meta/Instagram API con autorizaci\u00f3n del cliente.",
             "Como alternativa operativa, pedir captura o export manual desde Meta Business Suite con fecha de captura.",
         ]
     },
     "facebook": {
         "generic": [
-            "Solicitar link correcto de la página pública.",
-            "Para insights reales, el cliente debe autorizar Meta/Facebook Page mediante permisos de página.",
+            "Solicitar link correcto de la p\u00e1gina p\u00fablica.",
+            "Para insights reales, el cliente debe autorizar Meta/Facebook Page mediante permisos de p\u00e1gina.",
             "Como alternativa, pedir capturas o export manual desde Meta Business Suite.",
         ]
     },
     "linkedin": {
         "generic": [
-            "Solicitar URL correcta de página de empresa o perfil.",
-            "Para estadísticas reales, el cliente debe autorizar LinkedIn API/OAuth o entregar export/capturas.",
-            "LinkedIn limita mucha información pública sin login; registrar la limitación si no expone posts o métricas.",
+            "Solicitar URL correcta de p\u00e1gina de empresa o perfil.",
+            "Para estad\u00edsticas reales, el cliente debe autorizar LinkedIn API/OAuth o entregar export/capturas.",
+            "LinkedIn limita mucha informaci\u00f3n p\u00fablica sin login; registrar la limitaci\u00f3n si no expone posts o m\u00e9tricas.",
         ]
     },
     "youtube": {
         "generic": [
-            "Verificar que el link corresponda a un canal, handle o video público.",
+            "Verificar que el link corresponda a un canal, handle o video p\u00fablico.",
             "Configurar YOUTUBE_API_KEY si falta la clave.",
-            "Si el conteo de suscriptores está oculto por el canal, marcarlo como no público.",
+            "Si el conteo de suscriptores est\u00e1 oculto por el canal, marcarlo como no p\u00fablico.",
         ]
     },
     "tiktok": {
         "generic": [
-            "Solicitar link correcto del perfil público.",
-            "Si la plataforma oculta métricas, pedir captura manual del perfil y contenidos recientes.",
-            "Para métricas internas reales, se requiere acceso del cliente o export de la plataforma.",
+            "Solicitar link correcto del perfil p\u00fablico.",
+            "Si la plataforma oculta m\u00e9tricas, pedir captura manual del perfil y contenidos recientes.",
+            "Para m\u00e9tricas internas reales, se requiere acceso del cliente o export de la plataforma.",
         ]
     },
     "x": {
         "generic": [
-            "Solicitar link correcto del perfil público.",
-            "Si las métricas no son visibles, marcar como no disponible públicamente.",
+            "Solicitar link correcto del perfil p\u00fablico.",
+            "Si las m\u00e9tricas no son visibles, marcar como no disponible p\u00fablicamente.",
             "Para datos estructurados, usar API de X si existe acceso y condiciones habilitadas.",
         ]
     },
     "search": {
         "generic": [
-            "Configurar TAVILY_API_KEY y SERPER_API_KEY para búsqueda pública con fallback.",
+            "Configurar TAVILY_API_KEY y SERPER_API_KEY para b\u00fasqueda p\u00fablica con fallback.",
             "Si un proveedor responde 429, esperar reset de cuota o usar fallback.",
-            "Usar Firecrawl después de la búsqueda para extraer contenido real de URLs encontradas.",
+            "Usar Firecrawl despu\u00e9s de la b\u00fasqueda para extraer contenido real de URLs encontradas.",
             "No tratar snippets de SERP como evidencia definitiva; usarlos para descubrir fuentes.",
         ]
     },
@@ -276,7 +276,7 @@ app = FastAPI(
     title="Marketing Auditor - Public Presence Collector MVP",
     version=APP_VERSION,
     description=(
-        "MVP de recolección pasiva/semi-pasiva de presencia pública. "
+        "MVP de recolecci\u00f3n pasiva/semi-pasiva de presencia p\u00fablica. "
         "No diagnostica performance, no genera recomendaciones comerciales y no inventa datos."
     ),
 )
@@ -325,20 +325,20 @@ class BrowserRenderRequest(BaseModel):
 
 
 class VisualSiteAuditRequest(BaseModel):
-    url: Optional[str] = Field(default=None, description="URL pública del sitio.")
+    url: Optional[str] = Field(default=None, description="URL p\u00fablica del sitio.")
     website: Optional[str] = Field(default=None, description="Alias de url.")
     company_name: Optional[str] = None
     max_internal_pages: int = Field(default=3, ge=0, le=5)
     viewports: List[str] = Field(default_factory=lambda: ["desktop", "mobile"])
     wait_ms: int = Field(default=1500, ge=0, le=8000)
     timeout_ms: int = Field(default=45000, ge=5000, le=90000)
-    full_page: bool = Field(default=True, description="Capturar página completa.")
+    full_page: bool = Field(default=True, description="Capturar p\u00e1gina completa.")
 
 
 class SearchProviderDebugRequest(BaseModel):
-    query: str = Field(..., min_length=2, description="Consulta pública a ejecutar.")
+    query: str = Field(..., min_length=2, description="Consulta p\u00fablica a ejecutar.")
     max_results: int = Field(default=8, ge=1, le=10)
-    gl: str = Field(default="ar", min_length=2, max_length=5, description="País para Serper/Google, por ejemplo ar o us.")
+    gl: str = Field(default="ar", min_length=2, max_length=5, description="Pa\u00eds para Serper/Google, por ejemplo ar o us.")
     hl: str = Field(default="es", min_length=2, max_length=5, description="Idioma para Serper/Google, por ejemplo es o en.")
     use_fallbacks: bool = Field(default=True, description="Si true, intenta Tavily -> Serper -> Composio.")
 
@@ -397,7 +397,7 @@ def truncate(text: str, limit: int = 600) -> str:
     text = collapse_ws(text)
     if len(text) <= limit:
         return text
-    return text[: limit - 1].rstrip() + "…"
+    return text[: limit - 1].rstrip() + "\u2026"
 
 
 def make_evidence(
@@ -683,10 +683,10 @@ def detect_content_features(text: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     features = {
         "pricing": any(k in both for k in ["precio", "precios", "pricing", "$", "usd", "ars", "mensual", "/mes", "month"]),
         "faq": any(k in both for k in ["faq", "preguntas frecuentes", "frequently asked"]),
-        "blog_or_news": any(k in both for k in ["blog", "noticias", "news", "artículo", "articulos", "podcast", "newsletter"]),
-        "testimonials_or_clients": any(k in both for k in ["testimonio", "testimonios", "clientes", "casos", "reseñas", "reviews", "logos", "empresas que confían", "confían en"]),
-        "services_or_products": any(k in both for k in ["servicio", "servicios", "producto", "productos", "soluciones", "plans", "planes", "consultoría", "consultoria"]),
-        "website_claims": any(k in both for k in ["años de experiencia", "clientes satisfechos", "tasa de éxito", "premios", "líder", "lider", "garantía", "garantia", "%", "casos de éxito"]),
+        "blog_or_news": any(k in both for k in ["blog", "noticias", "news", "art\u00edculo", "articulos", "podcast", "newsletter"]),
+        "testimonials_or_clients": any(k in both for k in ["testimonio", "testimonios", "clientes", "casos", "rese\u00f1as", "reviews", "logos", "empresas que conf\u00edan", "conf\u00edan en"]),
+        "services_or_products": any(k in both for k in ["servicio", "servicios", "producto", "productos", "soluciones", "plans", "planes", "consultor\u00eda", "consultoria"]),
+        "website_claims": any(k in both for k in ["a\u00f1os de experiencia", "clientes satisfechos", "tasa de \u00e9xito", "premios", "l\u00edder", "lider", "garant\u00eda", "garantia", "%", "casos de \u00e9xito"]),
     }
     tracking_keywords = {
         "google_tag_manager": ["googletagmanager", "gtm.js"],
@@ -773,13 +773,13 @@ def build_recovery_guide(collector_reports: List[Dict[str, Any]]) -> List[Dict[s
                 {
                     "platform": platform,
                     "field": f"{platform}.all_public_fields",
-                    "label_es": f"Datos públicos de {platform}",
+                    "label_es": f"Datos p\u00fablicos de {platform}",
                     "status": "not_collected",
-                    "why_not_collected": "No se recibió un link para esta fuente.",
+                    "why_not_collected": "No se recibi\u00f3 un link para esta fuente.",
                     "attempted_tools": [report.get("tool_used")],
                     "importance": "media",
                     "can_be_collected_publicly": "variable",
-                    "how_to_collect": [f"Proveer el link público correcto de {platform}."] + report.get("how_to_collect_missing", []),
+                    "how_to_collect": [f"Proveer el link p\u00fablico correcto de {platform}."] + report.get("how_to_collect_missing", []),
                     "requires_client_permission": False,
                 }
             )
@@ -794,7 +794,7 @@ def build_recovery_guide(collector_reports: List[Dict[str, Any]]) -> List[Dict[s
                     "why_not_collected": report.get("reason") or "Falta API key.",
                     "attempted_tools": [report.get("tool_used")],
                     "importance": "media-alta",
-                    "can_be_collected_publicly": "sí, si la API key está configurada y el dato es público",
+                    "can_be_collected_publicly": "s\u00ed, si la API key est\u00e1 configurada y el dato es p\u00fablico",
                     "how_to_collect": report.get("how_to_collect_missing", []),
                     "requires_client_permission": False,
                 }
@@ -819,7 +819,7 @@ def build_recovery_guide(collector_reports: List[Dict[str, Any]]) -> List[Dict[s
                     "field": f"{platform}.{field}",
                     "label_es": field.replace("_", " "),
                     "status": "not_collected",
-                    "why_not_collected": report.get("reason") or "El dato no apareció en la recolección pública.",
+                    "why_not_collected": report.get("reason") or "El dato no apareci\u00f3 en la recolecci\u00f3n p\u00fablica.",
                     "attempted_tools": [report.get("tool_used")],
                     "importance": "alta" if requires_owner else "media",
                     "can_be_collected_publicly": "variable" if not requires_owner else "normalmente no",
@@ -830,7 +830,7 @@ def build_recovery_guide(collector_reports: List[Dict[str, Any]]) -> List[Dict[s
     # Add always-private performance fields as explicit guidance.
     for field, label in [
         ("ga4.conversions", "conversiones reales"),
-        ("meta_ads.reach_impressions_clicks", "alcance, impresiones y clics de campañas"),
+        ("meta_ads.reach_impressions_clicks", "alcance, impresiones y clics de campa\u00f1as"),
         ("crm.lead_quality", "calidad de lead"),
         ("sales.revenue_close", "ventas, revenue y cierre"),
     ]:
@@ -840,14 +840,14 @@ def build_recovery_guide(collector_reports: List[Dict[str, Any]]) -> List[Dict[s
                 "field": field,
                 "label_es": label,
                 "status": "requires_owner_access",
-                "why_not_collected": "No es información pública; requiere acceso del cliente o export manual.",
+                "why_not_collected": "No es informaci\u00f3n p\u00fablica; requiere acceso del cliente o export manual.",
                 "attempted_tools": [],
                 "importance": "alta",
                 "can_be_collected_publicly": "no",
                 "how_to_collect": [
                     "Solicitar acceso del cliente a la plataforma correspondiente.",
                     "Aceptar export CSV/Excel o capturas fechadas si no se puede conectar API.",
-                    "Registrar período analizado y fuente exacta del dato.",
+                    "Registrar per\u00edodo analizado y fuente exacta del dato.",
                 ],
                 "requires_client_permission": True,
             }
@@ -982,12 +982,12 @@ async def collect_website_static(url: Optional[str], max_pages: int, evidence: E
         collected_fields.append("forms")
         evidence.add(platform, normalized, collector, "forms_detected", f"{forms_count} formulario(s) detectado(s)", "medium")
     for fname, dtype, label in [
-        ("services_or_products", "services_or_products", "Señales de servicios/productos detectadas"),
-        ("pricing", "pricing", "Señales de precios/planes detectadas"),
-        ("faq", "faq", "Señales de FAQ/preguntas frecuentes detectadas"),
-        ("blog_or_news", "blog_or_news", "Señales de blog/noticias/contenido detectadas"),
-        ("testimonials_or_clients", "testimonials_or_clients", "Señales de testimonios/clientes/logos detectadas"),
-        ("website_claims", "website_claims", "Claims del sitio detectados; requieren verificación externa"),
+        ("services_or_products", "services_or_products", "Se\u00f1ales de servicios/productos detectadas"),
+        ("pricing", "pricing", "Se\u00f1ales de precios/planes detectadas"),
+        ("faq", "faq", "Se\u00f1ales de FAQ/preguntas frecuentes detectadas"),
+        ("blog_or_news", "blog_or_news", "Se\u00f1ales de blog/noticias/contenido detectadas"),
+        ("testimonials_or_clients", "testimonials_or_clients", "Se\u00f1ales de testimonios/clientes/logos detectadas"),
+        ("website_claims", "website_claims", "Claims del sitio detectados; requieren verificaci\u00f3n externa"),
     ]:
         if features.get(fname):
             collected_fields.append(dtype)
@@ -995,7 +995,7 @@ async def collect_website_static(url: Optional[str], max_pages: int, evidence: E
             evidence.add(platform, normalized, collector, dtype, label, "medium", raw_excerpt=all_text[:1200], evidence_type=evidence_type)
     if features.get("tracking_scripts"):
         collected_fields.append("tracking_scripts")
-        evidence.add(platform, normalized, collector, "tracking_scripts_detected", features["tracking_scripts"], "medium", limitations=["Detectar un script no prueba que el tracking esté bien configurado."])
+        evidence.add(platform, normalized, collector, "tracking_scripts_detected", features["tracking_scripts"], "medium", limitations=["Detectar un script no prueba que el tracking est\u00e9 bien configurado."])
     if open_graph or structured_data_count:
         collected_fields.append("structured_data")
         evidence.add(platform, normalized, collector, "metadata_structured_data", {"open_graph_keys": list(open_graph.keys()), "json_ld_blocks": structured_data_count}, "medium")
@@ -1063,7 +1063,7 @@ async def collect_firecrawl(url: Optional[str], evidence: EvidenceBuilder) -> Di
     normalized = normalize_url(url)
     assert normalized is not None
     if httpx is None:
-        return {"reports": [collector_report(collector, platform, "failed_runtime", "firecrawl_api", normalized, reason="httpx no está disponible en el entorno.", confidence="none")], "summary": {}}
+        return {"reports": [collector_report(collector, platform, "failed_runtime", "firecrawl_api", normalized, reason="httpx no est\u00e1 disponible en el entorno.", confidence="none")], "summary": {}}
     try:
         async with httpx.AsyncClient(timeout=35) as client:
             resp = await client.post(
@@ -1140,7 +1140,7 @@ def _detect_cta_texts(texts: List[str]) -> List[str]:
         "whatsapp",
         "cotizar",
         "registrarme",
-        "iniciar sesión",
+        "iniciar sesi\u00f3n",
         "login",
         "mayorista",
         "pedir",
@@ -1163,14 +1163,14 @@ def _detect_cta_texts(texts: List[str]) -> List[str]:
 async def render_browserbase_visual(req: BrowserRenderRequest) -> Dict[str, Any]:
     normalized = normalize_url(req.url)
     if not normalized:
-        raise HTTPException(status_code=400, detail="URL inválida.")
+        raise HTTPException(status_code=400, detail="URL inv\u00e1lida.")
 
     if not BROWSERBASE_API_KEY:
         return {
             "status": "skipped_missing_api_key",
             "collector": "browserbase_visual_debug",
             "url": normalized,
-            "reason": "BROWSERBASE_API_KEY no está configurada.",
+            "reason": "BROWSERBASE_API_KEY no est\u00e1 configurada.",
             "confidence": "none",
         }
 
@@ -1204,7 +1204,7 @@ async def render_browserbase_visual(req: BrowserRenderRequest) -> Dict[str, Any]
                 "status": "failed_runtime",
                 "collector": "browserbase_visual_debug",
                 "url": normalized,
-                "reason": "Browserbase no devolvió connect_url.",
+                "reason": "Browserbase no devolvi\u00f3 connect_url.",
                 "session_id": session_id,
                 "confidence": "none",
             }
@@ -1313,7 +1313,7 @@ async def render_browserbase_visual(req: BrowserRenderRequest) -> Dict[str, Any]
                 "confidence": "medium-high",
                 "limitations": [
                     "El screenshot permite evaluar evidencia visual, pero no reemplaza test de UX con usuarios.",
-                    "No afirma conversión, ventas, velocidad, Core Web Vitals ni performance.",
+                    "No afirma conversi\u00f3n, ventas, velocidad, Core Web Vitals ni performance.",
                     "Las plataformas con login o bloqueo pueden devolver contenido parcial.",
                 ],
                 "retrieved_at": now_iso(),
@@ -1418,7 +1418,7 @@ async def collect_social_public(platform: str, url: Optional[str], evidence: Evi
     text = extract_visible_text(doc)
     collected, parsed_data = parse_social_public_fields(platform, text, meta)
     if collected:
-        evidence.add(platform, normalized, collector, "public_profile_metadata", parsed_data or {"title": meta.get("title"), "description": meta.get("meta_description")}, "low", raw_excerpt=text[:1000], limitations=["Datos públicos best-effort; la plataforma puede ocultar métricas o requerir login."])
+        evidence.add(platform, normalized, collector, "public_profile_metadata", parsed_data or {"title": meta.get("title"), "description": meta.get("meta_description")}, "low", raw_excerpt=text[:1000], limitations=["Datos p\u00fablicos best-effort; la plataforma puede ocultar m\u00e9tricas o requerir login."])
     if len(text.split()) > 40:
         evidence.add(platform, normalized, collector, "public_text_sample", truncate(text, 900), "low", raw_excerpt=text[:1000], limitations=["No equivale a insights nativos de la plataforma."])
     expected = EXPECTED_FIELDS.get(platform, [])
@@ -1466,7 +1466,7 @@ def parse_youtube_identifier(url: str) -> Dict[str, Optional[str]]:
 
 async def youtube_api_get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     if httpx is None:
-        raise RuntimeError("httpx no está disponible")
+        raise RuntimeError("httpx no est\u00e1 disponible")
     params = dict(params)
     params["key"] = YOUTUBE_API_KEY
     async with httpx.AsyncClient(timeout=20) as client:
@@ -1539,7 +1539,7 @@ async def collect_youtube(url: Optional[str], evidence: EvidenceBuilder) -> Dict
             "statistics": stats,
             "latest_videos": latest_videos,
         }
-        evidence.add(platform, normalized, collector, "youtube_channel_statistics", summary, "high", limitations=["subscriberCount puede estar oculto por configuración del canal."])
+        evidence.add(platform, normalized, collector, "youtube_channel_statistics", summary, "high", limitations=["subscriberCount puede estar oculto por configuraci\u00f3n del canal."])
         return {
             "reports": [
                 collector_report(
@@ -1893,7 +1893,7 @@ def build_search_provider_config() -> Dict[str, Any]:
             "composio_search_api",
         ],
         "notes": {
-            "tavily": "Proveedor principal de discovery/search. No reemplaza Firecrawl para extracción profunda.",
+            "tavily": "Proveedor principal de discovery/search. No reemplaza Firecrawl para extracci\u00f3n profunda.",
             "serper": "Fallback SERP Google. Usar para discovery cuando Tavily falla o no devuelve URLs suficientes.",
             "composio_search_api": "Fallback final; hoy depende de SearchApi.io y puede fallar por cuota 429.",
             "firecrawl_extractor": "Extractor/crawler complementario para leer URLs encontradas.",
@@ -2011,7 +2011,7 @@ async def collect_public_search_enrichment(
                 "medium",
                 raw_excerpt=item.get("snippet") or "",
                 limitations=[
-                    "Resultado de búsqueda usado para discovery; el snippet no reemplaza extracción directa de la fuente.",
+                    "Resultado de b\u00fasqueda usado para discovery; el snippet no reemplaza extracci\u00f3n directa de la fuente.",
                     "Usar Firecrawl/Browserbase para validar contenido de URLs relevantes.",
                 ],
             )
@@ -2275,9 +2275,9 @@ def build_public_presence_score(payload: Dict[str, Any]) -> Dict[str, Any]:
     elif total >= 55:
         level = "media"
     elif total >= 35:
-        level = "básica"
+        level = "b\u00e1sica"
     else:
-        level = "débil"
+        level = "d\u00e9bil"
 
     return {
         "score": total,
@@ -2290,7 +2290,7 @@ def build_public_presence_score(payload: Dict[str, Any]) -> Dict[str, Any]:
             "data_quality_and_traceability": data_quality_score,
             "guardrails": guardrail_score,
         },
-        "interpretation": "Score de presencia pública observable. No mide ventas, ROAS, CPA, CPL, conversión ni calidad de lead.",
+        "interpretation": "Score de presencia p\u00fablica observable. No mide ventas, ROAS, CPA, CPL, conversi\u00f3n ni calidad de lead.",
         "signals": {
             "website_completed": website_completed,
             "firecrawl_completed": firecrawl_completed,
@@ -2315,44 +2315,44 @@ def build_executive_public_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
     if (metrics.get("website") or {}).get("evidence_count", 0):
         findings.append({
             "area": "Sitio web",
-            "finding": "El sitio público fue leído con collector estático y Firecrawl; hay evidencia de propuesta comercial, productos, claims y páginas indexables.",
+            "finding": "El sitio p\u00fablico fue le\u00eddo con collector est\u00e1tico y Firecrawl; hay evidencia de propuesta comercial, productos, claims y p\u00e1ginas indexables.",
             "evidence": "website_static_collector + firecrawl_website_collector",
-            "risk_or_opportunity": "Base suficiente para auditoría pública inicial, pero conviene profundizar páginas internas críticas como compras mayoristas, contacto y categorías.",
+            "risk_or_opportunity": "Base suficiente para auditor\u00eda p\u00fablica inicial, pero conviene profundizar p\u00e1ginas internas cr\u00edticas como compras mayoristas, contacto y categor\u00edas.",
         })
     if search_results:
         findings.append({
-            "area": "Búsqueda pública",
-            "finding": f"El router de búsqueda encontró {len(search_results)} resultados públicos relevantes usando Tavily.",
+            "area": "B\u00fasqueda p\u00fablica",
+            "finding": f"El router de b\u00fasqueda encontr\u00f3 {len(search_results)} resultados p\u00fablicos relevantes usando Tavily.",
             "evidence": ", ".join([str(ev.get("source_url")) for ev in search_results[:4] if ev.get("source_url")]),
-            "risk_or_opportunity": "Hay superficie pública suficiente para discovery; los snippets deben validarse con extracción directa antes de usarse como prueba fuerte.",
+            "risk_or_opportunity": "Hay superficie p\u00fablica suficiente para discovery; los snippets deben validarse con extracci\u00f3n directa antes de usarse como prueba fuerte.",
         })
     social_detected = [p for p in ["instagram", "facebook", "linkedin", "tiktok"] if (metrics.get(p) or {}).get("evidence_count", 0) > 0]
     if social_detected:
         findings.append({
             "area": "Redes sociales",
-            "finding": "Se detectaron perfiles públicos en: " + ", ".join(social_detected) + ".",
-            "evidence": "metadata pública best-effort",
-            "risk_or_opportunity": "Las plataformas limitan métricas y posteos sin autorización; para análisis de performance hacen falta accesos o export manual del cliente.",
+            "finding": "Se detectaron perfiles p\u00fablicos en: " + ", ".join(social_detected) + ".",
+            "evidence": "metadata p\u00fablica best-effort",
+            "risk_or_opportunity": "Las plataformas limitan m\u00e9tricas y posteos sin autorizaci\u00f3n; para an\u00e1lisis de performance hacen falta accesos o export manual del cliente.",
         })
     if linkedin_samples:
         findings.append({
             "area": "LinkedIn",
-            "finding": "LinkedIn entregó señales públicas útiles, incluyendo título, muestra textual y followers visibles cuando estuvieron disponibles.",
+            "finding": "LinkedIn entreg\u00f3 se\u00f1ales p\u00fablicas \u00fatiles, incluyendo t\u00edtulo, muestra textual y followers visibles cuando estuvieron disponibles.",
             "evidence": "linkedin_public_collector",
-            "risk_or_opportunity": "Puede usarse como evidencia pública de posicionamiento B2B, no como insight interno de performance.",
+            "risk_or_opportunity": "Puede usarse como evidencia p\u00fablica de posicionamiento B2B, no como insight interno de performance.",
         })
 
     recommendations = [
         {
             "priority": "alta",
-            "action": "Validar y extraer páginas internas descubiertas por búsqueda: sobre-nosotros, compras-mayoristas, sucursales-contacto y categorías comerciales.",
+            "action": "Validar y extraer p\u00e1ginas internas descubiertas por b\u00fasqueda: sobre-nosotros, compras-mayoristas, sucursales-contacto y categor\u00edas comerciales.",
             "impact": "alto",
             "effort": "medio",
-            "reason": "El discovery ya encontró URLs de valor; falta convertirlas en evidencia extraída y resumida.",
+            "reason": "El discovery ya encontr\u00f3 URLs de valor; falta convertirlas en evidencia extra\u00edda y resumida.",
         },
         {
             "priority": "alta",
-            "action": "Separar claramente evidencia pública, claims declarados y datos que requieren acceso privado.",
+            "action": "Separar claramente evidencia p\u00fablica, claims declarados y datos que requieren acceso privado.",
             "impact": "alto",
             "effort": "bajo",
             "reason": "Evita inferencias falsas sobre ventas, performance o calidad de lead.",
@@ -2362,39 +2362,39 @@ def build_executive_public_audit(payload: Dict[str, Any]) -> Dict[str, Any]:
             "action": "Usar Browserbase visual debug para capturar screenshots de home, contacto, compras mayoristas y perfiles sociales prioritarios.",
             "impact": "medio-alto",
             "effort": "medio",
-            "reason": "Aporta prueba visual cuando HTML/Firecrawl no alcanza o la página depende de JavaScript.",
+            "reason": "Aporta prueba visual cuando HTML/Firecrawl no alcanza o la p\u00e1gina depende de JavaScript.",
         },
         {
             "priority": "media",
             "action": "Solicitar al cliente exports o capturas fechadas de Meta Business Suite, LinkedIn, TikTok, GA4, Search Console y CRM si se quiere diagnosticar performance.",
             "impact": "alto",
             "effort": "alto",
-            "reason": "Los datos internos no son públicos y no deben inferirse desde presencia pública.",
+            "reason": "Los datos internos no son p\u00fablicos y no deben inferirse desde presencia p\u00fablica.",
         },
     ]
 
     matrix = [
         {"initiative": "Deduplicar y compactar datos faltantes en el reporte", "impact": "medio", "effort": "bajo"},
-        {"initiative": "Extraer páginas internas descubiertas por Tavily con Firecrawl", "impact": "alto", "effort": "medio"},
+        {"initiative": "Extraer p\u00e1ginas internas descubiertas por Tavily con Firecrawl", "impact": "alto", "effort": "medio"},
         {"initiative": "Capturar screenshots con Browserbase para evidencia visual", "impact": "medio-alto", "effort": "medio"},
         {"initiative": "Conectar datos privados del cliente para performance real", "impact": "muy alto", "effort": "alto"},
     ]
 
     return {
-        "summary": f"La presencia pública observable es {score.get('level')} ({score.get('score')}/100). El sistema encontró sitio, evidencia textual, perfiles/redes y resultados públicos; las métricas de performance siguen fuera de alcance sin acceso del cliente.",
+        "summary": f"La presencia p\u00fablica observable es {score.get('level')} ({score.get('score')}/100). El sistema encontr\u00f3 sitio, evidencia textual, perfiles/redes y resultados p\u00fablicos; las m\u00e9tricas de performance siguen fuera de alcance sin acceso del cliente.",
         "readiness_level": score.get("level"),
         "score": score.get("score"),
         "key_findings": findings,
         "priority_recommendations": recommendations,
         "impact_effort_matrix": matrix,
         "critical_limitations": [
-            "No mide ventas, ROAS, CPA, CPL, conversión ni calidad de lead.",
-            "Los snippets de búsqueda sirven para discovery, no como prueba definitiva.",
-            "Instagram, Facebook, LinkedIn y TikTok pueden ocultar métricas o requerir login/API/autorización.",
+            "No mide ventas, ROAS, CPA, CPL, conversi\u00f3n ni calidad de lead.",
+            "Los snippets de b\u00fasqueda sirven para discovery, no como prueba definitiva.",
+            "Instagram, Facebook, LinkedIn y TikTok pueden ocultar m\u00e9tricas o requerir login/API/autorizaci\u00f3n.",
         ],
         "next_data_requests": [
-            "GA4 / Search Console para tráfico orgánico, eventos y páginas principales.",
-            "Google Ads / Meta Ads para inversión, leads, costos y conversiones.",
+            "GA4 / Search Console para tr\u00e1fico org\u00e1nico, eventos y p\u00e1ginas principales.",
+            "Google Ads / Meta Ads para inversi\u00f3n, leads, costos y conversiones.",
             "Meta Business Suite / LinkedIn / TikTok exports para alcance, interacciones y posteos.",
             "CRM/ventas para calidad de lead, cierre y revenue.",
         ],
@@ -2416,22 +2416,22 @@ def build_txt_report(payload: Dict[str, Any]) -> str:
     recovery_deduped = dedupe_recovery_guide(payload.get("field_recovery_guide") or [])
     evidence_items = payload.get("evidence_registry") or []
 
-    lines.append("AUDITORÍA DE PRESENCIA DIGITAL PÚBLICA")
+    lines.append("AUDITOR\u00cdA DE PRESENCIA DIGITAL P\u00daBLICA")
     lines.append("=" * 58)
     lines.append("")
     lines.append(f"Empresa: {payload.get('company_name') or 'No informada'}")
-    lines.append(f"Fecha de recolección: {payload.get('created_at')}")
-    lines.append(f"Versión del collector: {payload.get('collector_version')}")
+    lines.append(f"Fecha de recolecci\u00f3n: {payload.get('created_at')}")
+    lines.append(f"Versi\u00f3n del collector: {payload.get('collector_version')}")
     lines.append(f"Estado general: {payload.get('collection_status')}")
-    lines.append(f"Hash de recolección: {payload.get('collection_hash')}")
+    lines.append(f"Hash de recolecci\u00f3n: {payload.get('collection_hash')}")
     lines.append("")
 
     lines.append("1. RESUMEN EJECUTIVO")
-    lines.append(audit.get("summary") or "No se generó resumen ejecutivo.")
+    lines.append(audit.get("summary") or "No se gener\u00f3 resumen ejecutivo.")
     lines.append("")
-    lines.append(f"Score de presencia pública: {score.get('score', 'n/d')}/100")
+    lines.append(f"Score de presencia p\u00fablica: {score.get('score', 'n/d')}/100")
     lines.append(f"Nivel: {score.get('level', 'n/d')}")
-    lines.append("Nota: este score mide presencia pública observable, no performance comercial.")
+    lines.append("Nota: este score mide presencia p\u00fablica observable, no performance comercial.")
     lines.append("")
 
     lines.append("2. FUENTES RECIBIDAS")
@@ -2444,7 +2444,7 @@ def build_txt_report(payload: Dict[str, Any]) -> str:
         lines.append(f"- {name}: {value}")
     signals = score.get("signals") or {}
     if signals:
-        lines.append("Señales usadas:")
+        lines.append("Se\u00f1ales usadas:")
         for k, v in signals.items():
             lines.append(f"  - {k}: {v}")
     lines.append("")
@@ -2505,19 +2505,19 @@ def build_txt_report(payload: Dict[str, Any]) -> str:
             lines.append("Limitaciones: " + " | ".join([str(x) for x in ev.get("limitations", [])[:3]]))
     lines.append("")
 
-    lines.append("9. DATOS FALTANTES CRÍTICOS")
+    lines.append("9. DATOS FALTANTES CR\u00cdTICOS")
     critical = [x for x in recovery_deduped if x.get("requires_client_permission") or x.get("importance") in {"alta", "media-alta"}]
     if critical:
         for item in critical[:18]:
             lines.append("")
             lines.append(f"Campo: {item.get('label_es')} ({item.get('field')})")
-            lines.append(f"Plataforma: {item.get('platform')} | Importancia: {item.get('importance')} | Permiso cliente: {'sí' if item.get('requires_client_permission') else 'no'}")
+            lines.append(f"Plataforma: {item.get('platform')} | Importancia: {item.get('importance')} | Permiso cliente: {'s\u00ed' if item.get('requires_client_permission') else 'no'}")
             lines.append(f"Motivo: {item.get('why_not_collected')}")
             how = item.get("how_to_collect") or []
             if how:
-                lines.append("Cómo recuperarlo: " + " | ".join([str(x) for x in how[:3]]))
+                lines.append("C\u00f3mo recuperarlo: " + " | ".join([str(x) for x in how[:3]]))
     else:
-        lines.append("- No se detectaron faltantes críticos.")
+        lines.append("- No se detectaron faltantes cr\u00edticos.")
     lines.append("")
 
     lines.append("10. DATOS QUE REQUIEREN ACCESO DEL CLIENTE")
@@ -2529,10 +2529,10 @@ def build_txt_report(payload: Dict[str, Any]) -> str:
     for item in audit.get("critical_limitations") or []:
         lines.append(f"- {item}")
     lines.append("- Los claims del sitio se registran como claims declarados, no como hechos verificados externamente.")
-    lines.append("- Este reporte no afirma ROAS, CPA, CPL, conversión, ventas ni calidad de lead.")
+    lines.append("- Este reporte no afirma ROAS, CPA, CPL, conversi\u00f3n, ventas ni calidad de lead.")
     lines.append("")
 
-    lines.append("12. ANEXO TÉCNICO - RESUMEN DE EJECUCIÓN")
+    lines.append("12. ANEXO T\u00c9CNICO - RESUMEN DE EJECUCI\u00d3N")
     rep = payload.get("collection_execution_report") or {}
     for key in ["collectors_attempted_or_evaluated", "collectors_completed", "collectors_partial", "collectors_skipped", "collectors_failed", "collectors_blocked_by_platform", "collectors_not_implemented"]:
         lines.append(f"- {key}: {rep.get(key, 0)}")
@@ -2588,7 +2588,7 @@ def build_collector_notes() -> Dict[str, str]:
         "report": "Reporte ejecutivo v0.5: score de presencia publica, hallazgos, recomendaciones y anexo tecnico.",
         "composio": "Integracion Composio mantenida para debug y fallback final. SEARCH_API_SEARCH puede fallar por cuota 429 de SearchApi.io.",
         "visual": "GET /deliverables/screenshot/{screenshot_id}.png devuelve screenshots generados por debugBrowserRender.",
-        "visual_site": "POST /audit/visual-site renderiza home y páginas internas candidatas en desktop/mobile para resumen visual estructurado.",
+        "visual_site": "POST /audit/visual-site renderiza home y p\u00e1ginas internas candidatas en desktop/mobile para resumen visual estructurado.",
     }
 
 
@@ -2698,7 +2698,7 @@ async def debug_composio_execute(payload: Dict[str, Any], _: None = Depends(veri
 
     user_id = str(payload.get("user_id") or COMPOSIO_DEFAULT_USER_ID or "default").strip()
     connected_account_id = str(payload.get("connected_account_id") or COMPOSIO_CONNECTED_ACCOUNT_ID or "").strip()
-    text = payload.get("text") or payload.get("query") or "Search public web for Cotillón Chialvo Córdoba and return public URLs."
+    text = payload.get("text") or payload.get("query") or "Search public web for Cotill\u00f3n Chialvo C\u00f3rdoba and return public URLs."
     arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else None
 
     result = await composio_execute_tool(
@@ -2866,7 +2866,7 @@ def _visual_extract_links_from_html(base_url: str, html: str, limit: int = 30) -
     if candidates:
         return candidates
 
-    # Fallback regex básico si BeautifulSoup no estuviera disponible.
+    # Fallback regex b\u00e1sico si BeautifulSoup no estuviera disponible.
     try:
         for match in re.finditer(r'href=["\']([^"\']+)["\']', html, flags=re.I):
             href = match.group(1).strip()
@@ -3044,9 +3044,9 @@ def _visual_analyze_render_metrics(renders: List[Dict[str, Any]]) -> Dict[str, A
         "viewports": by_viewport,
         "cross_viewport_ctas_sample": all_ctas[:50],
         "interpretation_rules": [
-            "Alta cantidad de links puede indicar catálogo amplio o navegación compleja; no prueba mala conversión por sí sola.",
-            "Imágenes sin alt afectan accesibilidad/SEO básico observable; no prueban ranking orgánico.",
-            "Screenshots permiten evaluar fricción visual observable; no reemplazan UX research, PageSpeed ni datos de conversión.",
+            "Alta cantidad de links puede indicar cat\u00e1logo amplio o navegaci\u00f3n compleja; no prueba mala conversi\u00f3n por s\u00ed sola.",
+            "Im\u00e1genes sin alt afectan accesibilidad/SEO b\u00e1sico observable; no prueban ranking org\u00e1nico.",
+            "Screenshots permiten evaluar fricci\u00f3n visual observable; no reemplazan UX research, PageSpeed ni datos de conversi\u00f3n.",
         ],
     }
 
@@ -3056,7 +3056,7 @@ async def audit_visual_site_summary(req: VisualSiteAuditRequest) -> Dict[str, An
     normalized = normalize_url(raw_url)
 
     if not normalized:
-        raise HTTPException(status_code=400, detail="URL inválida. Enviar url o website.")
+        raise HTTPException(status_code=400, detail="URL inv\u00e1lida. Enviar url o website.")
 
     requested_viewports = []
     for v in req.viewports or ["desktop", "mobile"]:
@@ -3123,10 +3123,10 @@ async def audit_visual_site_summary(req: VisualSiteAuditRequest) -> Dict[str, An
         "visual_site_summary": _visual_analyze_render_metrics(renders),
         "confidence": "medium-high" if completed else "low",
         "limitations": [
-            "Este endpoint recolecta evidencia visual pública observable; no mide conversiones, ventas, ROAS, CPA ni margen.",
+            "Este endpoint recolecta evidencia visual p\u00fablica observable; no mide conversiones, ventas, ROAS, CPA ni margen.",
             "No reemplaza PageSpeed, Core Web Vitals, heatmaps ni pruebas de usuario.",
-            "La selección de categoría/producto/contacto es heurística sobre links públicos; puede requerir validación manual.",
-            "Algunas páginas pueden variar por cookies, geolocalización, login, stock o contenido dinámico.",
+            "La selecci\u00f3n de categor\u00eda/producto/contacto es heur\u00edstica sobre links p\u00fablicos; puede requerir validaci\u00f3n manual.",
+            "Algunas p\u00e1ginas pueden variar por cookies, geolocalizaci\u00f3n, login, stock o contenido din\u00e1mico.",
         ],
         "retrieved_at": now_iso(),
     }
@@ -3396,11 +3396,11 @@ def _sp_extract_metric_candidates(text: str) -> Dict[str, Any]:
         found[metric] = values[:12]
 
     date_patterns = [
-        r"\b\d{1,2}\s+de\s+[a-záéíóúñ]+\s+de\s+\d{4}\b",
-        r"\b\d{1,2}\s+de\s+[a-záéíóúñ]+\b",
+        r"\b\d{1,2}\s+de\s+[a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1]+\s+de\s+\d{4}\b",
+        r"\b\d{1,2}\s+de\s+[a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1]+\b",
         r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",
         r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},\s+\d{4}\b",
-        r"\b\d+\s+(d|h|min|days|hours|minutes|días|horas|minutos)\b",
+        r"\b\d+\s+(d|h|min|days|hours|minutes|d\u00edas|horas|minutos)\b",
         r"\b(ayer|hoy|anteayer)\b",
     ]
 
@@ -3433,13 +3433,13 @@ def _sp_extract_content_signals(text: str) -> Dict[str, Any]:
     lower = _sp_ws(text).lower()
 
     buckets = {
-        "product_or_catalog": ["producto", "productos", "catálogo", "catalogo", "stock", "comprar", "precio", "oferta"],
-        "promotions": ["promo", "promoción", "promocion", "descuento", "off", "cuotas", "envío", "envio"],
-        "events": ["evento", "eventos", "cumpleaños", "egresados", "fiesta", "cumple", "casamiento", "despedida"],
-        "b2b_or_wholesale": ["mayorista", "minorista", "revendedor", "distribución", "distribucion", "importador", "importadores"],
-        "social_proof": ["cliente", "clientes", "testimonio", "reseña", "reviews", "seguidores"],
+        "product_or_catalog": ["producto", "productos", "cat\u00e1logo", "catalogo", "stock", "comprar", "precio", "oferta"],
+        "promotions": ["promo", "promoci\u00f3n", "promocion", "descuento", "off", "cuotas", "env\u00edo", "envio"],
+        "events": ["evento", "eventos", "cumplea\u00f1os", "egresados", "fiesta", "cumple", "casamiento", "despedida"],
+        "b2b_or_wholesale": ["mayorista", "minorista", "revendedor", "distribuci\u00f3n", "distribucion", "importador", "importadores"],
+        "social_proof": ["cliente", "clientes", "testimonio", "rese\u00f1a", "reviews", "seguidores"],
         "video_or_reels": ["reel", "reels", "video", "videos", "viral", "visualizaciones", "views"],
-        "cta": ["link", "whatsapp", "mensaje", "consult", "comprar", "contact", "contacto", "ver más", "ver mas"],
+        "cta": ["link", "whatsapp", "mensaje", "consult", "comprar", "contact", "contacto", "ver m\u00e1s", "ver mas"],
     }
 
     detected: Dict[str, bool] = {}
@@ -3470,7 +3470,7 @@ def _sp_extract_post_like_items(text: str, max_items: int) -> List[Dict[str, Any
 
     separators = [
         ". ",
-        " · ",
+        " \u00b7 ",
         " | ",
         "\n",
     ]
@@ -3486,7 +3486,7 @@ def _sp_extract_post_like_items(text: str, max_items: int) -> List[Dict[str, Any
     items: List[Dict[str, Any]] = []
 
     signal_regex = _re.compile(
-        r"(like|likes|me gusta|comentario|comentarios|comments|views|visualizaciones|reproducciones|followers|seguidores|reel|post|publicaci[oó]n|hoy|ayer|\d{1,2}/\d{1,2}/\d{2,4}|october|november|december|january|february|march|april|may|june|july|august|september)",
+        r"(like|likes|me gusta|comentario|comentarios|comments|views|visualizaciones|reproducciones|followers|seguidores|reel|post|publicaci[o\u00f3]n|hoy|ayer|\d{1,2}/\d{1,2}/\d{2,4}|october|november|december|january|february|march|april|may|june|july|august|september)",
         flags=_re.I,
     )
 
@@ -3582,7 +3582,7 @@ async def _sp_search(company_name: Optional[str], platform: str, url: str, max_r
     allowed_domains = _sp_platform_domains(platform)
     primary_domain = allowed_domains[0] if allowed_domains else ""
 
-    # Query deliberadamente filtrada por plataforma para reducir contaminación cruzada.
+    # Query deliberadamente filtrada por plataforma para reducir contaminaci\u00f3n cruzada.
     if primary_domain:
         query = _sp_ws(
             f'{company_name or ""} {platform} site:{primary_domain} {url} followers seguidores posts publicaciones likes comments comentarios views reels fecha'
@@ -3645,7 +3645,7 @@ async def _sp_search(company_name: Optional[str], platform: str, url: str, max_r
             "external_results": external_results,
             "reason": None if resp.status_code < 400 else _sp_trunc(resp.text, 700),
             "source_filter_policy": (
-                "Solo platform_results se usan para extraer métricas candidatas de la plataforma. "
+                "Solo platform_results se usan para extraer m\u00e9tricas candidatas de la plataforma. "
                 "external_results quedan como discovery externo y no alimentan visible_metrics."
             ),
         }
@@ -3675,8 +3675,8 @@ def _sp_social_render_classification(platform: str, final_url: Optional[str], pa
         "/login",
         "accounts/login",
         "login?",
-        "iniciar sesión",
-        "inicia sesión",
+        "iniciar sesi\u00f3n",
+        "inicia sesi\u00f3n",
         "log in",
         "sign in",
         "registrarte",
@@ -3692,7 +3692,7 @@ def _sp_social_render_classification(platform: str, final_url: Optional[str], pa
         "forbidden",
         "not available",
         "content isn't available",
-        "contenido no está disponible",
+        "contenido no est\u00e1 disponible",
         "something went wrong",
     ]
 
@@ -3732,7 +3732,7 @@ def _sp_social_render_classification(platform: str, final_url: Optional[str], pa
         classification = "login_wall"
         evidence_grade = "not_profile_evidence"
         usable_profile_visual_evidence = False
-        reason = "El render terminó en login/auth wall; screenshot útil solo como evidencia de bloqueo, no como vista del perfil."
+        reason = "El render termin\u00f3 en login/auth wall; screenshot \u00fatil solo como evidencia de bloqueo, no como vista del perfil."
     elif is_blocked:
         classification = "blocked_or_unavailable"
         evidence_grade = "not_profile_evidence"
@@ -3742,12 +3742,12 @@ def _sp_social_render_classification(platform: str, final_url: Optional[str], pa
         classification = "public_profile_candidate"
         evidence_grade = "partial_public_profile_evidence"
         usable_profile_visual_evidence = True
-        reason = "El render contiene señales públicas compatibles con perfil/página, pero no reemplaza analytics nativo."
+        reason = "El render contiene se\u00f1ales p\u00fablicas compatibles con perfil/p\u00e1gina, pero no reemplaza analytics nativo."
     else:
         classification = "unknown_or_partial"
         evidence_grade = "weak_visual_evidence"
         usable_profile_visual_evidence = False
-        reason = "El render completó, pero no hay señales suficientes para tratarlo como perfil público visible."
+        reason = "El render complet\u00f3, pero no hay se\u00f1ales suficientes para tratarlo como perfil p\u00fablico visible."
 
     return {
         "classification": classification,
@@ -3783,7 +3783,7 @@ async def _sp_browser_render(platform: str, url: str, req: SocialPublicAuditRequ
                 "classification": "skipped_missing_dependency",
                 "evidence_grade": "not_attempted",
                 "usable_profile_visual_evidence": False,
-                "reason": "No está disponible el helper de Browserbase render.",
+                "reason": "No est\u00e1 disponible el helper de Browserbase render.",
             },
         }
 
@@ -3816,7 +3816,7 @@ async def _sp_browser_render(platform: str, url: str, req: SocialPublicAuditRequ
                 "matched_login_markers": [],
                 "matched_block_markers": [],
                 "matched_public_profile_markers": [],
-                "reason": "El render social no completó correctamente; no hay evidencia visual usable del perfil.",
+                "reason": "El render social no complet\u00f3 correctamente; no hay evidencia visual usable del perfil.",
             }
         else:
             classification = _sp_social_render_classification(
@@ -3832,11 +3832,11 @@ async def _sp_browser_render(platform: str, url: str, req: SocialPublicAuditRequ
             limitations.append("Render social failed_runtime; no se debe tratar como evidencia visual del perfil.")
 
         if classification.get("classification") == "login_wall":
-            limitations.append("Render social terminó en login/auth wall; screenshot no prueba vista pública del perfil.")
+            limitations.append("Render social termin\u00f3 en login/auth wall; screenshot no prueba vista p\u00fablica del perfil.")
         elif classification.get("classification") == "blocked_or_unavailable":
             limitations.append("Render social muestra bloqueo o contenido no disponible.")
         elif classification.get("classification") == "unknown_or_partial":
-            limitations.append("Render social completado, pero evidencia visual débil o parcial.")
+            limitations.append("Render social completado, pero evidencia visual d\u00e9bil o parcial.")
 
         return {
             "status": result.get("status"),
@@ -3862,7 +3862,7 @@ async def _sp_browser_render(platform: str, url: str, req: SocialPublicAuditRequ
                 "classification": "failed_runtime",
                 "evidence_grade": "not_profile_evidence",
                 "usable_profile_visual_evidence": False,
-                "reason": "Falló el render social en runtime.",
+                "reason": "Fall\u00f3 el render social en runtime.",
             },
         }
 
@@ -3905,7 +3905,7 @@ def _sp_merge_metrics(*metric_sets: Dict[str, Any]) -> Dict[str, Any]:
     has_posts = bool(merged.get("posts_visible_values"))
 
     # Guardrail de fiabilidad:
-    # Los valores extraídos desde HTML/snippets/render son candidatos textuales.
+    # Los valores extra\u00eddos desde HTML/snippets/render son candidatos textuales.
     # No son una muestra estructurada de posts ni analytics nativo.
     merged["public_metric_candidates_detected"] = bool(
         has_followers or has_interactions or has_dates or has_posts
@@ -3921,7 +3921,7 @@ def _sp_merge_metrics(*metric_sets: Dict[str, Any]) -> Dict[str, Any]:
         "engagement": "blocked_public_candidates_only",
         "frequency": "blocked_public_candidates_only",
         "reason": (
-            "Las métricas visibles son candidatos textuales de HTML/snippets/render. "
+            "Las m\u00e9tricas visibles son candidatos textuales de HTML/snippets/render. "
             "Para calcular engagement o frecuencia hace falta dataset estructurado de posts "
             "con seguidores, fechas e interacciones, o export nativo de la plataforma."
         ),
@@ -3946,7 +3946,7 @@ def _sp_quality(metrics: Dict[str, Any], fetch_status: str, search_status: str, 
 
     visible_count = sum(1 for k in visible_groups if metrics.get(k))
 
-    # Máximo medium porque la evidencia pública social puede venir de HTML/snippets/render,
+    # M\u00e1ximo medium porque la evidencia p\u00fablica social puede venir de HTML/snippets/render,
     # no de exports nativos ni dataset estructurado de publicaciones.
     if visible_count >= 5:
         confidence = "medium"
@@ -3960,14 +3960,14 @@ def _sp_quality(metrics: Dict[str, Any], fetch_status: str, search_status: str, 
     limitations = []
 
     limitations.append(
-        "Las métricas sociales visibles se tratan como candidatos públicos, no como analytics nativo."
+        "Las m\u00e9tricas sociales visibles se tratan como candidatos p\u00fablicos, no como analytics nativo."
     )
 
     if fetch_status != "completed":
-        limitations.append("La lectura pública directa fue parcial, fallida o bloqueada.")
+        limitations.append("La lectura p\u00fablica directa fue parcial, fallida o bloqueada.")
 
     if search_status not in ("completed", "skipped"):
-        limitations.append("La búsqueda pública fue parcial, fallida o no disponible.")
+        limitations.append("La b\u00fasqueda p\u00fablica fue parcial, fallida o no disponible.")
 
     if render_status not in ("completed", "skipped"):
         limitations.append("El render visual social fue parcial, fallido o no disponible.")
@@ -3996,20 +3996,20 @@ def _sp_quality(metrics: Dict[str, Any], fetch_status: str, search_status: str, 
 def _sp_real_data_contrast_plan(platform: str) -> List[Dict[str, str]]:
     common = [
         {
-            "public_observed_field": "perfil público / identidad",
+            "public_observed_field": "perfil p\u00fablico / identidad",
             "real_data_to_request": "captura fechada o acceso autorizado al perfil/cuenta",
             "source_expected": "plataforma nativa o captura fechada",
-            "why": "Validar que el perfil leído corresponde a la marca y no a un resultado ambiguo.",
+            "why": "Validar que el perfil le\u00eddo corresponde a la marca y no a un resultado ambiguo.",
         },
         {
             "public_observed_field": "seguidores visibles",
-            "real_data_to_request": "seguidores actuales y evolución últimos 90/180 días",
+            "real_data_to_request": "seguidores actuales y evoluci\u00f3n \u00faltimos 90/180 d\u00edas",
             "source_expected": "Insights nativos",
-            "why": "Contrastar visibilidad pública contra crecimiento real.",
+            "why": "Contrastar visibilidad p\u00fablica contra crecimiento real.",
         },
         {
             "public_observed_field": "posts/fechas/interacciones visibles",
-            "real_data_to_request": "export de últimos 30/60/90 contenidos con fecha, formato, alcance, impresiones, views, likes, comentarios, guardados, compartidos, clics y mensajes",
+            "real_data_to_request": "export de \u00faltimos 30/60/90 contenidos con fecha, formato, alcance, impresiones, views, likes, comentarios, guardados, compartidos, clics y mensajes",
             "source_expected": "Meta Business Suite / LinkedIn Analytics / TikTok Analytics / YouTube Studio",
             "why": "Calcular frecuencia, engagement y performance real con datos confiables.",
         },
@@ -4017,22 +4017,22 @@ def _sp_real_data_contrast_plan(platform: str) -> List[Dict[str, str]]:
             "public_observed_field": "clics / mensajes / leads",
             "real_data_to_request": "clics al link, clics a WhatsApp, mensajes, formularios, leads y tasa de respuesta",
             "source_expected": "Insights + CRM + WhatsApp/Inbox",
-            "why": "Medir si el contenido genera acciones comerciales, no solo interacción.",
+            "why": "Medir si el contenido genera acciones comerciales, no solo interacci\u00f3n.",
         },
         {
             "public_observed_field": "ventas atribuidas",
-            "real_data_to_request": "ventas/leads por campaña, contenido, UTMs o CRM",
+            "real_data_to_request": "ventas/leads por campa\u00f1a, contenido, UTMs o CRM",
             "source_expected": "GA4, Ads, CRM, ecommerce backend",
-            "why": "No inferir ventas desde métricas sociales públicas.",
+            "why": "No inferir ventas desde m\u00e9tricas sociales p\u00fablicas.",
         },
     ]
 
     if platform == "linkedin":
         common.append({
-            "public_observed_field": "señal B2B",
+            "public_observed_field": "se\u00f1al B2B",
             "real_data_to_request": "impresiones, clics, seguidores, visitantes, leads, cargos/industrias y posteos de empresa",
             "source_expected": "LinkedIn Analytics / CRM",
-            "why": "Validar si LinkedIn aporta confianza B2B o generación de demanda.",
+            "why": "Validar si LinkedIn aporta confianza B2B o generaci\u00f3n de demanda.",
         })
 
     return common
@@ -4071,7 +4071,7 @@ async def _sp_collect_one(platform: str, url: str, req: SocialPublicAuditRequest
     if req.use_search_discovery:
         search = await _sp_search(req.company_name, platform, url, req.max_search_results)
 
-    # Solo resultados del mismo dominio/plataforma alimentan métricas candidatas.
+    # Solo resultados del mismo dominio/plataforma alimentan m\u00e9tricas candidatas.
     # Resultados externos quedan como discovery, no como visible_metrics.
     search_metric_results = search.get("platform_results") or []
     search_text = " ".join([
@@ -4235,20 +4235,20 @@ def _sp_summary(platform_reports: List[Dict[str, Any]]) -> Dict[str, Any]:
         "platforms_with_public_visual_evidence": platforms_with_public_visual_evidence,
         "platforms_with_blocked_visual_evidence": platforms_with_blocked_visual_evidence,
         "global_limitations": [
-            "Las plataformas sociales pueden ocultar datos públicos, requerir login, bloquear HTML o entregar contenido regionalizado.",
-            "Los snippets de búsqueda sirven como discovery y evidencia débil/media, no reemplazan analytics nativos.",
-            "Screenshots de login/auth wall prueban bloqueo de acceso público renderizado, no visibilidad real del perfil.",
+            "Las plataformas sociales pueden ocultar datos p\u00fablicos, requerir login, bloquear HTML o entregar contenido regionalizado.",
+            "Los snippets de b\u00fasqueda sirven como discovery y evidencia d\u00e9bil/media, no reemplazan analytics nativos.",
+            "Screenshots de login/auth wall prueban bloqueo de acceso p\u00fablico renderizado, no visibilidad real del perfil.",
             "No afirmar engagement, frecuencia, alcance, clics, mensajes, ventas ni calidad de audiencia sin datos suficientes.",
             "Calcular engagement solo si existen seguidores visibles e interacciones visibles suficientes.",
             "Calcular frecuencia solo si existen fechas y publicaciones visibles suficientes.",
         ],
         "owner_exports_required": [
-            "Meta Business Suite: alcance, impresiones, seguidores, clics, mensajes, guardados, compartidos y contenidos últimos 90 días.",
+            "Meta Business Suite: alcance, impresiones, seguidores, clics, mensajes, guardados, compartidos y contenidos \u00faltimos 90 d\u00edas.",
             "Instagram Insights: posts/reels con fecha, formato, alcance, views, likes, comentarios, guardados, shares y clics.",
             "Facebook Insights: alcance, reacciones, comentarios, compartidos, clics, mensajes y crecimiento.",
             "LinkedIn Analytics: followers, impresiones, clics, visitantes, interacciones, posteos y datos de audiencia.",
-            "TikTok Analytics: videos, views, retención, likes, comentarios, shares, seguidores y tráfico al perfil.",
-            "YouTube Studio: videos, views, retención, CTR, suscriptores, tráfico y engagement.",
+            "TikTok Analytics: videos, views, retenci\u00f3n, likes, comentarios, shares, seguidores y tr\u00e1fico al perfil.",
+            "YouTube Studio: videos, views, retenci\u00f3n, CTR, suscriptores, tr\u00e1fico y engagement.",
             "CRM/WhatsApp: consultas, tasa de respuesta, calidad de lead, cierre y ventas atribuidas.",
         ],
     }
@@ -4259,12 +4259,12 @@ def _sp_summary(platform_reports: List[Dict[str, Any]]) -> Dict[str, Any]:
 def _sp_txt(payload: Dict[str, Any]) -> str:
     lines: List[str] = []
 
-    lines.append("AUDITORÍA SOCIAL PÚBLICA EXHAUSTIVA")
+    lines.append("AUDITOR\u00cdA SOCIAL P\u00daBLICA EXHAUSTIVA")
     lines.append("=" * 72)
     lines.append("")
     lines.append(f"Empresa: {payload.get('company_name') or 'No especificada'}")
-    lines.append(f"Fecha de recolección: {payload.get('retrieved_at')}")
-    lines.append(f"Versión del collector: {payload.get('version')}")
+    lines.append(f"Fecha de recolecci\u00f3n: {payload.get('retrieved_at')}")
+    lines.append(f"Versi\u00f3n del collector: {payload.get('version')}")
     lines.append(f"Estado: {payload.get('status')}")
     lines.append(f"Report ID: {payload.get('report_id')}")
     lines.append("")
@@ -4280,9 +4280,9 @@ def _sp_txt(payload: Dict[str, Any]) -> str:
 
     summary = payload.get("social_public_summary") or {}
     lines.append(f"Plataformas analizadas: {summary.get('platforms_analyzed')}")
-    lines.append(f"Con alguna métrica visible: {summary.get('platforms_with_any_visible_metrics')}")
-    lines.append(f"Engagement calculable con evidencia pública estructurada: {summary.get('platforms_with_engagement_possible')}")
-    lines.append(f"Frecuencia calculable con evidencia pública estructurada: {summary.get('platforms_with_frequency_possible')}")
+    lines.append(f"Con alguna m\u00e9trica visible: {summary.get('platforms_with_any_visible_metrics')}")
+    lines.append(f"Engagement calculable con evidencia p\u00fablica estructurada: {summary.get('platforms_with_engagement_possible')}")
+    lines.append(f"Frecuencia calculable con evidencia p\u00fablica estructurada: {summary.get('platforms_with_frequency_possible')}")
     lines.append(f"Parciales o bloqueadas: {summary.get('platforms_partial_or_blocked')}")
 
     lines.append("")
@@ -4299,7 +4299,7 @@ def _sp_txt(payload: Dict[str, Any]) -> str:
 
         fetch = report.get("fetch") or {}
         lines.append("")
-        lines.append("Lectura pública directa")
+        lines.append("Lectura p\u00fablica directa")
         lines.append(f"- status: {fetch.get('status')}")
         lines.append(f"- http_status: {fetch.get('http_status')}")
         lines.append(f"- final_url: {fetch.get('final_url')}")
@@ -4309,7 +4309,7 @@ def _sp_txt(payload: Dict[str, Any]) -> str:
 
         identity = report.get("public_identity") or {}
         lines.append("")
-        lines.append("Identidad pública detectada")
+        lines.append("Identidad p\u00fablica detectada")
         lines.append(f"- title: {identity.get('title')}")
         lines.append(f"- meta_description: {identity.get('meta_description')}")
         lines.append(f"- og_title: {identity.get('og_title')}")
@@ -4323,7 +4323,7 @@ def _sp_txt(payload: Dict[str, Any]) -> str:
 
         metrics = report.get("visible_metrics") or {}
         lines.append("")
-        lines.append("Métricas visibles detectadas")
+        lines.append("M\u00e9tricas visibles detectadas")
         lines.append(f"- followers: {metrics.get('followers_visible_values')}")
         lines.append(f"- following: {metrics.get('following_visible_values')}")
         lines.append(f"- posts: {metrics.get('posts_visible_values')}")
@@ -4386,12 +4386,12 @@ def _sp_txt(payload: Dict[str, Any]) -> str:
         lines.append(f"- engagement_calculable: {quality.get('engagement_calculable')}")
         lines.append(f"- frequency_calculable: {quality.get('frequency_calculable')}")
         for limitation in quality.get("limitations") or []:
-            lines.append(f"- limitación: {limitation}")
+            lines.append(f"- limitaci\u00f3n: {limitation}")
 
         lines.append("")
         lines.append("Plan de contraste contra datos reales")
         for row in report.get("contrast_plan") or []:
-            lines.append(f"- Campo público: {row.get('public_observed_field')}")
+            lines.append(f"- Campo p\u00fablico: {row.get('public_observed_field')}")
             lines.append(f"  Dato real a pedir: {row.get('real_data_to_request')}")
             lines.append(f"  Fuente esperada: {row.get('source_expected')}")
             lines.append(f"  Motivo: {row.get('why')}")
@@ -4419,8 +4419,8 @@ def _sp_txt(payload: Dict[str, Any]) -> str:
     lines.append("-" * 72)
     lines.append("- No afirmar engagement, frecuencia, alcance, clics, mensajes, ventas ni calidad de lead sin evidencia suficiente.")
     lines.append("- No calcular likes promedio, comentarios promedio, engagement rate ni frecuencia si no hay base observable suficiente.")
-    lines.append("- Los snippets de búsqueda son señales de discovery, no analytics nativo.")
-    lines.append("- La información social pública puede estar incompleta por login, bloqueo, región, HTML dinámico o cambios de plataforma.")
+    lines.append("- Los snippets de b\u00fasqueda son se\u00f1ales de discovery, no analytics nativo.")
+    lines.append("- La informaci\u00f3n social p\u00fablica puede estar incompleta por login, bloqueo, regi\u00f3n, HTML din\u00e1mico o cambios de plataforma.")
     lines.append("- Para contraste real, usar exports nativos, capturas fechadas, CRM, GA4 y datos de ventas.")
 
     return "\n".join(lines) + "\n"
@@ -4776,8 +4776,8 @@ async def upload_screenshot_to_drive(req: DriveScreenshotUploadRequest, _: None 
         "uploaded_at": now_iso(),
         "limitations": [
             "Drive upload only confirms screenshot persistence in Google Drive.",
-            "No interpreta el contenido visual por sí solo.",
-            "No vuelve público el archivo salvo que Apps Script tenga PUBLIC_SHARING=true.",
+            "No interpreta el contenido visual por s\u00ed solo.",
+            "No vuelve p\u00fablico el archivo salvo que Apps Script tenga PUBLIC_SHARING=true.",
         ],
     }
 
@@ -4835,7 +4835,7 @@ async def upload_report_to_drive(req: DriveUploadRequest, _: None = Depends(veri
         "limitations": [
             "Drive upload only confirms file persistence in Google Drive.",
             "No modifica el contenido del reporte.",
-            "No vuelve público el archivo salvo que Apps Script tenga PUBLIC_SHARING=true.",
+            "No vuelve p\u00fablico el archivo salvo que Apps Script tenga PUBLIC_SHARING=true.",
         ],
     }
 
@@ -4855,7 +4855,7 @@ async def audit_social_public(req: SocialPublicAuditRequest, _: None = Depends(v
     if not sources:
         raise HTTPException(
             status_code=400,
-            detail="Enviar al menos un link social público: instagram, facebook, linkedin, tiktok, youtube o x.",
+            detail="Enviar al menos un link social p\u00fablico: instagram, facebook, linkedin, tiktok, youtube o x.",
         )
 
     platform_reports: List[Dict[str, Any]] = []
@@ -4883,10 +4883,10 @@ async def audit_social_public(req: SocialPublicAuditRequest, _: None = Depends(v
             "endpoint": f"/deliverables/social-text/{report_id}.txt",
         },
         "limitations": [
-            "Módulo basado en evidencia pública observable, HTML público, search discovery y render opcional.",
+            "M\u00f3dulo basado en evidencia p\u00fablica observable, HTML p\u00fablico, search discovery y render opcional.",
             "No reemplaza Meta Business Suite, Instagram Insights, Facebook Insights, LinkedIn Analytics, TikTok Analytics, YouTube Studio ni CRM.",
             "No calcula engagement/frecuencia si faltan seguidores, fechas, publicaciones o interacciones visibles suficientes.",
-            "No afirma ventas, ROAS, CPA, CPL, tráfico, conversión, margen ni calidad de lead.",
+            "No afirma ventas, ROAS, CPA, CPL, tr\u00e1fico, conversi\u00f3n, margen ni calidad de lead.",
         ],
         "retrieved_at": now_iso(),
     }
@@ -4993,8 +4993,8 @@ async def debug_social_auth_config(_: None = Depends(verify_api_key)) -> Dict[st
         "notes": [
             "Este endpoint no devuelve credenciales.",
             "Solo confirma si las variables necesarias existen.",
-            "No realiza login automÃ¡tico.",
-            "CAPTCHA, 2FA o checkpoint deben reportarse como challenge_required; no se resuelven automÃ¡ticamente.",
+            "No realiza login autom\u00e1tico.",
+            "CAPTCHA, 2FA o checkpoint deben reportarse como challenge_required; no se resuelven autom\u00e1ticamente.",
         ],
     }
 
@@ -5168,7 +5168,7 @@ def _sar_classify_auth_state(platform: str, final_url: Optional[str], title: Opt
         "captcha",
         "recaptcha",
         "security check",
-        "verificaciÃ³n de seguridad",
+        "verificaci\u00f3n de seguridad",
         "confirm you are human",
         "comprueba que eres humano",
     ]
@@ -5179,8 +5179,8 @@ def _sar_classify_auth_state(platform: str, final_url: Optional[str], title: Opt
         "two factor",
         "2fa",
         "verification code",
-        "cÃ³digo de seguridad",
-        "cÃ³digo de verificaciÃ³n",
+        "c\u00f3digo de seguridad",
+        "c\u00f3digo de verificaci\u00f3n",
         "approve your login",
         "confirma tu identidad",
         "confirm your identity",
@@ -5191,33 +5191,33 @@ def _sar_classify_auth_state(platform: str, final_url: Optional[str], title: Opt
     login_markers = [
         "/login",
         "accounts/login",
-        "iniciar sesiÃ³n",
-        "inicia sesiÃ³n",
+        "iniciar sesi\u00f3n",
+        "inicia sesi\u00f3n",
         "iniciar sesi",
         "inicia sesi",
         "log in",
         "sign in",
         "email or phone",
         "email address",
-        "correo electrÃ³nico",
+        "correo electr\u00f3nico",
         "correo electronico",
         "correo electr",
-        "nÃºmero de telÃ©fono",
+        "n\u00famero de tel\u00e9fono",
         "numero de telefono",
-        "contraseÃ±a",
+        "contrase\u00f1a",
         "contrasena",
         "contrase",
         "forgot password",
         "olvidaste la cuenta",
-        "olvidaste tu contraseÃ±a",
+        "olvidaste tu contrase\u00f1a",
         "olvidaste tu contrase",
         "crear cuenta nueva",
         "create new account",
-        "escanea el cÃ³digo qr",
+        "escanea el c\u00f3digo qr",
         "escanea el codigo qr",
-        "cÃ³digo qr",
+        "c\u00f3digo qr",
         "codigo qr",
-        "confirma que coinciden los cÃ³digos",
+        "confirma que coinciden los c\u00f3digos",
         "confirma que coinciden los codigos",
     ]
 
@@ -5235,32 +5235,32 @@ def _sar_classify_auth_state(platform: str, final_url: Optional[str], title: Opt
         classification = "captcha_required"
         evidence_grade = "not_profile_evidence"
         usable = False
-        reason = "La plataforma solicitÃ³ CAPTCHA/verificaciÃ³n humana. No se intenta resolver automÃ¡ticamente."
+        reason = "La plataforma solicit\u00f3 CAPTCHA/verificaci\u00f3n humana. No se intenta resolver autom\u00e1ticamente."
     elif matched_checkpoint:
         classification = "checkpoint_required"
         evidence_grade = "not_profile_evidence"
         usable = False
-        reason = "La plataforma solicitÃ³ checkpoint/2FA/verificaciÃ³n adicional. No se intenta evadir."
+        reason = "La plataforma solicit\u00f3 checkpoint/2FA/verificaci\u00f3n adicional. No se intenta evadir."
     elif matched_visible and matched_login:
         classification = "profile_visible_with_login_prompt"
         evidence_grade = "partial_public_profile_evidence"
         usable = True
-        reason = "El perfil/pÃ¡gina pÃºblica es visible, pero la pantalla conserva prompt de login; sirve como evidencia visual pÃºblica parcial, no como prueba de sesiÃ³n autenticada plena."
+        reason = "El perfil/p\u00e1gina p\u00fablica es visible, pero la pantalla conserva prompt de login; sirve como evidencia visual p\u00fablica parcial, no como prueba de sesi\u00f3n autenticada plena."
     elif matched_login:
         classification = "login_wall"
         evidence_grade = "not_profile_evidence"
         usable = False
-        reason = "La navegaciÃ³n terminÃ³ en login wall o no mantuvo sesiÃ³n usable."
+        reason = "La navegaci\u00f3n termin\u00f3 en login wall o no mantuvo sesi\u00f3n usable."
     elif matched_visible:
         classification = "authenticated_profile_visible"
         evidence_grade = "authenticated_public_profile_evidence"
         usable = True
-        reason = "El perfil/pÃ¡gina pÃºblica fue visible tras login automÃ¡tico controlado sin prompt de login dominante."
+        reason = "El perfil/p\u00e1gina p\u00fablica fue visible tras login autom\u00e1tico controlado sin prompt de login dominante."
     else:
         classification = "unknown_or_partial"
         evidence_grade = "weak_visual_evidence"
         usable = False
-        reason = "La pÃ¡gina cargÃ³, pero no hay seÃ±ales suficientes para confirmar perfil pÃºblico visible."
+        reason = "La p\u00e1gina carg\u00f3, pero no hay se\u00f1ales suficientes para confirmar perfil p\u00fablico visible."
 
     return {
         "classification": classification,
@@ -5440,8 +5440,8 @@ async def _sar_perform_login(platform: str, page: Any, creds: Dict[str, Any], re
                 'input[name="username"]',
                 'input[autocomplete="username"]',
                 'input[aria-label*="Phone"]',
-                'input[aria-label*="telÃ©fono"]',
-                'input[aria-label*="TelÃ©fono"]',
+                'input[aria-label*="tel\u00e9fono"]',
+                'input[aria-label*="Tel\u00e9fono"]',
                 'input[type="text"]',
             ],
             str(creds["username"]),
@@ -5454,7 +5454,7 @@ async def _sar_perform_login(platform: str, page: Any, creds: Dict[str, Any], re
                 page=page,
                 platform=platform,
                 classification="login_form_not_found",
-                reason="No se encontrÃ³ campo visible de usuario en el login de Instagram.",
+                reason="No se encontr\u00f3 campo visible de usuario en el login de Instagram.",
                 auth_stage="login_form_detection",
             )
 
@@ -5464,7 +5464,7 @@ async def _sar_perform_login(platform: str, page: Any, creds: Dict[str, Any], re
                 'input[name="password"]',
                 'input[autocomplete="current-password"]',
                 'input[aria-label*="Password"]',
-                'input[aria-label*="ContraseÃ±a"]',
+                'input[aria-label*="Contrase\u00f1a"]',
                 'input[type="password"]',
             ],
             str(creds["password"]),
@@ -5477,7 +5477,7 @@ async def _sar_perform_login(platform: str, page: Any, creds: Dict[str, Any], re
                 page=page,
                 platform=platform,
                 classification="login_form_not_found",
-                reason="No se encontrÃ³ campo visible de password en el login de Instagram.",
+                reason="No se encontr\u00f3 campo visible de password en el login de Instagram.",
                 auth_stage="login_form_detection",
             )
 
@@ -5486,9 +5486,9 @@ async def _sar_perform_login(platform: str, page: Any, creds: Dict[str, Any], re
             [
                 'button[type="submit"]',
                 'button:has-text("Log in")',
-                'button:has-text("Iniciar sesiÃ³n")',
+                'button:has-text("Iniciar sesi\u00f3n")',
                 'div[role="button"]:has-text("Log in")',
-                'div[role="button"]:has-text("Iniciar sesiÃ³n")',
+                'div[role="button"]:has-text("Iniciar sesi\u00f3n")',
             ],
             timeout_ms=7000,
         )
@@ -5502,7 +5502,7 @@ async def _sar_perform_login(platform: str, page: Any, creds: Dict[str, Any], re
                     page=page,
                     platform=platform,
                     classification="login_submit_not_found",
-                    reason="No se encontrÃ³ botÃ³n submit ni se pudo enviar el formulario de Instagram con Enter.",
+                    reason="No se encontr\u00f3 bot\u00f3n submit ni se pudo enviar el formulario de Instagram con Enter.",
                     auth_stage="login_submit_detection",
                 )
 
@@ -5549,7 +5549,7 @@ async def _sar_perform_login(platform: str, page: Any, creds: Dict[str, Any], re
                 page=page,
                 platform=platform,
                 classification="login_form_not_found",
-                reason="No se encontrÃ³ campo visible de usuario/email en el login de Facebook.",
+                reason="No se encontr\u00f3 campo visible de usuario/email en el login de Facebook.",
                 auth_stage="login_form_detection",
             )
 
@@ -5560,7 +5560,7 @@ async def _sar_perform_login(platform: str, page: Any, creds: Dict[str, Any], re
                 'input#pass',
                 'input[autocomplete="current-password"]',
                 'input[aria-label*="Password"]',
-                'input[aria-label*="ContraseÃ±a"]',
+                'input[aria-label*="Contrase\u00f1a"]',
                 'input[type="password"]',
             ],
             str(creds["password"]),
@@ -5573,7 +5573,7 @@ async def _sar_perform_login(platform: str, page: Any, creds: Dict[str, Any], re
                 page=page,
                 platform=platform,
                 classification="login_form_not_found",
-                reason="No se encontrÃ³ campo visible de password en el login de Facebook.",
+                reason="No se encontr\u00f3 campo visible de password en el login de Facebook.",
                 auth_stage="login_form_detection",
             )
 
@@ -5584,7 +5584,7 @@ async def _sar_perform_login(platform: str, page: Any, creds: Dict[str, Any], re
                 'button[type="submit"]',
                 'input[type="submit"]',
                 'button:has-text("Log in")',
-                'button:has-text("Iniciar sesiÃ³n")',
+                'button:has-text("Iniciar sesi\u00f3n")',
             ],
             timeout_ms=7000,
         )
@@ -5598,7 +5598,7 @@ async def _sar_perform_login(platform: str, page: Any, creds: Dict[str, Any], re
                     page=page,
                     platform=platform,
                     classification="login_submit_not_found",
-                    reason="No se encontrÃ³ botÃ³n submit ni se pudo enviar el formulario de Facebook con Enter.",
+                    reason="No se encontr\u00f3 bot\u00f3n submit ni se pudo enviar el formulario de Facebook con Enter.",
                     auth_stage="login_submit_detection",
                 )
 
@@ -5649,7 +5649,7 @@ async def _sar_login_and_capture(req: SocialAuthRenderRequest) -> Dict[str, Any]
         return {
             "status": "failed_runtime",
             "classification": "playwright_unavailable",
-            "reason": f"Playwright no estÃ¡ disponible en runtime: {exc}",
+            "reason": f"Playwright no est\u00e1 disponible en runtime: {exc}",
         }
 
     browser = None
@@ -5766,7 +5766,7 @@ async def _sar_login_and_capture(req: SocialAuthRenderRequest) -> Dict[str, Any]
                     "images_count": images_count,
                     "retrieved_at": _datetime.utcnow().isoformat() + "Z",
                     "limitations": [
-                        "Se usÃ³ storage_state persistente generado localmente.",
+                        "Se us\u00f3 storage_state persistente generado localmente.",
                         "No se expone storage_state, cookies ni credenciales.",
                         "No se resuelve CAPTCHA, checkpoint ni 2FA.",
                         "No se realizan acciones de escritura.",
@@ -5827,7 +5827,7 @@ async def _sar_login_and_capture(req: SocialAuthRenderRequest) -> Dict[str, Any]
                     "text_sample": (post_login_text or "")[:2500],
                     "retrieved_at": _datetime.utcnow().isoformat() + "Z",
                     "limitations": [
-                        "Se detectÃ³ challenge/captcha/checkpoint; no se intenta resolver automÃ¡ticamente.",
+                        "Se detect\u00f3 challenge/captcha/checkpoint; no se intenta resolver autom\u00e1ticamente.",
                         "El screenshot representa el bloqueo, no evidencia visual del perfil.",
                     ],
                 }
@@ -5896,10 +5896,10 @@ async def _sar_login_and_capture(req: SocialAuthRenderRequest) -> Dict[str, Any]
                 "images_count": images_count,
                 "retrieved_at": _datetime.utcnow().isoformat() + "Z",
                 "limitations": [
-                    "Login automÃ¡tico controlado con cuenta dedicada.",
-                    "No se accede a perfiles privados, DMs ni datos no pÃºblicos.",
+                    "Login autom\u00e1tico controlado con cuenta dedicada.",
+                    "No se accede a perfiles privados, DMs ni datos no p\u00fablicos.",
                     "No se realizan acciones de escritura.",
-                    "CAPTCHA, 2FA o checkpoint se reportan; no se resuelven automÃ¡ticamente.",
+                    "CAPTCHA, 2FA o checkpoint se reportan; no se resuelven autom\u00e1ticamente.",
                     "La evidencia autenticada visible no reemplaza exports nativos de Meta/Instagram Insights.",
                 ],
             }
@@ -5933,7 +5933,7 @@ async def _sar_login_and_capture(req: SocialAuthRenderRequest) -> Dict[str, Any]
                 },
             },
             "limitations": [
-                "FallÃ³ el render autenticado en runtime.",
+                "Fall\u00f3 el render autenticado en runtime.",
                 "No se debe tratar como evidencia visual del perfil.",
             ],
         }
@@ -6180,7 +6180,7 @@ async def collect_public_presence(req: PublicPresenceCollectRequest, _: None = D
     created_at = now_iso()
     assets = merge_assets(req)
     if not any(assets.values()):
-        raise HTTPException(status_code=400, detail="Se requiere al menos un link público: sitio web o red social.")
+        raise HTTPException(status_code=400, detail="Se requiere al menos un link p\u00fablico: sitio web o red social.")
 
     evidence = EvidenceBuilder()
     reports: List[Dict[str, Any]] = []
@@ -6191,7 +6191,7 @@ async def collect_public_presence(req: PublicPresenceCollectRequest, _: None = D
         evidence.add("declared_input", None, "input_parser", "company_name", req.company_name, "medium", evidence_type="declared_input")
     for platform, url in assets.items():
         if url:
-            evidence.add(platform, url, "input_parser", "asset_url_declared", url, "low", limitations=["Un link declarado no prueba que el contenido haya sido leído."], evidence_type="declared_input")
+            evidence.add(platform, url, "input_parser", "asset_url_declared", url, "low", limitations=["Un link declarado no prueba que el contenido haya sido le\u00eddo."], evidence_type="declared_input")
 
     website_result = await collect_website_static(assets.get("website"), req.max_website_pages, evidence)
     reports.extend(website_result["reports"])
@@ -6265,7 +6265,7 @@ async def collect_public_presence(req: PublicPresenceCollectRequest, _: None = D
         "txt_report": {},
         "non_analysis_guards": [
             "Este endpoint genera auditoria de presencia publica; no diagnostico de performance comercial privada.",
-            "No afirmar performance, ROAS, CPA, CPL, conversión, ventas ni calidad de lead con este output.",
+            "No afirmar performance, ROAS, CPA, CPL, conversi\u00f3n, ventas ni calidad de lead con este output.",
             "Los datos no recolectados deben explicarse mediante field_recovery_guide.",
         ],
     }
@@ -6441,7 +6441,7 @@ def _igpm_extract_hashtags(text: str) -> _IGList[str]:
     candidates = _ig_re.findall(r"#[^\s#]+", raw_text, flags=_ig_re.UNICODE)
     seen = set()
     out = []
-    trailing_punctuation = '.,;:!?Â¡Â¿)]}>)"â€œâ€â€˜â€™`Â´â€¦'
+    trailing_punctuation = '.,;:!???)]}>)"\u00e2\u20ac\u0153\u00e2\u20ac\u009d\u00e2\u20ac\u02dc\u00e2\u20ac\u2122`\u00c2\u00b4\u00e2\u20ac\u00a6'
     for tag in candidates:
         clean = tag.strip().rstrip(trailing_punctuation)
         if len(clean) <= 1:
@@ -6449,7 +6449,7 @@ def _igpm_extract_hashtags(text: str) -> _IGList[str]:
         if any(x in clean for x in ["<", ">", "=", "http://", "https://", "&quot;"]):
             continue
         # Filtra falsos positivos tomados de CSS/HTML, por ejemplo #000000 o #FFFFFF.
-        # Mantiene hashtags numÃ©ricos legÃ­timos de campaÃ±as como #2026.
+        # Mantiene hashtags num\u00e9ricos leg\u00edtimos de campa\u00f1as como #2026.
         if _ig_re.fullmatch(r"#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?", clean):
             continue
         key = clean.casefold()
@@ -6487,7 +6487,7 @@ def _igpm_parse_likes(text: str) -> _IGOptional[int]:
         r"([\d.,]+(?:\s*(?:mil|k|m|millones))?)\s+Me gusta",
         r"([\d.,]+(?:\s*(?:mil|k|m|millones))?)\s+likes",
         r"([\d.,]+(?:\s*(?:mil|k|m|millions))?)\s+likes",
-        r"Le gusta a\s+.+?\s+y\s+([\d.,]+(?:\s*(?:mil|k|m|millones))?)\s+personas\s+m[aÃ¡]s",
+        r"Le gusta a\s+.+?\s+y\s+([\d.,]+(?:\s*(?:mil|k|m|millones))?)\s+personas\s+m[a\u00e1]s",
         r"Liked by\s+.+?\s+and\s+([\d.,]+(?:\s*(?:mil|k|m|millions))?)\s+others",
         r"([\d.,]+(?:\s*(?:mil|k|m|millones))?)\s+personas\s+les\s+gusta",
     ]
@@ -7516,9 +7516,9 @@ def _spa_topic_from_post(post):
         ("pascuas", ["pascuas"]),
         ("san_valentin", ["sanvalentin", "14defebrero", "amor"]),
         ("mayorista_b2b", ["mayorista", "revendedor", "emprendedores", "regalosempresariales"]),
-        ("reposteria", ["reposteria", "reposterÃ­a", "mesasnavide", "bazar"]),
-        ("equipo_confianza", ["trabajoenequipo", "compaÃ±eros", "companeros", "atencionalpublico", "atenciÃ³nalpÃºblico"]),
-        ("efemeride", ["diadel", "dÃ­adel", "diadelmate", "diadelchicle"])
+        ("reposteria", ["reposteria", "reposter\u00eda", "mesasnavide", "bazar"]),
+        ("equipo_confianza", ["trabajoenequipo", "compa\u00f1eros", "companeros", "atencionalpublico", "atenci\u00f3nalp\u00fablico"]),
+        ("efemeride", ["diadel", "d\u00edadel", "diadelmate", "diadelchicle"])
     ]
     for topic, keys in mapping:
         if any(k in blob for k in keys):
@@ -8201,8 +8201,8 @@ class ReportPackageRequest(BaseModel):
     evidence_payload: Dict[str, Any] = {}
     social_metrics: Dict[str, Any] = {}
     drive_folder_name: Optional[str] = None
-    documentation_folder_name: str = "DocumentaciÃ³n"
-    technical_folder_name: str = "TÃ©cnico"
+    documentation_folder_name: str = "Documentaci\u00f3n"
+    technical_folder_name: str = "T\u00e9cnico"
     generate_interactive_html: bool = True
     generate_full_pdf: bool = True
     generate_executive_pdf: bool = True
@@ -8219,8 +8219,8 @@ class ReportPackageRegenerateRequest(BaseModel):
     evidence_payload: Dict[str, Any] = {}
     social_metrics: Dict[str, Any] = {}
     drive_folder_name: Optional[str] = None
-    documentation_folder_name: str = "DocumentaciÃ³n"
-    technical_folder_name: str = "TÃ©cnico"
+    documentation_folder_name: str = "Documentaci\u00f3n"
+    technical_folder_name: str = "T\u00e9cnico"
     regenerate_interactive_html: bool = True
     regenerate_full_pdf: bool = True
     regenerate_executive_pdf: bool = True
@@ -8243,7 +8243,7 @@ def _rpb_public_base_url():
 
 def _rpb_slug(value: str) -> str:
     value = (value or "reporte").lower()
-    for a, b in {"Ã¡":"a","Ã©":"e","Ã­":"i","Ã³":"o","Ãº":"u","Ã±":"n","Ã¼":"u"}.items():
+    for a, b in {"\u00e1":"a","\u00e9":"e","\u00ed":"i","\u00f3":"o","\u00fa":"u","\u00f1":"n","\u00fc":"u"}.items():
         value = value.replace(a, b)
     value = _rpb_re.sub(r"[^a-z0-9]+", "_", value).strip("_")
     return (value or "reporte")[:80]
@@ -8356,16 +8356,16 @@ def _rpb_build_interactive_html(req: ReportPackageRequest, report_id: str, creat
         "</header><div class='layout'><nav>",
         "".join(nav),
         "</nav><main>",
-        "<div class='cards'><div class='card'><strong>HTML interactivo</strong><p>AuditorÃ­a completa navegable.</p></div><div class='card'><strong>PDF completo</strong><p>Mismo contenido, fijo.</p></div><div class='card'><strong>PDF ejecutivo</strong><p>Resumen para dueÃ±os.</p></div></div>",
+        "<div class='cards'><div class='card'><strong>HTML interactivo</strong><p>Auditor\u00eda completa navegable.</p></div><div class='card'><strong>PDF completo</strong><p>Mismo contenido, fijo.</p></div><div class='card'><strong>PDF ejecutivo</strong><p>Resumen para due\u00f1os.</p></div></div>",
         "".join(panels),
-        f"<section class='panel active' style='display:block;margin-top:18px'><h2>Anexos tÃ©cnicos</h2><details><summary>Evidencia tÃ©cnica JSON</summary><pre>{evidence}</pre></details><details><summary>MÃ©tricas sociales JSON</summary><pre>{metrics}</pre></details></section>",
-        "</main></div><footer style='padding:24px;color:#94a3b8'>Generado por Marketing Auditor. MÃ©tricas pÃºblicas parciales, no performance interna.</footer>",
+        f"<section class='panel active' style='display:block;margin-top:18px'><h2>Anexos t\u00e9cnicos</h2><details><summary>Evidencia t\u00e9cnica JSON</summary><pre>{evidence}</pre></details><details><summary>M\u00e9tricas sociales JSON</summary><pre>{metrics}</pre></details></section>",
+        "</main></div><footer style='padding:24px;color:#94a3b8'>Generado por Marketing Auditor. M\u00e9tricas p\u00fablicas parciales, no performance interna.</footer>",
         f"<script>{js}</script></body></html>"
     ])
 
 
 def _rpb_extract_executive_md(full_md: str) -> str:
-    keys = ["resumen ejecutivo", "semÃ¡foro", "semaforo", "mÃ©tricas pÃºblicas", "metricas publicas", "plan 30", "prÃ³ximos pasos", "proximos pasos", "decisiÃ³n", "decision"]
+    keys = ["resumen ejecutivo", "sem\u00e1foro", "semaforo", "m\u00e9tricas p\u00fablicas", "metricas publicas", "plan 30", "pr\u00f3ximos pasos", "proximos pasos", "decisi\u00f3n", "decision"]
     selected = []
     for sec in _rpb_sections_from_markdown(full_md):
         if any(k in sec["title"].lower() for k in keys):
@@ -8549,8 +8549,8 @@ def _rpb_build_package(req: ReportPackageRequest):
         try:
             parent_name = req.drive_folder_name or f"{req.company_name} - Auditoria Publica Integral - {_rpb_datetime.utcnow().strftime('%Y-%m-%d')}"
             parent = _rpb_drive_find_or_create_folder(parent_name, _rpb_drive_parent_id(), req.public_sharing)
-            doc = _rpb_drive_find_or_create_folder(req.documentation_folder_name or "DocumentaciÃ³n", parent.get("id"), req.public_sharing)
-            tech = _rpb_drive_find_or_create_folder(req.technical_folder_name or "TÃ©cnico", doc.get("id"), req.public_sharing)
+            doc = _rpb_drive_find_or_create_folder(req.documentation_folder_name or "Documentaci\u00f3n", parent.get("id"), req.public_sharing)
+            tech = _rpb_drive_find_or_create_folder(req.technical_folder_name or "T\u00e9cnico", doc.get("id"), req.public_sharing)
             drive.update({"status":"uploading","parent_folder_id":parent.get("id"),"parent_folder_url":parent.get("webViewLink"),"documentation_folder_id":doc.get("id"),"documentation_folder_url":doc.get("webViewLink"),"technical_folder_id":tech.get("id"),"technical_folder_url":tech.get("webViewLink")})
             upload_plan = {"interactive_html":(html_path,doc.get("id")),"full_pdf":(full_pdf_path,doc.get("id")),"executive_pdf":(exec_pdf_path,doc.get("id")),"markdown_source":(md_path,tech.get("id")),"evidence_json":(json_path,tech.get("id"))}
             for key, (p, folder_id) in upload_plan.items():
@@ -8565,7 +8565,7 @@ def _rpb_build_package(req: ReportPackageRequest):
             drive["status"] = "partial_failed" if any(v.get("status") == "failed" for v in drive["files"].values()) else "completed"
         except Exception as exc:
             drive["status"] = "failed"; drive["reason"] = str(exc); errors.append(f"drive setup failed: {exc}")
-    return {"collector":"report_package_builder","version":APP_VERSION,"status":"completed" if not errors else "partial_completed","report_id":report_id,"company_name":req.company_name,"report_title":req.report_title,"created_at":created_at,"documentation_folder_name":req.documentation_folder_name,"technical_folder_name":req.technical_folder_name,"local_urls":local_urls,"files":files,"drive":drive,"errors":errors,"regeneration_available":True,"notes":["HTML interactivo completo y PDF completo comparten el mismo markdown_source.","PDF completo contiene la misma auditoria en formato fijo/no interactivo.","PDF ejecutivo es un documento separado para dueÃ±os/gerencia.","JSON tecnico y MD fuente sirven para trazabilidad y regeneracion."]}
+    return {"collector":"report_package_builder","version":APP_VERSION,"status":"completed" if not errors else "partial_completed","report_id":report_id,"company_name":req.company_name,"report_title":req.report_title,"created_at":created_at,"documentation_folder_name":req.documentation_folder_name,"technical_folder_name":req.technical_folder_name,"local_urls":local_urls,"files":files,"drive":drive,"errors":errors,"regeneration_available":True,"notes":["HTML interactivo completo y PDF completo comparten el mismo markdown_source.","PDF completo contiene la misma auditoria en formato fijo/no interactivo.","PDF ejecutivo es un documento separado para due\u00f1os/gerencia.","JSON tecnico y MD fuente sirven para trazabilidad y regeneracion."]}
 
 
 @app.post("/deliverables/report-package")
@@ -8653,8 +8653,8 @@ async def _rpb_upload_package_with_existing_drive(req, package_result):
         }
 
     parent_folder = getattr(req, "drive_folder_name", None) or f"{getattr(req, 'company_name', 'Cliente')} - Auditoria Publica Integral - {_rpb_datetime.utcnow().strftime('%Y-%m-%d')}"
-    documentation_name = getattr(req, "documentation_folder_name", None) or "DocumentaciÃ³n"
-    technical_name = getattr(req, "technical_folder_name", None) or "TÃ©cnico"
+    documentation_name = getattr(req, "documentation_folder_name", None) or "Documentaci\u00f3n"
+    technical_name = getattr(req, "technical_folder_name", None) or "T\u00e9cnico"
 
     documentation_folder = _rpb_folder_path(parent_folder, documentation_name)
     technical_folder = _rpb_folder_path(parent_folder, documentation_name, technical_name)
@@ -8770,7 +8770,7 @@ async def createReportPackageV2(request: ReportPackageRequest):
 
     notes = result.get("notes") or []
     notes.append("4H.2-B: Drive upload uses existing DRIVE_UPLOAD_WEBAPP_URL/DRIVE_UPLOAD_SECRET integration.")
-    notes.append("Documentation folder is requested as parent/DocumentaciÃ³n and technical files as parent/DocumentaciÃ³n/TÃ©cnico.")
+    notes.append("Documentation folder is requested as parent/Documentaci\u00f3n and technical files as parent/Documentaci\u00f3n/T\u00e9cnico.")
     result["notes"] = notes
     return result
 
@@ -8806,7 +8806,7 @@ import unicodedata as _rpv3_unicodedata
 def _rpv3_mojibake_score(text: str) -> int:
     if not isinstance(text, str):
         return 0
-    markers = ["Ãƒ", "Ã‚", "Ã¢â‚¬", "Ã¢â‚¬â„¢", "Ã¢â‚¬Å“", "Ã¢â‚¬Â", "Ã¢â‚¬â€œ", "Ã¢â‚¬â€", "Ã°Å¸", "ï¿½"]
+    markers = ["\u00c3\u0192", "\u00c3\u201a", "\u00c3\u00a2\u00e2\u201a\u00ac", "\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u201e\u00a2", "\u00c3\u00a2\u00e2\u201a\u00ac\u00c5\u201c", "\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u009d", "\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u20ac\u0153", "\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u20ac\u009d", "\u00c3\u00b0\u00c5\u00b8", "\u00ef\u00bf\u00bd"]
     return sum(text.count(m) for m in markers)
 
 
@@ -8815,17 +8815,17 @@ def _rpv3_fix_text(value):
         return value
     text = value
     manual = {
-        "ÃƒÂ¡":"Ã¡", "ÃƒÂ©":"Ã©", "ÃƒÂ­":"Ã­", "ÃƒÂ³":"Ã³", "ÃƒÂº":"Ãº",
-        "ÃƒÂ":"Ã", "Ãƒâ€°":"Ã‰", "ÃƒÂ":"Ã", "Ãƒâ€œ":"Ã“", "ÃƒÅ¡":"Ãš",
-        "ÃƒÂ±":"Ã±", "Ãƒâ€˜":"Ã‘", "ÃƒÂ¼":"Ã¼", "ÃƒÅ“":"Ãœ",
-        "Ã‚Â¿":"Â¿", "Ã‚Â¡":"Â¡", "Ã‚Â°":"Â°", "Ã‚Âº":"Âº", "Ã‚Âª":"Âª",
-        "Ã¢â‚¬â€œ":"-", "Ã¢â‚¬â€":"-", "Ã¢â‚¬Ëœ":"'", "Ã¢â‚¬â„¢":"'", "Ã¢â‚¬Å“":"\"", "Ã¢â‚¬Â":"\"",
-        "Ã¢â‚¬Â¦":"...", "Ã¢â‚¬Â¢":"-", "Ã‚Â·":"-",
-        "ÃƒÂƒÃ‚Â¡":"Ã¡", "ÃƒÂƒÃ‚Â©":"Ã©", "ÃƒÂƒÃ‚Â­":"Ã­", "ÃƒÂƒÃ‚Â³":"Ã³", "ÃƒÂƒÃ‚Âº":"Ãº",
-        "ÃƒÂƒÃ‚Â±":"Ã±", "ÃƒÂƒÃ‚Â¼":"Ã¼", "ÃƒÂƒÃ¢â‚¬Ëœ":"Ã‘",
-        "DocumentaciÃƒÂƒÃ‚Â³n":"DocumentaciÃ³n", "TÃƒÂƒÃ‚Â©cnico":"TÃ©cnico",
-        "AuditorÃƒÂƒÃ‚Â­a":"AuditorÃ­a", "PÃƒÂƒÃ‚Âºblica":"PÃºblica", "MÃƒÂƒÃ‚Â©tricas":"MÃ©tricas",
-        "dueÃƒÂƒÃ‚Â±os":"dueÃ±os", "acciÃƒÂƒÃ‚Â³n":"acciÃ³n", "decisiÃƒÂƒÃ‚Â³n":"decisiÃ³n"
+        "\u00c3\u0192?":"?", "\u00c3\u0192\u00c2\u00a9":"?", "\u00c3\u0192\u00c2\u00ad":"?", "\u00c3\u0192\u00c2\u00b3":"?", "\u00c3\u0192\u00c2\u00ba":"?",
+        "\u00c3\u0192\u00c2\u0081":"?", "\u00c3\u0192\u00e2\u20ac\u00b0":"\u00c3\u2030", "\u00c3\u0192\u00c2\u008d":"?", "\u00c3\u0192\u00e2\u20ac\u0153":"\u00c3\u201c", "\u00c3\u0192\u00c5\u00a1":"\u00c3\u0161",
+        "\u00c3\u0192\u00c2\u00b1":"?", "\u00c3\u0192\u00e2\u20ac\u02dc":"\u00c3\u2018", "\u00c3\u0192\u00c2\u00bc":"?", "\u00c3\u0192\u00c5\u201c":"\u00c3\u0153",
+        "\u00c3\u201a?":"?", "\u00c3\u201a?":"?", "\u00c3\u201a\u00c2\u00b0":"\u00c2\u00b0", "\u00c3\u201a\u00c2\u00ba":"\u00c2\u00ba", "\u00c3\u201a\u00c2\u00aa":"\u00c2\u00aa",
+        "\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u20ac\u0153":"-", "\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u20ac\u009d":"-", "\u00c3\u00a2\u00e2\u201a\u00ac\u00cb\u0153":"'", "\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u201e\u00a2":"'", "\u00c3\u00a2\u00e2\u201a\u00ac\u00c5\u201c":"\"", "\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u009d":"\"",
+        "\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u00a6":"...", "\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u00a2":"-", "\u00c3\u201a\u00c2\u00b7":"-",
+        "\u00c3\u0192\u00c2\u0192\u00c3\u201a?":"?", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00a9":"?", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00ad":"?", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00b3":"?", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00ba":"?",
+        "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00b1":"?", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00bc":"?", "\u00c3\u0192\u00c2\u0192\u00c3\u00a2\u00e2\u201a\u00ac\u00cb\u0153":"\u00c3\u2018",
+        "Documentaci\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00b3n":"Documentaci?n", "T\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00a9cnico":"T?cnico",
+        "Auditor\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00ada":"Auditor?a", "P\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00bablica":"P?blica", "M\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00a9tricas":"M?tricas",
+        "due\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00b1os":"due?os", "acci\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00b3n":"acci?n", "decisi\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00b3n":"decisi?n"
     }
     for _ in range(4):
         before = text
@@ -8841,8 +8841,8 @@ def _rpv3_fix_text(value):
         if text == before:
             break
     replacements = {
-        "ðŸ›’":"carrito", "â°":"horario", "âœ…":"OK", "âŒ":"NO", "âš ï¸":"ALERTA",
-        "âš ":"ALERTA", "ðŸ“Œ":"Nota", "ðŸ“Š":"MÃ©tricas", "ðŸ”¥":"Prioridad", "ðŸš€":"Escalar", "ðŸ’¡":"Idea"
+        "\u00f0\u0178\u203a\u2019":"carrito", "\u00e2\u008f\u00b0":"horario", "\u00e2\u0153\u2026":"OK", "\u00e2\u009d\u0152":"NO", "\u00e2\u0161\u00a0\u00ef\u00b8\u008f":"ALERTA",
+        "\u00e2\u0161\u00a0":"ALERTA", "\u00f0\u0178\u201c\u0152":"Nota", "\u00f0\u0178\u201c\u0160":"M?tricas", "\u00f0\u0178\u201d\u00a5":"Prioridad", "\u00f0\u0178\u0161\u20ac":"Escalar", "\u00f0\u0178\u2019\u00a1":"Idea"
     }
     for bad, good in replacements.items():
         text = text.replace(bad, good)
@@ -8877,7 +8877,7 @@ def _rpv3_clean_report_request(req, upload_to_drive=None):
 
 def _rpv3_pdf_safe(text):
     text = _rpv3_fix_text(text or "")
-    return text.replace("â†’", "->").replace("â€“", "-").replace("â€”", "-")
+    return text.replace("\u00e2\u2020\u2019", "->").replace("\u00e2\u20ac\u201c", "-").replace("\u00e2\u20ac\u201d", "-")
 
 
 def _rpv3_table_rows(lines, start):
@@ -8930,17 +8930,17 @@ def _rpv3_markdown_to_pdf(path: _rpb_Path, title: str, md: str, company_name: st
     story.append(Spacer(1, 2.0*cm))
     story.append(Paragraph(_rpb_html.escape(title), styles["CoverTitleV3"]))
     story.append(Paragraph(f"Cliente: <b>{_rpb_html.escape(company_name)}</b>", styles["CoverSubV3"]))
-    story.append(Paragraph(f"Tipo de documento: {'Resumen ejecutivo' if executive else 'AuditorÃ­a completa'}", styles["CoverSubV3"]))
+    story.append(Paragraph(f"Tipo de documento: {'Resumen ejecutivo' if executive else 'Auditor\u00eda completa'}", styles["CoverSubV3"]))
     story.append(Paragraph(f"Generado: {_rpb_now_iso()}", styles["CoverSubV3"]))
     story.append(Spacer(1, 1.0*cm))
-    story.append(Paragraph("Nota metodolÃ³gica: este documento usa evidencia pÃºblica visible. No representa mÃ©tricas privadas ni performance interna sin accesos del cliente.", styles["BodyV3"]))
+    story.append(Paragraph("Nota metodol\u00f3gica: este documento usa evidencia p\u00fablica visible. No representa m\u00e9tricas privadas ni performance interna sin accesos del cliente.", styles["BodyV3"]))
     story.append(PageBreak())
 
     sections = _rpb_sections_from_markdown(md)
     if sections:
-        story.append(Paragraph("Ãndice", styles["H1V3"]))
+        story.append(Paragraph("\u00cdndice", styles["H1V3"]))
         for idx, sec in enumerate(sections, start=1):
-            story.append(Paragraph(f"{idx}. {_rpb_html.escape(_rpv3_pdf_safe(sec.get('title') or 'SecciÃ³n'))}", styles["BodyV3"]))
+            story.append(Paragraph(f"{idx}. {_rpb_html.escape(_rpv3_pdf_safe(sec.get('title') or 'Secci\u00f3n'))}", styles["BodyV3"]))
         story.append(PageBreak())
 
     lines = md.splitlines()
@@ -9000,7 +9000,7 @@ def _rpv3_markdown_to_pdf(path: _rpb_Path, title: str, md: str, company_name: st
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(colors.HexColor("#64748b"))
         canvas.drawString(1.35*cm, 0.75*cm, _rpv3_pdf_safe(f"{company_name} - {title}")[:95])
-        canvas.drawRightString(A4[0] - 1.35*cm, 0.75*cm, f"PÃ¡gina {doc_obj.page}")
+        canvas.drawRightString(A4[0] - 1.35*cm, 0.75*cm, f"P\u00e1gina {doc_obj.page}")
         canvas.restoreState()
 
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
@@ -9047,8 +9047,8 @@ async def createReportPackageV3(request: ReportPackageRequest):
     result["documentation_folder_name"] = "Documentacion"
     result["technical_folder_name"] = "Tecnico"
     result["notes"] = (result.get("notes") or []) + [
-        "4H.2-D: contenido espaÃ±ol normalizado a UTF-8/NFC y correcciÃ³n bÃ¡sica de mojibake.",
-        "PDF completo mejorado: portada, Ã­ndice, estilos, tablas legibles y pie de pÃ¡gina.",
+        "4H.2-D: contenido espa\u00f1ol normalizado a UTF-8/NFC y correcci\u00f3n b\u00e1sica de mojibake.",
+        "PDF completo mejorado: portada, \u00edndice, estilos, tablas legibles y pie de p\u00e1gina.",
         "Carpetas Drive ASCII seguras: Documentacion/Tecnico."
     ]
 
@@ -9204,7 +9204,7 @@ def _rpv4_build_interactive_html(req, report_id, created_at):
     for idx, sec in enumerate(sections):
         sid = "sec_" + str(idx)
         active = "active" if idx == 0 else ""
-        sec_title = _rpv3_fix_text(sec.get("title") or ("SecciÃ³n " + str(idx + 1)))
+        sec_title = _rpv3_fix_text(sec.get("title") or ("Secci\u00f3n " + str(idx + 1)))
         nav_parts.append('<button class="tab ' + active + '" data-target="' + sid + '">' + _rpb_html.escape(sec_title, quote=True) + '</button>')
         panel_parts.append('<section id="' + sid + '" class="panel ' + active + '">' + _rpv4_markdown_to_basic_html(sec.get("markdown") or "") + '</section>')
 
@@ -9237,16 +9237,16 @@ def _rpv4_build_interactive_html(req, report_id, created_at):
         "<body>",
         "<header>",
         "<h1>" + _rpb_html.escape(title, quote=True) + "</h1>",
-        '<div class="meta"><span>Cliente: <strong>' + _rpb_html.escape(company, quote=True) + "</strong></span><span>Report ID: " + _rpb_html.escape(report_id, quote=True) + "</span><span>Creado: " + _rpb_html.escape(created_at, quote=True) + "</span><span>Tipo: " + _rpb_html.escape(_rpv3_fix_text(req.client_type or "auditorÃ­a pÃºblica"), quote=True) + "</span></div>",
+        '<div class="meta"><span>Cliente: <strong>' + _rpb_html.escape(company, quote=True) + "</strong></span><span>Report ID: " + _rpb_html.escape(report_id, quote=True) + "</span><span>Creado: " + _rpb_html.escape(created_at, quote=True) + "</span><span>Tipo: " + _rpb_html.escape(_rpv3_fix_text(req.client_type or "auditor\u00eda p\u00fablica"), quote=True) + "</span></div>",
         "</header>",
         '<div class="layout">',
         "<nav>" + "".join(nav_parts) + "</nav>",
         "<main>",
-        '<div class="cards"><div class="card"><span class="badge">Informe completo</span><p>AuditorÃ­a pÃºblica integral con evidencia, diagnÃ³stico y plan de acciÃ³n.</p></div><div class="card"><span class="badge">VersiÃ³n PDF</span><p>El PDF completo conserva el mismo contenido, sin interacciÃ³n.</p></div><div class="card"><span class="badge">Resumen ejecutivo</span><p>Documento separado para dueÃ±os y gerencia.</p></div></div>',
+        '<div class="cards"><div class="card"><span class="badge">Informe completo</span><p>Auditor\u00eda p\u00fablica integral con evidencia, diagn\u00f3stico y plan de acci\u00f3n.</p></div><div class="card"><span class="badge">Versi\u00f3n PDF</span><p>El PDF completo conserva el mismo contenido, sin interacci\u00f3n.</p></div><div class="card"><span class="badge">Resumen ejecutivo</span><p>Documento separado para due\u00f1os y gerencia.</p></div></div>',
         "".join(panel_parts),
-        '<section class="panel active" style="display:block;margin-top:18px;"><h2>Anexos tÃ©cnicos</h2><details><summary>Evidencia tÃ©cnica JSON</summary><pre>' + evidence_json + '</pre></details><details><summary>MÃ©tricas sociales JSON</summary><pre>' + metrics_json + '</pre></details></section>',
+        '<section class="panel active" style="display:block;margin-top:18px;"><h2>Anexos t\u00e9cnicos</h2><details><summary>Evidencia t\u00e9cnica JSON</summary><pre>' + evidence_json + '</pre></details><details><summary>M\u00e9tricas sociales JSON</summary><pre>' + metrics_json + '</pre></details></section>',
         "</main></div>",
-        "<footer>Generado por Marketing Auditor. Las mÃ©tricas pÃºblicas son parciales y no representan performance interna.</footer>",
+        "<footer>Generado por Marketing Auditor. Las m\u00e9tricas p\u00fablicas son parciales y no representan performance interna.</footer>",
         "<script>document.querySelectorAll('.tab').forEach(function(btn){btn.addEventListener('click',function(){document.querySelectorAll('.tab').forEach(function(b){b.classList.remove('active');});document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('active');});btn.classList.add('active');var target=document.getElementById(btn.dataset.target);if(target)target.classList.add('active');});});</script>",
         "</body></html>"
     ]
@@ -9353,7 +9353,7 @@ def _rpv4_build_package(req):
         "notes": [
             "4H.2-E: HTML usa renderer independiente no recursivo.",
             "PDF completo y ejecutivo se mantienen desde el renderer mejorado v3.",
-            "Contenido espaÃ±ol normalizado y carpetas Drive ASCII seguras."
+            "Contenido espa\u00f1ol normalizado y carpetas Drive ASCII seguras."
         ]
     }
 
@@ -9408,16 +9408,16 @@ def _rpv3_fix_text(value):
         return value
     text = value
     replacements = {
-        "ÃƒÂ¡": "Ã¡", "ÃƒÂ©": "Ã©", "ÃƒÂ­": "Ã­", "ÃƒÂ³": "Ã³", "ÃƒÂº": "Ãº",
-        "ÃƒÂ": "Ã", "Ãƒâ€°": "Ã‰", "ÃƒÂ": "Ã", "Ãƒâ€œ": "Ã“", "ÃƒÅ¡": "Ãš",
-        "ÃƒÂ±": "Ã±", "Ãƒâ€˜": "Ã‘", "ÃƒÂ¼": "Ã¼", "ÃƒÅ“": "Ãœ",
-        "Ã‚Â¿": "Â¿", "Ã‚Â¡": "Â¡", "Ã‚Â°": "Â°",
-        "Ã¢â‚¬â€œ": "-", "Ã¢â‚¬â€": "-", "Ã¢â‚¬Ëœ": "'", "Ã¢â‚¬â„¢": "'", "Ã¢â‚¬Å“": '"', "Ã¢â‚¬Â": '"',
-        "Ã¢â‚¬Â¦": "...", "Ã¢â‚¬Â¢": "-",
-        "ÃƒÂƒÃ‚Â¡": "Ã¡", "ÃƒÂƒÃ‚Â©": "Ã©", "ÃƒÂƒÃ‚Â­": "Ã­", "ÃƒÂƒÃ‚Â³": "Ã³", "ÃƒÂƒÃ‚Âº": "Ãº",
-        "ÃƒÂƒÃ‚Â±": "Ã±", "ÃƒÂƒÃ‚Â¼": "Ã¼",
-        "DocumentaciÃƒÂ³n": "DocumentaciÃ³n", "TÃƒÂ©cnico": "TÃ©cnico",
-        "AuditorÃƒÂ­a": "AuditorÃ­a", "PÃƒÂºblica": "PÃºblica", "MÃƒÂ©tricas": "MÃ©tricas", "dueÃƒÂ±os": "dueÃ±os"
+        "\u00c3\u0192?": "?", "\u00c3\u0192\u00c2\u00a9": "?", "\u00c3\u0192\u00c2\u00ad": "?", "\u00c3\u0192\u00c2\u00b3": "?", "\u00c3\u0192\u00c2\u00ba": "?",
+        "\u00c3\u0192\u00c2\u0081": "?", "\u00c3\u0192\u00e2\u20ac\u00b0": "\u00c3\u2030", "\u00c3\u0192\u00c2\u008d": "?", "\u00c3\u0192\u00e2\u20ac\u0153": "\u00c3\u201c", "\u00c3\u0192\u00c5\u00a1": "\u00c3\u0161",
+        "\u00c3\u0192\u00c2\u00b1": "?", "\u00c3\u0192\u00e2\u20ac\u02dc": "\u00c3\u2018", "\u00c3\u0192\u00c2\u00bc": "?", "\u00c3\u0192\u00c5\u201c": "\u00c3\u0153",
+        "\u00c3\u201a?": "?", "\u00c3\u201a?": "?", "\u00c3\u201a\u00c2\u00b0": "\u00c2\u00b0",
+        "\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u20ac\u0153": "-", "\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u20ac\u009d": "-", "\u00c3\u00a2\u00e2\u201a\u00ac\u00cb\u0153": "'", "\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u201e\u00a2": "'", "\u00c3\u00a2\u00e2\u201a\u00ac\u00c5\u201c": '"', "\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u009d": '"',
+        "\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u00a6": "...", "\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u00a2": "-",
+        "\u00c3\u0192\u00c2\u0192\u00c3\u201a?": "?", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00a9": "?", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00ad": "?", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00b3": "?", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00ba": "?",
+        "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00b1": "?", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00bc": "?",
+        "Documentaci\u00c3\u0192\u00c2\u00b3n": "Documentaci?n", "T\u00c3\u0192\u00c2\u00a9cnico": "T?cnico",
+        "Auditor\u00c3\u0192\u00c2\u00ada": "Auditor?a", "P\u00c3\u0192\u00c2\u00bablica": "P?blica", "M\u00c3\u0192\u00c2\u00a9tricas": "M?tricas", "due\u00c3\u0192\u00c2\u00b1os": "due?os"
     }
     for _ in range(3):
         before = text
@@ -9426,9 +9426,9 @@ def _rpv3_fix_text(value):
         if text == before:
             break
     symbol_replacements = {
-        "ðŸ›’": "carrito", "â°": "horario", "âœ…": "OK", "âŒ": "NO",
-        "âš ï¸": "ALERTA", "âš ": "ALERTA", "ðŸ“Œ": "Nota", "ðŸ“Š": "MÃ©tricas",
-        "ðŸ”¥": "Prioridad", "ðŸš€": "Escalar", "ðŸ’¡": "Idea"
+        "\u00f0\u0178\u203a\u2019": "carrito", "\u00e2\u008f\u00b0": "horario", "\u00e2\u0153\u2026": "OK", "\u00e2\u009d\u0152": "NO",
+        "\u00e2\u0161\u00a0\u00ef\u00b8\u008f": "ALERTA", "\u00e2\u0161\u00a0": "ALERTA", "\u00f0\u0178\u201c\u0152": "Nota", "\u00f0\u0178\u201c\u0160": "M?tricas",
+        "\u00f0\u0178\u201d\u00a5": "Prioridad", "\u00f0\u0178\u0161\u20ac": "Escalar", "\u00f0\u0178\u2019\u00a1": "Idea"
     }
     for bad, good in symbol_replacements.items():
         text = text.replace(bad, good)
@@ -9504,7 +9504,7 @@ _AUDIT_DEFAULT_MODULES = [
     },
     {
         "module": "collector_config",
-        "label": "ConfiguraciÃ³n collectors",
+        "label": "Configuraci\u00f3n collectors",
         "category": "system",
         "endpoint": "GET /debug/collector-config",
         "required_for": ["complete_audit"],
@@ -9512,7 +9512,7 @@ _AUDIT_DEFAULT_MODULES = [
     },
     {
         "module": "public_presence_compact",
-        "label": "Presencia pÃºblica compacta",
+        "label": "Presencia p\u00fablica compacta",
         "category": "public_presence",
         "endpoint": "POST /collect/public-presence-compact",
         "required_for": ["complete_audit", "partial_audit"],
@@ -9520,7 +9520,7 @@ _AUDIT_DEFAULT_MODULES = [
     },
     {
         "module": "text_report",
-        "label": "TXT fuente de presencia pÃºblica",
+        "label": "TXT fuente de presencia p\u00fablica",
         "category": "public_presence",
         "endpoint": "GET /deliverables/text/{report_id}.txt",
         "required_for": ["complete_audit"],
@@ -9528,7 +9528,7 @@ _AUDIT_DEFAULT_MODULES = [
     },
     {
         "module": "visual_site",
-        "label": "AuditorÃ­a visual del sitio",
+        "label": "Auditor\u00eda visual del sitio",
         "category": "website",
         "endpoint": "POST /audit/visual-site",
         "required_for": ["complete_audit"],
@@ -9536,7 +9536,7 @@ _AUDIT_DEFAULT_MODULES = [
     },
     {
         "module": "instagram_profile_metrics",
-        "label": "Instagram perfil pÃºblico",
+        "label": "Instagram perfil p\u00fablico",
         "category": "instagram",
         "endpoint": "POST /audit/instagram-profile-metrics",
         "required_for": ["complete_audit", "partial_audit"],
@@ -9552,7 +9552,7 @@ _AUDIT_DEFAULT_MODULES = [
     },
     {
         "module": "social_public_averages_instagram",
-        "label": "Promedios pÃºblicos visibles de Instagram",
+        "label": "Promedios p\u00fablicos visibles de Instagram",
         "category": "instagram",
         "endpoint": "POST /audit/social-public-averages",
         "required_for": ["complete_audit"],
@@ -9560,7 +9560,7 @@ _AUDIT_DEFAULT_MODULES = [
     },
     {
         "module": "facebook_public",
-        "label": "Facebook pÃºblico",
+        "label": "Facebook p\u00fablico",
         "category": "facebook",
         "endpoint": "POST /audit/social-public",
         "required_for": ["complete_audit"],
@@ -9568,7 +9568,7 @@ _AUDIT_DEFAULT_MODULES = [
     },
     {
         "module": "linkedin_public",
-        "label": "LinkedIn pÃºblico",
+        "label": "LinkedIn p\u00fablico",
         "category": "linkedin",
         "endpoint": "POST /audit/social-public",
         "required_for": ["complete_audit"],
@@ -9744,19 +9744,19 @@ def _ars_compute_readiness(run):
     if system_blockers:
         readiness = "blocked"
         can_generate = False
-        reason = "Hay bloqueadores tÃ©cnicos del sistema."
+        reason = "Hay bloqueadores t\u00e9cnicos del sistema."
     elif len(collected_evidence) >= 3:
         readiness = "ready_for_complete_or_strong_partial_report"
         can_generate = True
-        reason = "Hay suficiente evidencia pÃºblica recolectada para generar auditorÃ­a con limitaciones declaradas."
+        reason = "Hay suficiente evidencia p\u00fablica recolectada para generar auditor\u00eda con limitaciones declaradas."
     elif len(collected_evidence) >= 1:
         readiness = "ready_for_partial_report"
         can_generate = True
-        reason = "Hay evidencia pÃºblica mÃ­nima; el reporte debe marcar limitaciones y mÃ³dulos pendientes."
+        reason = "Hay evidencia p\u00fablica m\u00ednima; el reporte debe marcar limitaciones y m\u00f3dulos pendientes."
     else:
         readiness = "not_ready"
         can_generate = False
-        reason = "No hay evidencia pÃºblica suficiente para generar una auditorÃ­a defendible."
+        reason = "No hay evidencia p\u00fablica suficiente para generar una auditor\u00eda defendible."
 
     next_actions = []
     priority_order = [
@@ -9797,7 +9797,7 @@ def _ars_compute_readiness(run):
         "requires_access_modules": requires_access_modules,
         "system_blockers": system_blockers,
         "next_actions": next_actions[:8],
-        "guardrail": "Si can_generate_report=true pero hay mÃ³dulos pending/failed/requires_access, el informe final debe marcar esos puntos como limitaciones y no inventar mÃ©tricas privadas.",
+        "guardrail": "Si can_generate_report=true pero hay m\u00f3dulos pending/failed/requires_access, el informe final debe marcar esos puntos como limitaciones y no inventar m\u00e9tricas privadas.",
     }
 
 
@@ -10057,11 +10057,11 @@ def _rpv3_markdown_to_pdf(path, title, md, company_name, executive=False):
     story.append(Spacer(1, 1.8 * cm))
     story.append(Paragraph(_rpv3_pdf_inline_4h3b(title), styles["CoverTitle4H3B"]))
     story.append(Paragraph("Cliente: <b>" + _rpb_html.escape(company_name, quote=True) + "</b>", styles["CoverSub4H3B"]))
-    story.append(Paragraph("Tipo de documento: " + ("Resumen ejecutivo" if executive else "AuditorÃ­a completa"), styles["CoverSub4H3B"]))
+    story.append(Paragraph("Tipo de documento: " + ("Resumen ejecutivo" if executive else "Auditor\u00eda completa"), styles["CoverSub4H3B"]))
     story.append(Paragraph("Generado: " + _rpb_html.escape(_rpb_now_iso(), quote=True), styles["CoverSub4H3B"]))
     story.append(Spacer(1, 0.7 * cm))
     story.append(Paragraph(
-        "Nota metodolÃ³gica: este documento usa evidencia pÃºblica visible y separa hechos, inferencias razonadas y datos que requieren acceso interno.",
+        "Nota metodol\u00f3gica: este documento usa evidencia p\u00fablica visible y separa hechos, inferencias razonadas y datos que requieren acceso interno.",
         styles["Body4H3B"]
     ))
     story.append(PageBreak())
@@ -10072,9 +10072,9 @@ def _rpv3_markdown_to_pdf(path, title, md, company_name, executive=False):
         sections = []
 
     if sections:
-        story.append(Paragraph("Ãndice", styles["H1_4H3B"]))
+        story.append(Paragraph("\u00cdndice", styles["H1_4H3B"]))
         for idx, sec in enumerate(sections, start=1):
-            story.append(Paragraph(str(idx) + ". " + _rpv3_pdf_inline_4h3b(sec.get("title") or "SecciÃ³n"), styles["Body4H3B"]))
+            story.append(Paragraph(str(idx) + ". " + _rpv3_pdf_inline_4h3b(sec.get("title") or "Secci\u00f3n"), styles["Body4H3B"]))
         story.append(PageBreak())
 
     lines = md.splitlines()
@@ -10158,7 +10158,7 @@ def _rpv3_markdown_to_pdf(path, title, md, company_name, executive=False):
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(colors.HexColor("#64748b"))
         canvas.drawString(1.25 * cm, 0.65 * cm, _rpv3_fix_text(company_name + " - " + title)[:120])
-        canvas.drawRightString(A4[0] - 1.25 * cm, 0.65 * cm, "PÃ¡gina " + str(doc_obj.page))
+        canvas.drawRightString(A4[0] - 1.25 * cm, 0.65 * cm, "P\u00e1gina " + str(doc_obj.page))
         canvas.restoreState()
 
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
@@ -10236,27 +10236,27 @@ def _rpv4_executive_md_4h3c(full_md, provided=None):
 
     full_md = _rpv3_fix_text(full_md or "")
     resumen = _rpv4_section_by_title_4h3c(full_md, ["resumen ejecutivo"])
-    estado = _rpv4_section_by_title_4h3c(full_md, ["estado de recoleccion", "estado de recolecciÃ³n"])
-    evidencia = _rpv4_section_by_title_4h3c(full_md, ["evidencia publica", "evidencia pÃºblica"])
-    semaforo = _rpv4_section_by_title_4h3c(full_md, ["semaforo", "semÃ¡foro"])
-    metricas = _rpv4_section_by_title_4h3c(full_md, ["metricas publicas", "mÃ©tricas pÃºblicas"])
+    estado = _rpv4_section_by_title_4h3c(full_md, ["estado de recoleccion", "estado de recolecci\u00f3n"])
+    evidencia = _rpv4_section_by_title_4h3c(full_md, ["evidencia publica", "evidencia p\u00fablica"])
+    semaforo = _rpv4_section_by_title_4h3c(full_md, ["semaforo", "sem\u00e1foro"])
+    metricas = _rpv4_section_by_title_4h3c(full_md, ["metricas publicas", "m\u00e9tricas p\u00fablicas"])
     lectura = _rpv4_section_by_title_4h3c(full_md, ["lectura ejecutiva"])
-    proximos = _rpv4_section_by_title_4h3c(full_md, ["proximos pasos", "prÃ³ximos pasos"])
+    proximos = _rpv4_section_by_title_4h3c(full_md, ["proximos pasos", "pr\u00f3ximos pasos"])
 
     parts = [
         "## Resumen ejecutivo ampliado",
         _rpv4_take_lines_4h3c(resumen or provided or full_md, 38),
-        "## Datos pÃºblicos relevantes",
+        "## Datos p\u00fablicos relevantes",
         _rpv4_take_lines_4h3c(evidencia, 32),
-        "## Estado de recolecciÃ³n y limitaciones",
+        "## Estado de recolecci\u00f3n y limitaciones",
         _rpv4_take_lines_4h3c(estado, 34),
-        "## SemÃ¡foro de prioridades",
+        "## Sem\u00e1foro de prioridades",
         _rpv4_take_lines_4h3c(semaforo, 36),
-        "## MÃ©tricas pÃºblicas de redes",
+        "## M\u00e9tricas p\u00fablicas de redes",
         _rpv4_take_lines_4h3c(metricas, 34),
-        "## Lectura para dueÃ±os",
+        "## Lectura para due\u00f1os",
         _rpv4_take_lines_4h3c(lectura, 18),
-        "## PrÃ³ximos pasos",
+        "## Pr\u00f3ximos pasos",
         _rpv4_take_lines_4h3c(proximos, 20),
     ]
     return _rpv3_fix_text("\n\n".join([p for p in parts if p and p.strip()]))
@@ -10312,3 +10312,905 @@ def _rpv4_build_interactive_html(req, report_id, created_at):
     ]
     return _rpv3_fix_text("\n".join(head))
 
+
+
+# ============================================================
+# HOTFIX 4H.3-D - REPORT QUALITY GATE + CLEAN PDF/HTML OUTPUT
+# ============================================================
+
+APP_VERSION = "public-presence-collector-mvp-0.9.29"
+
+import unicodedata as _rpv4_unicodedata
+import re as _rpv4_re
+
+_RPV4_MIN_FULL_WORDS_4H3D = 3800
+_RPV4_MIN_FULL_SECTIONS_4H3D = 16
+_RPV4_MIN_FULL_TABLES_4H3D = 8
+_RPV4_MIN_EXEC_WORDS_4H3D = 950
+_RPV4_MIN_EXEC_SECTIONS_4H3D = 5
+
+_RPV4_REQUIRED_SECTIONS_4H3D = [
+    ("resumen ejecutivo", ["resumen ejecutivo"]),
+    ("estado de recoleccion", ["estado de recoleccion"]),
+    ("evidencia publica recolectada", ["evidencia publica recolectada", "evidencia publica"]),
+    ("semaforo ejecutivo", ["semaforo ejecutivo", "semaforo"]),
+    ("metricas publicas agregadas de redes", ["metricas publicas agregadas de redes", "metricas publicas de redes", "metricas publicas"]),
+    ("diagnostico duro", ["diagnostico duro", "diagnostico"]),
+    ("analisis por canal", ["analisis por canal"]),
+    ("matriz impacto/esfuerzo", ["matriz impacto/esfuerzo", "matriz de impacto", "impacto/esfuerzo"]),
+    ("tracking checklist operativo", ["tracking checklist operativo", "lista de verificacion operativa de medicion", "lista de verificacion de medicion"]),
+    ("arquitectura sugerida de campanas", ["arquitectura sugerida de campanas", "arquitectura de campanas"]),
+    ("plan 30/60/90", ["plan 30/60/90", "30/60/90"]),
+    ("preguntas para el cliente", ["preguntas para el cliente"]),
+    ("datos internos necesarios", ["datos internos necesarios"]),
+    ("lectura ejecutiva para reunion", ["lectura ejecutiva para reunion", "lectura ejecutiva"]),
+    ("proximos pasos concretos", ["proximos pasos concretos", "proximos pasos"]),
+    ("fiabilidad de metricas y evidencia", ["fiabilidad de metricas y evidencia", "fiabilidad"]),
+]
+
+_RPV4_MOJIBAKE_REPLACEMENTS_4H3D = {
+    "?": "\u00e1", "?": "\u00e9", "?": "\u00ed", "?": "\u00f3", "?": "\u00fa",
+    "?": "\u00c1", "\u00c3\u2030": "\u00c9", "?": "\u00cd", "\u00c3\u201c": "\u00d3", "\u00c3\u0161": "\u00da",
+    "?": "\u00f1", "\u00c3\u2018": "\u00d1", "?": "\u00fc", "\u00c3\u0153": "\u00dc",
+    "?": "\u00bf", "?": "\u00a1", "\u00c2\u00b0": "\u00b0", "\u00c2\u00ba": "\u00ba", "\u00c2\u00aa": "\u00aa",
+    "\u00e2\u20ac\u201c": "-", "\u00e2\u20ac\u201d": "-", "\u00e2\u20ac\u02dc": "'", "\u00e2\u20ac\u2122": "'", "\u00e2\u20ac\u0153": '"', "\u00e2\u20ac\u009d": '"',
+    "\u00e2\u20ac\u00a6": "...", "\u00e2\u20ac\u00a2": "-", "\u00e2\u2020\u2019": "->", "\u00e2\u20ac": '"',
+    "\u00c3\u0192?": "\u00e1", "\u00c3\u0192\u00c2\u00a9": "\u00e9", "\u00c3\u0192\u00c2\u00ad": "\u00ed", "\u00c3\u0192\u00c2\u00b3": "\u00f3", "\u00c3\u0192\u00c2\u00ba": "\u00fa",
+    "\u00c3\u0192\u00c2\u0081": "\u00c1", "\u00c3\u0192\u00e2\u20ac\u00b0": "\u00c9", "\u00c3\u0192\u00c2\u008d": "\u00cd", "\u00c3\u0192\u00e2\u20ac\u0153": "\u00d3", "\u00c3\u0192\u00c5\u00a1": "\u00da",
+    "\u00c3\u0192\u00c2\u00b1": "\u00f1", "\u00c3\u0192\u00e2\u20ac\u02dc": "\u00d1", "\u00c3\u0192\u00c2\u00bc": "\u00fc", "\u00c3\u0192\u00c5\u201c": "\u00dc",
+    "\u00c3\u201a?": "\u00bf", "\u00c3\u201a?": "\u00a1", "\u00c3\u201a\u00c2\u00b0": "\u00b0", "\u00c3\u201a\u00c2\u00ba": "\u00ba", "\u00c3\u201a\u00c2\u00aa": "\u00aa",
+    "\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u20ac\u0153": "-", "\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u20ac\u009d": "-", "\u00c3\u00a2\u00e2\u201a\u00ac\u00cb\u0153": "'", "\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u201e\u00a2": "'",
+    "\u00c3\u00a2\u00e2\u201a\u00ac\u00c5\u201c": '"', "\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u009d": '"', "\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u00a6": "...", "\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u00a2": "-",
+    "\u00c3\u0192\u00c2\u0192\u00c3\u201a?": "\u00e1", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00a9": "\u00e9", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00ad": "\u00ed", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00b3": "\u00f3", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00ba": "\u00fa",
+    "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00b1": "\u00f1", "\u00c3\u0192\u00c2\u0192\u00c3\u201a\u00c2\u00bc": "\u00fc",
+    "Auditor\u00c3a": "Auditor\u00eda", "auditor\u00c3a": "auditor\u00eda",
+    "Auditor?a": "Auditor\u00eda", "auditor?a": "auditor\u00eda",
+    "p?blica": "p\u00fablica", "P?blica": "P\u00fablica",
+    "m?tricas": "m\u00e9tricas", "M?tricas": "M\u00e9tricas",
+    "diagn?stico": "diagn\u00f3stico", "acci?n": "acci\u00f3n",
+    "recolecci?n": "recolecci\u00f3n", "Pr?ximos": "Pr\u00f3ximos", "pr?ximos": "pr\u00f3ximos",
+    "Sem?foro": "Sem\u00e1foro", "sem?foro": "sem\u00e1foro",
+    "?ndice": "\u00cdndice", "\u00c3\u25a0ndice": "\u00cdndice", "\u00c3ndice": "\u00cdndice",
+    "P?gina": "P\u00e1gina", "p?gina": "p\u00e1gina",
+    "Secci?n": "Secci\u00f3n", "secci?n": "secci\u00f3n",
+    "T?cnico": "T\u00e9cnico", "t?cnico": "t\u00e9cnico",
+    "due?os": "due\u00f1os", "Due?os": "Due\u00f1os",
+    "ma?ana": "ma\u00f1ana", "a?o": "a\u00f1o", "a?os": "a\u00f1os",
+    "Espa?ol": "Espa\u00f1ol", "espa?ol": "espa\u00f1ol",
+    "Informaci?n": "Informaci\u00f3n", "informaci?n": "informaci\u00f3n",
+    "Documentaci?n": "Documentaci\u00f3n", "documentaci?n": "documentaci\u00f3n",
+    "Versi?n": "Versi\u00f3n", "versi?n": "versi\u00f3n",
+    "interacci?n": "interacci\u00f3n", "decisi?n": "decisi\u00f3n",
+    "\u00f0\u0178\u203a\u2019": "carrito", "\u00e2\u008f\u00b0": "horario", "\u00e2\u0153\u2026": "OK", "\u00e2\u009d\u0152": "NO",
+    "\u00e2\u0161\u00a0\u00ef\u00b8\u008f": "ALERTA", "\u00e2\u0161\u00a0": "ALERTA", "\u00f0\u0178\u201c\u0152": "Nota", "\u00f0\u0178\u201c\u0160": "M\u00e9tricas",
+    "\u00f0\u0178\u201d\u00a5": "Prioridad", "\u00f0\u0178\u0161\u20ac": "Escalar", "\u00f0\u0178\u2019\u00a1": "Idea",
+    "\ufeff": "",
+}
+
+_RPV4_VISIBLE_TERM_REPLACEMENTS_4H3D = [
+    (r"\bActions\b", "Acciones"),
+    (r"\bAction\b", "Acci\u00f3n"),
+    (r"\baction\b", "acci\u00f3n"),
+    (r"\bendpoint\b", "punto de conexi\u00f3n"),
+    (r"\bendpoints\b", "puntos de conexi\u00f3n"),
+    (r"\bstatus\b", "estado"),
+    (r"\bscore\b", "puntuaci\u00f3n"),
+    (r"\btracking\b", "medici\u00f3n"),
+    (r"\bTracking\b", "Medici\u00f3n"),
+    (r"\bcollector\b", "recolector"),
+    (r"\bcollectors\b", "recolectores"),
+    (r"\bCollector\b", "Recolector"),
+    (r"\bCollectors\b", "Recolectores"),
+    (r"\brun-state\b", "estado de ejecuci\u00f3n"),
+    (r"\breadiness\b", "preparaci\u00f3n"),
+    (r"\bpublic\b", "p\u00fablico"),
+    (r"\bPublic\b", "P\u00fablico"),
+    (r"\bwebsite\b", "sitio web"),
+    (r"\bWebsite\b", "Sitio web"),
+    (r"\bprofile\b", "perfil"),
+    (r"\bProfile\b", "Perfil"),
+    (r"\bposts\b", "publicaciones"),
+    (r"\bPosts\b", "Publicaciones"),
+    (r"\bpost\b", "publicaci\u00f3n"),
+    (r"\bPost\b", "Publicaci\u00f3n"),
+    (r"\bengagement\b", "interacci\u00f3n"),
+    (r"\bEngagement\b", "Interacci\u00f3n"),
+    (r"\binsights\b", "m\u00e9tricas internas"),
+    (r"\bInsights\b", "M\u00e9tricas internas"),
+    (r"\breach\b", "alcance"),
+    (r"\bReach\b", "Alcance"),
+    (r"\bimpressions\b", "impresiones"),
+    (r"\bImpressions\b", "Impresiones"),
+    (r"\bclicks\b", "clics"),
+    (r"\bClicks\b", "Clics"),
+    (r"\bviews\b", "visualizaciones"),
+    (r"\bViews\b", "Visualizaciones"),
+    (r"\bfollowers\b", "seguidores"),
+    (r"\bFollowers\b", "Seguidores"),
+    (r"\bfollowing\b", "seguidos"),
+    (r"\bFollowing\b", "Seguidos"),
+    (r"\blikes\b", "me gusta"),
+    (r"\bLikes\b", "Me gusta"),
+    (r"\bcomments\b", "comentarios"),
+    (r"\bComments\b", "Comentarios"),
+    (r"\bshares\b", "compartidos"),
+    (r"\bShares\b", "Compartidos"),
+    (r"\bleads\b", "contactos comerciales"),
+    (r"\bLeads\b", "Contactos comerciales"),
+    (r"\brevenue\b", "ingresos"),
+    (r"\bRevenue\b", "Ingresos"),
+    (r"\bperformance\b", "rendimiento"),
+    (r"\bPerformance\b", "Rendimiento"),
+    (r"\bfooter\b", "pie de p\u00e1gina"),
+    (r"\bheader\b", "encabezado"),
+    (r"\bquality gate\b", "control de calidad"),
+    (r"\bQuality gate\b", "Control de calidad"),
+    (r"\bmarkdown\b", "fuente en Markdown"),
+    (r"\bMarkdown\b", "Markdown fuente"),
+    (r"\bJSON t\u00e9cnico\b", "JSON t\u00e9cnico"),
+    (r"\bReport ID\b", "ID del informe"),
+]
+
+def _rpv4_strip_accents_4h3d(value):
+    value = _rpv3_fix_text(value or "")
+    value = _rpv4_unicodedata.normalize("NFD", value)
+    value = "".join(ch for ch in value if _rpv4_unicodedata.category(ch) != "Mn")
+    return value.lower().strip()
+
+
+def _rpv3_fix_text(value):
+    if not isinstance(value, str):
+        return value
+
+    text = value
+    for _ in range(6):
+        before = text
+        for bad, good in _RPV4_MOJIBAKE_REPLACEMENTS_4H3D.items():
+            text = text.replace(bad, good)
+
+        if any(marker in text for marker in ("\u00c3", "\u00c2", "\u00e2", "\u00f0\u0178", "\u00ef\u00bf\u00bd")):
+            try:
+                candidate = text.encode("latin1", errors="strict").decode("utf-8", errors="strict")
+                if sum(candidate.count(m) for m in ("\u00c3", "\u00c2", "\u00e2", "\u00f0\u0178", "\u00ef\u00bf\u00bd")) < sum(text.count(m) for m in ("\u00c3", "\u00c2", "\u00e2", "\u00f0\u0178", "\u00ef\u00bf\u00bd")):
+                    text = candidate
+            except Exception:
+                pass
+
+        if text == before:
+            break
+
+    text = text.replace("\uFFFD", "")
+    text = _rpv4_unicodedata.normalize("NFC", text)
+    return "".join(ch for ch in text if ch in ("\n", "\t") or ord(ch) >= 32)
+
+
+def _rpv4_localize_visible_terms_4h3d(value):
+    text = _rpv3_fix_text(value or "")
+    out_lines = []
+
+    for line in text.splitlines():
+        # No tocar URLs puras para no romper links.
+        stripped = line.strip()
+        if stripped.startswith(("http://", "https://")):
+            out_lines.append(line)
+            continue
+
+        clean = line
+        for pattern, replacement in _RPV4_VISIBLE_TERM_REPLACEMENTS_4H3D:
+            clean = _rpv4_re.sub(pattern, replacement, clean)
+        out_lines.append(clean)
+
+    return _rpv3_fix_text("\n".join(out_lines))
+
+
+def _rpv4_fix_obj_mojibake_only_4h3d(obj):
+    if isinstance(obj, str):
+        return _rpv3_fix_text(obj)
+    if isinstance(obj, list):
+        return [_rpv4_fix_obj_mojibake_only_4h3d(x) for x in obj]
+    if isinstance(obj, tuple):
+        return tuple(_rpv4_fix_obj_mojibake_only_4h3d(x) for x in obj)
+    if isinstance(obj, dict):
+        return {(_rpv3_fix_text(k) if isinstance(k, str) else k): _rpv4_fix_obj_mojibake_only_4h3d(v) for k, v in obj.items()}
+    return obj
+
+
+def _rpv3_fix_obj(obj):
+    return _rpv4_fix_obj_mojibake_only_4h3d(obj)
+
+
+def _rpv3_request_clean_copy(req):
+    try:
+        data = req.model_dump()
+    except Exception:
+        try:
+            data = req.dict()
+        except Exception:
+            data = dict(req)
+
+    data = _rpv4_fix_obj_mojibake_only_4h3d(data)
+    data["documentation_folder_name"] = "Documentacion"
+    data["technical_folder_name"] = "Tecnico"
+
+    if "markdown_report" in data:
+        data["markdown_report"] = _rpv4_prepare_report_markdown_4h3d(data.get("markdown_report") or "")
+    if "executive_summary_markdown" in data and data.get("executive_summary_markdown"):
+        data["executive_summary_markdown"] = _rpv4_localize_visible_terms_4h3d(data.get("executive_summary_markdown") or "")
+
+    return ReportPackageRequest(**data)
+
+
+def _rpv4_prepare_report_markdown_4h3d(md):
+    md = _rpv3_fix_text(md or "")
+    md = _rpv4_localize_visible_terms_4h3d(md)
+    md = _rpv4_re.sub(r"\n{4,}", "\n\n\n", md)
+    md = _rpv4_re.sub(r"[ \t]+\n", "\n", md)
+    return md.strip() + "\n"
+
+
+def _rpv4_word_count_4h3d(md):
+    return len(_rpv4_re.findall(r"[A-Za-z\u00c1\u00c9\u00cd\u00d3\u00da\u00dc\u00d1\u00e1\u00e9\u00ed\u00f3\u00fa\u00fc\u00f10-9]+(?:[-'][A-Za-z\u00c1\u00c9\u00cd\u00d3\u00da\u00dc\u00d1\u00e1\u00e9\u00ed\u00f3\u00fa\u00fc\u00f10-9]+)?", md or ""))
+
+
+def _rpv4_table_count_4h3d(md):
+    count = 0
+    in_table = False
+    for line in (md or "").splitlines():
+        stripped = line.strip()
+        is_table_line = stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+        if is_table_line and not in_table:
+            count += 1
+            in_table = True
+        elif not is_table_line:
+            in_table = False
+    return count
+
+
+def _rpv4_section_titles_4h3d(md):
+    titles = []
+    for line in (md or "").splitlines():
+        if line.startswith("## "):
+            titles.append(line[3:].strip())
+        elif line.startswith("# ") and not titles:
+            titles.append(line[2:].strip())
+    return titles
+
+
+def _rpv4_missing_required_sections_4h3d(md):
+    titles = [_rpv4_strip_accents_4h3d(t) for t in _rpv4_section_titles_4h3d(md)]
+    missing = []
+    for canonical, aliases in _RPV4_REQUIRED_SECTIONS_4H3D:
+        found = False
+        for title in titles:
+            if any(alias in title for alias in aliases):
+                found = True
+                break
+        if not found:
+            missing.append(canonical)
+    return missing
+
+
+def _rpv4_assess_full_report_quality_4h3d(md):
+    md = _rpv4_prepare_report_markdown_4h3d(md)
+    word_count = _rpv4_word_count_4h3d(md)
+    section_count = len([t for t in _rpv4_section_titles_4h3d(md) if t.strip()])
+    table_count = _rpv4_table_count_4h3d(md)
+    missing_sections = _rpv4_missing_required_sections_4h3d(md)
+
+    failures = []
+    if word_count < _RPV4_MIN_FULL_WORDS_4H3D:
+        failures.append("word_count")
+    if section_count < _RPV4_MIN_FULL_SECTIONS_4H3D:
+        failures.append("section_count")
+    if table_count < _RPV4_MIN_FULL_TABLES_4H3D:
+        failures.append("table_count")
+    if missing_sections:
+        failures.append("required_sections")
+
+    return {
+        "status": "passed" if not failures else "failed",
+        "word_count": word_count,
+        "min_word_count": _RPV4_MIN_FULL_WORDS_4H3D,
+        "section_count": section_count,
+        "min_section_count": _RPV4_MIN_FULL_SECTIONS_4H3D,
+        "table_count": table_count,
+        "min_table_count": _RPV4_MIN_FULL_TABLES_4H3D,
+        "missing_required_sections": missing_sections,
+        "failures": failures,
+    }
+
+
+def _rpv4_assess_executive_quality_4h3d(md):
+    md = _rpv4_prepare_report_markdown_4h3d(md)
+    word_count = _rpv4_word_count_4h3d(md)
+    section_count = len([t for t in _rpv4_section_titles_4h3d(md) if t.strip()])
+    failures = []
+    if word_count < _RPV4_MIN_EXEC_WORDS_4H3D:
+        failures.append("word_count")
+    if section_count < _RPV4_MIN_EXEC_SECTIONS_4H3D:
+        failures.append("section_count")
+    return {
+        "status": "passed" if not failures else "failed",
+        "word_count": word_count,
+        "min_word_count": _RPV4_MIN_EXEC_WORDS_4H3D,
+        "section_count": section_count,
+        "min_section_count": _RPV4_MIN_EXEC_SECTIONS_4H3D,
+        "failures": failures,
+    }
+
+
+def _rpv4_section_by_title_4h3d(full_md, needles):
+    full_md = _rpv4_prepare_report_markdown_4h3d(full_md or "")
+    sections = _rpv4_sections_from_markdown(full_md)
+    clean_needles = [_rpv4_strip_accents_4h3d(n) for n in needles]
+    for sec in sections:
+        title = _rpv4_strip_accents_4h3d(sec.get("title") or "")
+        if any(n in title for n in clean_needles):
+            return _rpv4_prepare_report_markdown_4h3d(sec.get("markdown") or "").strip()
+    return ""
+
+
+def _rpv4_trim_section_4h3d(text, max_words=220):
+    text = _rpv4_prepare_report_markdown_4h3d(text or "")
+    words = text.split()
+    if len(words) <= max_words:
+        return text.strip()
+    return " ".join(words[:max_words]).strip() + "..."
+
+
+def _rpv4_executive_md_4h3c(full_md, provided=None):
+    full_md = _rpv4_prepare_report_markdown_4h3d(full_md or "")
+    provided = _rpv4_prepare_report_markdown_4h3d(provided or "").strip()
+
+    if provided and _rpv4_word_count_4h3d(provided) >= _RPV4_MIN_EXEC_WORDS_4H3D and len(_rpv4_section_titles_4h3d(provided)) >= _RPV4_MIN_EXEC_SECTIONS_4H3D:
+        return provided
+
+    resumen = _rpv4_section_by_title_4h3d(full_md, ["resumen ejecutivo"])
+    estado = _rpv4_section_by_title_4h3d(full_md, ["estado de recoleccion"])
+    evidencia = _rpv4_section_by_title_4h3d(full_md, ["evidencia publica recolectada", "evidencia publica"])
+    semaforo = _rpv4_section_by_title_4h3d(full_md, ["semaforo ejecutivo", "semaforo"])
+    metricas = _rpv4_section_by_title_4h3d(full_md, ["metricas publicas agregadas de redes", "metricas publicas"])
+    diagnostico = _rpv4_section_by_title_4h3d(full_md, ["diagnostico duro", "diagnostico"])
+    matriz = _rpv4_section_by_title_4h3d(full_md, ["matriz impacto/esfuerzo", "matriz de impacto"])
+    lectura = _rpv4_section_by_title_4h3d(full_md, ["lectura ejecutiva para reunion", "lectura ejecutiva"])
+    proximos = _rpv4_section_by_title_4h3d(full_md, ["proximos pasos concretos", "proximos pasos"])
+    fiabilidad = _rpv4_section_by_title_4h3d(full_md, ["fiabilidad de metricas y evidencia", "fiabilidad"])
+    internos = _rpv4_section_by_title_4h3d(full_md, ["datos internos necesarios"])
+
+    parts = [
+        "# Resumen ejecutivo para due\u00f1os y gerencia",
+        "Este resumen usa la misma evidencia del informe completo. No agrega datos privados ni afirma ventas, ROAS, CPA, margen, tr\u00e1fico real, conversiones reales, alcance real, clics o ingresos sin acceso interno validado.",
+        "## Diagn\u00f3stico general",
+        _rpv4_trim_section_4h3d(resumen or diagnostico or provided or full_md, 260),
+        "## Evidencia p\u00fablica relevante",
+        _rpv4_trim_section_4h3d((evidencia + "\n\n" + metricas).strip(), 260),
+        "## Estado de recolecci\u00f3n y l\u00edmites",
+        _rpv4_trim_section_4h3d((estado + "\n\n" + fiabilidad).strip(), 230),
+        "## Prioridades para decisi\u00f3n",
+        _rpv4_trim_section_4h3d((semaforo + "\n\n" + matriz).strip(), 260),
+        "## Datos internos necesarios",
+        _rpv4_trim_section_4h3d(internos, 180),
+        "## Pr\u00f3ximos pasos para reuni\u00f3n",
+        _rpv4_trim_section_4h3d((lectura + "\n\n" + proximos).strip(), 240),
+    ]
+
+    exec_md = _rpv4_prepare_report_markdown_4h3d("\n\n".join([p for p in parts if p and p.strip()]))
+
+    if _rpv4_word_count_4h3d(exec_md) < _RPV4_MIN_EXEC_WORDS_4H3D:
+        filler = []
+        for sec in _rpv4_sections_from_markdown(full_md):
+            title = sec.get("title") or ""
+            body = sec.get("markdown") or ""
+            if title and body and title not in exec_md:
+                filler.append("### Apoyo ejecutivo: " + title)
+                filler.append(_rpv4_trim_section_4h3d(body, 120))
+            if _rpv4_word_count_4h3d(exec_md + "\n\n" + "\n\n".join(filler)) >= _RPV4_MIN_EXEC_WORDS_4H3D:
+                break
+        if filler:
+            exec_md = _rpv4_prepare_report_markdown_4h3d(exec_md + "\n\n" + "\n\n".join(filler))
+
+    return exec_md
+
+
+def _rpv3_pdf_inline_4h3b(text):
+    text = _rpv3_fix_text(text or "")
+    text = text.replace("**", "")
+    text = _rpb_html.escape(text, quote=True)
+    text = _rpv4_re.sub(r"`([^`]+)`", r"<font name='Helvetica-Bold'>\1</font>", text)
+    return text
+
+
+def _rpv3_pdf_safe(text):
+    return _rpv3_fix_text(text or "").replace("\u2192", "->").replace("\u2013", "-").replace("\u2014", "-")
+
+
+def _rpv4_read_markdown_table_4h3d(lines, start_index):
+    rows = []
+    j = start_index
+    while j < len(lines):
+        ln = lines[j].strip()
+        if not (ln.startswith("|") and ln.endswith("|") and ln.count("|") >= 2):
+            break
+        cells = [c.strip() for c in ln.strip("|").split("|")]
+        if not all(set(c) <= set("-: ") for c in cells):
+            rows.append(cells)
+        j += 1
+    return rows, j
+
+
+def _rpv3_markdown_to_pdf(path, title, md, company_name, executive=False):
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.units import cm
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+    except Exception as exc:
+        raise RuntimeError("reportlab no est\u00e1 instalado. Agregar reportlab a requirements.txt") from exc
+
+    title = _rpv3_pdf_safe(title)
+    company_name = _rpv3_pdf_safe(company_name)
+    md = _rpv4_prepare_report_markdown_4h3d(md or "")
+
+    doc = SimpleDocTemplate(
+        str(path),
+        pagesize=A4,
+        rightMargin=1.35 * cm,
+        leftMargin=1.35 * cm,
+        topMargin=1.25 * cm,
+        bottomMargin=1.15 * cm,
+        title=title,
+        author="Marketing Auditor",
+        subject=company_name,
+    )
+
+    styles = getSampleStyleSheet()
+
+    styles.add(ParagraphStyle(
+        name="CoverTitle4H3D",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=22 if not executive else 18,
+        leading=27 if not executive else 23,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=16,
+    ))
+    styles.add(ParagraphStyle(
+        name="CoverSub4H3D",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=10,
+        leading=14,
+        textColor=colors.HexColor("#334155"),
+        spaceAfter=5,
+    ))
+    styles.add(ParagraphStyle(
+        name="H1_4H3D",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=15 if not executive else 14.5,
+        leading=19,
+        textColor=colors.HexColor("#0f172a"),
+        spaceBefore=11,
+        spaceAfter=7,
+    ))
+    styles.add(ParagraphStyle(
+        name="H2_4H3D",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=12.2,
+        leading=15.5,
+        textColor=colors.HexColor("#075985"),
+        spaceBefore=9,
+        spaceAfter=5,
+    ))
+    styles.add(ParagraphStyle(
+        name="H3_4H3D",
+        parent=styles["Heading3"],
+        fontName="Helvetica-Bold",
+        fontSize=10.5,
+        leading=13.5,
+        textColor=colors.HexColor("#334155"),
+        spaceBefore=7,
+        spaceAfter=4,
+    ))
+    styles.add(ParagraphStyle(
+        name="Body4H3D",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=8.8 if not executive else 9.2,
+        leading=12.0 if not executive else 12.7,
+        textColor=colors.HexColor("#111827"),
+        spaceAfter=4.2,
+    ))
+    styles.add(ParagraphStyle(
+        name="Small4H3D",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=6.8,
+        leading=8.8,
+        textColor=colors.HexColor("#111827"),
+    ))
+    styles.add(ParagraphStyle(
+        name="SmallHeader4H3D",
+        parent=styles["BodyText"],
+        fontName="Helvetica-Bold",
+        fontSize=6.9,
+        leading=8.9,
+        textColor=colors.white,
+    ))
+
+    story = []
+
+    if executive:
+        story.append(Paragraph(_rpv3_pdf_inline_4h3b(title), styles["CoverTitle4H3D"]))
+        story.append(Paragraph("Cliente: <b>" + _rpb_html.escape(company_name, quote=True) + "</b>", styles["CoverSub4H3D"]))
+        story.append(Paragraph("Documento ejecutivo basado en evidencia p\u00fablica visible. No incluye m\u00e9tricas privadas sin acceso interno.", styles["CoverSub4H3D"]))
+        story.append(Spacer(1, 8))
+    else:
+        story.append(Spacer(1, 1.25 * cm))
+        story.append(Paragraph(_rpv3_pdf_inline_4h3b(title), styles["CoverTitle4H3D"]))
+        story.append(Paragraph("Cliente: <b>" + _rpb_html.escape(company_name, quote=True) + "</b>", styles["CoverSub4H3D"]))
+        story.append(Paragraph("Tipo de documento: Auditor\u00eda completa", styles["CoverSub4H3D"]))
+        story.append(Paragraph("Generado: " + _rpb_html.escape(_rpb_now_iso(), quote=True), styles["CoverSub4H3D"]))
+        story.append(Spacer(1, 0.45 * cm))
+        story.append(Paragraph(
+            "Nota metodol\u00f3gica: este documento usa evidencia p\u00fablica visible y separa hechos, inferencias razonadas y datos que requieren acceso interno.",
+            styles["Body4H3D"]
+        ))
+        story.append(PageBreak())
+
+        try:
+            sections = _rpb_sections_from_markdown(md)
+        except Exception:
+            sections = []
+
+        if sections and len(sections) >= 4:
+            story.append(Paragraph("\u00cdndice", styles["H1_4H3D"]))
+            for idx, sec in enumerate(sections, start=1):
+                story.append(Paragraph(str(idx) + ". " + _rpv3_pdf_inline_4h3b(sec.get("title") or "Secci\u00f3n"), styles["Body4H3D"]))
+            story.append(PageBreak())
+
+    lines = md.splitlines()
+    i = 0
+    blank_added = False
+
+    while i < len(lines):
+        raw = lines[i].rstrip()
+        clean = _rpv3_fix_text(raw).strip()
+
+        if not clean:
+            if not blank_added:
+                story.append(Spacer(1, 2.5))
+                blank_added = True
+            i += 1
+            continue
+
+        blank_added = False
+
+        if clean.startswith("|") and clean.endswith("|"):
+            rows, next_i = _rpv4_read_markdown_table_4h3d(lines, i)
+            if rows:
+                max_cols = max(len(r) for r in rows)
+                normalized = []
+                for ridx, r in enumerate(rows):
+                    rr = r + [""] * (max_cols - len(r))
+                    row_style = styles["SmallHeader4H3D"] if ridx == 0 else styles["Small4H3D"]
+                    normalized.append([Paragraph(_rpv3_pdf_inline_4h3b(c), row_style) for c in rr])
+
+                usable_width = A4[0] - 2.7 * cm
+                col_widths = [usable_width / max_cols] * max_cols
+
+                tbl = Table(normalized, colWidths=col_widths, repeatRows=1, splitByRow=1)
+                tbl.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cbd5e1")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                ]))
+                story.append(tbl)
+                story.append(Spacer(1, 7))
+                i = next_i
+                continue
+
+        if clean.startswith("# "):
+            story.append(Paragraph(_rpv3_pdf_inline_4h3b(clean[2:]), styles["H1_4H3D"]))
+        elif clean.startswith("## "):
+            story.append(Paragraph(_rpv3_pdf_inline_4h3b(clean[3:]), styles["H1_4H3D"]))
+        elif clean.startswith("### "):
+            story.append(Paragraph(_rpv3_pdf_inline_4h3b(clean[4:]), styles["H2_4H3D"]))
+        elif clean.startswith("#### "):
+            story.append(Paragraph(_rpv3_pdf_inline_4h3b(clean[5:]), styles["H3_4H3D"]))
+        elif _rpb_re.match(r"^\s*[-*]\s+", clean):
+            item = _rpb_re.sub(r"^\s*[-*]\s+", "\u2022 ", clean)
+            story.append(Paragraph(_rpv3_pdf_inline_4h3b(item), styles["Body4H3D"]))
+        elif _rpb_re.match(r"^\s*\d+\.\s+", clean):
+            story.append(Paragraph(_rpv3_pdf_inline_4h3b(clean), styles["Body4H3D"]))
+        elif clean == "---":
+            story.append(Spacer(1, 7))
+        else:
+            story.append(Paragraph(_rpv3_pdf_inline_4h3b(clean), styles["Body4H3D"]))
+
+        i += 1
+
+    if not story:
+        raise RuntimeError("No hay contenido suficiente para generar PDF.")
+
+    def footer(canvas, doc_obj):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 7)
+        canvas.setFillColor(colors.HexColor("#64748b"))
+        canvas.drawString(1.25 * cm, 0.65 * cm, _rpv3_fix_text(company_name + " - " + title)[:118])
+        canvas.drawRightString(A4[0] - 1.25 * cm, 0.65 * cm, "P\u00e1gina " + str(doc_obj.page))
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=footer, onLaterPages=footer)
+
+
+def _rpv4_build_interactive_html(req, report_id, created_at):
+    title = _rpv3_fix_text(req.report_title)
+    company = _rpv3_fix_text(req.company_name)
+    md = _rpv4_prepare_report_markdown_4h3d(req.markdown_report or "")
+    sections = _rpv4_sections_from_markdown(md)
+
+    nav_parts = []
+    panel_parts = []
+    for idx, sec in enumerate(sections):
+        sid = "sec_" + str(idx)
+        active = "active" if idx == 0 else ""
+        sec_title = _rpv3_fix_text(sec.get("title") or ("Secci\u00f3n " + str(idx + 1)))
+        nav_parts.append('<button class="tab ' + active + '" data-target="' + sid + '">' + _rpb_html.escape(sec_title, quote=True) + '</button>')
+        panel_parts.append('<section id="' + sid + '" class="panel ' + active + '">' + _rpv4_markdown_to_basic_html(_rpv4_prepare_report_markdown_4h3d(sec.get("markdown") or "")) + '</section>')
+
+    evidence_json = _rpb_html.escape(_rpb_json.dumps(_rpv4_fix_obj_mojibake_only_4h3d(req.evidence_payload or {}), ensure_ascii=False, indent=2), quote=True)
+    metrics_json = _rpb_html.escape(_rpb_json.dumps(_rpv4_fix_obj_mojibake_only_4h3d(req.social_metrics or {}), ensure_ascii=False, indent=2), quote=True)
+
+    head = [
+        "<!doctype html>", '<html lang="es">', "<head>", '<meta charset="utf-8">',
+        '<meta http-equiv="Content-Type" content="text/html; charset=utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        "<title>" + _rpb_html.escape(title, quote=True) + " - " + _rpb_html.escape(company, quote=True) + "</title>",
+        "<style>",
+        ":root{--bg:#f8fafc;--ink:#0f172a;--muted:#64748b;--line:#cbd5e1;--primary:#0f172a;--accent:#0369a1;--soft:#e0f2fe;--card:#ffffff;}",
+        "*{box-sizing:border-box;}body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--ink);}",
+        "header{padding:30px 34px;background:linear-gradient(135deg,#0f172a,#1e293b);color:white;position:sticky;top:0;z-index:5;box-shadow:0 4px 20px rgba(15,23,42,.22);}",
+        "h1{margin:0 0 8px;font-size:30px;letter-spacing:-.02em}.meta{color:#e2e8f0;font-size:13px;display:flex;gap:14px;flex-wrap:wrap;}",
+        ".layout{display:grid;grid-template-columns:310px 1fr;min-height:calc(100vh - 100px);}nav{border-right:1px solid var(--line);padding:18px;background:#fff;position:sticky;top:100px;height:calc(100vh - 100px);overflow:auto;}",
+        ".tab{display:block;width:100%;text-align:left;margin:0 0 8px;padding:11px 12px;background:#f8fafc;color:var(--ink);border:1px solid var(--line);border-radius:12px;cursor:pointer;font-weight:700;}",
+        ".tab.active,.tab:hover{border-color:var(--accent);background:var(--soft);}main{padding:26px;max-width:1360px;}",
+        ".panel{display:none;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:28px;box-shadow:0 10px 30px rgba(15,23,42,.08);}.panel.active{display:block;}",
+        "h2{color:var(--primary);margin-top:8px;border-bottom:2px solid var(--soft);padding-bottom:8px;}h3{color:var(--accent);margin-top:24px;}p,li{line-height:1.62}.space{height:8px;}",
+        ".table-wrap{overflow:auto;margin:16px 0;border:1px solid var(--line);border-radius:12px;}table{border-collapse:collapse;width:100%;min-width:760px;font-size:14px;}td,th{border-bottom:1px solid var(--line);padding:10px;vertical-align:top;}tr:first-child td{font-weight:700;color:white;background:var(--primary);}",
+        ".badge{display:inline-block;padding:4px 9px;border:1px solid var(--line);border-radius:999px;color:var(--accent);background:var(--soft);font-weight:700;}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:18px 0;}.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 6px 16px rgba(15,23,42,.06);}",
+        "details{margin:14px 0;border:1px solid var(--line);border-radius:12px;padding:12px;background:#f8fafc;}summary{cursor:pointer;color:var(--accent);font-weight:700;}pre{white-space:pre-wrap;overflow:auto;max-height:480px;background:#0f172a;border-radius:12px;padding:12px;color:#e2e8f0;}footer{color:var(--muted);font-size:12px;padding:24px;text-align:center;}@media(max-width:900px){.layout{grid-template-columns:1fr;}nav{position:relative;top:0;height:auto;}}",
+        "</style>", "</head>", "<body>", "<header>",
+        "<h1>" + _rpb_html.escape(title, quote=True) + "</h1>",
+        '<div class="meta"><span>Cliente: <strong>' + _rpb_html.escape(company, quote=True) + "</strong></span><span>ID del informe: " + _rpb_html.escape(report_id, quote=True) + "</span><span>Creado: " + _rpb_html.escape(created_at, quote=True) + "</span><span>Tipo: " + _rpb_html.escape(_rpv3_fix_text(req.client_type or "auditor\u00eda p\u00fablica"), quote=True) + "</span></div>",
+        "</header>", '<div class="layout">', "<nav>" + "".join(nav_parts) + "</nav>", "<main>",
+        '<div class="cards"><div class="card"><span class="badge">Informe completo</span><p>Auditor\u00eda p\u00fablica integral con evidencia, diagn\u00f3stico y plan de acci\u00f3n.</p></div><div class="card"><span class="badge">Versi\u00f3n PDF</span><p>El PDF completo conserva el mismo contenido, sin interacci\u00f3n.</p></div><div class="card"><span class="badge">Resumen ejecutivo</span><p>Documento separado para due\u00f1os y gerencia.</p></div></div>',
+        "".join(panel_parts),
+        '<section class="panel active" style="display:block;margin-top:18px;"><h2>Anexos t\u00e9cnicos</h2><details><summary>Evidencia t\u00e9cnica JSON</summary><pre>' + evidence_json + '</pre></details><details><summary>M\u00e9tricas sociales JSON</summary><pre>' + metrics_json + '</pre></details></section>',
+        "</main></div>",
+        "<footer>Generado por Marketing Auditor. Las m\u00e9tricas p\u00fablicas son parciales y no representan rendimiento interno.</footer>",
+        "<script>document.querySelectorAll('.tab').forEach(function(btn){btn.addEventListener('click',function(){document.querySelectorAll('.tab').forEach(function(b){b.classList.remove('active');});document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('active');});btn.classList.add('active');var target=document.getElementById(btn.dataset.target);if(target)target.classList.add('active');});});</script>",
+        "</body></html>"
+    ]
+    return _rpv3_fix_text("\n".join(head))
+
+
+def _rpv4_model_copy_clean_4h3d(req, markdown_report=None, executive_summary_markdown=None, upload_to_drive=None):
+    try:
+        data = req.model_dump()
+    except Exception:
+        try:
+            data = req.dict()
+        except Exception:
+            data = dict(req)
+
+    data = _rpv4_fix_obj_mojibake_only_4h3d(data)
+    if markdown_report is not None:
+        data["markdown_report"] = markdown_report
+    if executive_summary_markdown is not None:
+        data["executive_summary_markdown"] = executive_summary_markdown
+    if upload_to_drive is not None:
+        data["upload_to_drive"] = bool(upload_to_drive)
+    data["documentation_folder_name"] = "Documentacion"
+    data["technical_folder_name"] = "Tecnico"
+    return ReportPackageRequest(**data)
+
+
+def _rpv4_quality_gate_response_4h3d(req, quality_gate):
+    created_at = _rpb_now_iso()
+    report_id = _rpb_report_id(getattr(req, "company_name", "cliente"))
+    base = _rpb_public_base_url()
+    return {
+        "collector": "report_package_builder_v4",
+        "version": APP_VERSION,
+        "status": "needs_more_content",
+        "reason": "El informe completo no cumple el est\u00e1ndar m\u00ednimo de profundidad para generar entregables.",
+        "report_id": report_id,
+        "company_name": _rpv3_fix_text(getattr(req, "company_name", "")),
+        "report_title": _rpv3_fix_text(getattr(req, "report_title", "")),
+        "created_at": created_at,
+        "quality_gate": quality_gate,
+        "local_urls": {
+            "interactive_html_url": f"{base}/deliverables/report-package/{report_id}/html",
+            "full_pdf_url": f"{base}/deliverables/report-package/{report_id}/pdf-full",
+            "executive_pdf_url": f"{base}/deliverables/report-package/{report_id}/pdf-executive",
+            "markdown_source_url": f"{base}/deliverables/report-package/{report_id}/md",
+            "evidence_json_url": f"{base}/deliverables/report-package/{report_id}/json",
+        },
+        "files": {},
+        "drive": {
+            "requested": bool(getattr(req, "upload_to_drive", False)),
+            "status": "not_requested",
+            "integration": "existing_drive_webapp",
+        },
+        "errors": [],
+        "regeneration_available": False,
+        "notes": [
+            "No se gener\u00f3 HTML/PDF porque el contenido era demasiado corto o incompleto.",
+            "Para corregirlo, ampliar el Markdown completo hasta cumplir word_count, section_count, table_count y secciones obligatorias.",
+            "El backend bloquea entregables cortos para evitar PDFs pobres, p\u00e1ginas vac\u00edas o res\u00famenes ejecutivos de una sola p\u00e1gina real."
+        ]
+    }
+
+
+def _rpv4_build_package(req):
+    req = _rpv3_request_clean_copy(req)
+    created_at = _rpb_now_iso()
+    report_id = _rpb_report_id(req.company_name)
+    prefix = _rpb_slug(req.filename_prefix or req.company_name)
+    workdir = _RPB_ROOT / report_id
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    technical_dir = workdir / "tecnico"
+    technical_dir.mkdir(exist_ok=True)
+
+    files = {}
+    errors = []
+
+    markdown_report = _rpv4_prepare_report_markdown_4h3d(req.markdown_report or "")
+    full_quality = _rpv4_assess_full_report_quality_4h3d(markdown_report)
+    if full_quality.get("status") != "passed":
+        return _rpv4_quality_gate_response_4h3d(req, full_quality)
+
+    exec_md = _rpv4_executive_md_4h3c(markdown_report, req.executive_summary_markdown)
+    exec_quality = _rpv4_assess_executive_quality_4h3d(exec_md)
+    if exec_quality.get("status") != "passed":
+        quality = dict(full_quality)
+        quality["executive_quality_gate"] = exec_quality
+        return _rpv4_quality_gate_response_4h3d(req, quality)
+
+    req = _rpv4_model_copy_clean_4h3d(req, markdown_report=markdown_report, executive_summary_markdown=exec_md, upload_to_drive=False)
+
+    evidence_payload = _rpv4_fix_obj_mojibake_only_4h3d(req.evidence_payload or {})
+    social_metrics = _rpv4_fix_obj_mojibake_only_4h3d(req.social_metrics or {})
+
+    md_path = technical_dir / f"04_{prefix}_reporte_fuente.md"
+    json_path = technical_dir / f"05_{prefix}_evidencia_tecnica.json"
+
+    md_path.write_text(markdown_report, encoding="utf-8")
+    json_payload = {
+        "report_id": report_id,
+        "company_name": _rpv3_fix_text(req.company_name),
+        "report_title": _rpv3_fix_text(req.report_title),
+        "client_type": _rpv3_fix_text(req.client_type),
+        "created_at": created_at,
+        "quality_gate": {
+            "full_report": full_quality,
+            "executive_report": exec_quality,
+            "empty_page_policy": "executive_without_cover_or_index_pagebreaks",
+            "encoding_policy": "utf8_nfc_mojibake_fixed_all_visible_renderers",
+            "language_policy": "visible_output_spanish_first",
+        },
+        "evidence_payload": evidence_payload,
+        "social_metrics": social_metrics,
+    }
+    json_path.write_text(_rpb_json.dumps(json_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    files["markdown_source"] = {"status": "created", "path": str(md_path)}
+    files["evidence_json"] = {"status": "created", "path": str(json_path)}
+
+    html_path = workdir / f"01_{prefix}_auditoria_interactiva_completa.html"
+    full_pdf_path = workdir / f"02_{prefix}_auditoria_completa.pdf"
+    executive_pdf_path = workdir / f"03_{prefix}_resumen_ejecutivo_duenos.pdf"
+
+    if req.generate_interactive_html:
+        try:
+            html_doc = _rpv4_build_interactive_html(req, report_id, created_at)
+            html_path.write_text(html_doc, encoding="utf-8")
+            files["interactive_html"] = {"status": "created", "path": str(html_path)}
+        except Exception as exc:
+            files["interactive_html"] = {"status": "failed", "reason": str(exc), "regenerable": True}
+            errors.append(f"interactive_html failed: {exc}")
+
+    if req.generate_full_pdf:
+        try:
+            _rpv3_markdown_to_pdf(full_pdf_path, f"{req.report_title} - Completa", markdown_report, req.company_name, executive=False)
+            files["full_pdf"] = {"status": "created", "path": str(full_pdf_path)}
+        except Exception as exc:
+            files["full_pdf"] = {"status": "failed", "reason": str(exc), "regenerable": True}
+            errors.append(f"full_pdf failed: {exc}")
+
+    if req.generate_executive_pdf:
+        try:
+            _rpv3_markdown_to_pdf(executive_pdf_path, f"{req.report_title} - Resumen ejecutivo", exec_md, req.company_name, executive=True)
+            files["executive_pdf"] = {"status": "created", "path": str(executive_pdf_path)}
+        except Exception as exc:
+            files["executive_pdf"] = {"status": "failed", "reason": str(exc), "regenerable": True}
+            errors.append(f"executive_pdf failed: {exc}")
+
+    base = _rpb_public_base_url()
+    local_urls = {
+        "interactive_html_url": f"{base}/deliverables/report-package/{report_id}/html",
+        "full_pdf_url": f"{base}/deliverables/report-package/{report_id}/pdf-full",
+        "executive_pdf_url": f"{base}/deliverables/report-package/{report_id}/pdf-executive",
+        "markdown_source_url": f"{base}/deliverables/report-package/{report_id}/md",
+        "evidence_json_url": f"{base}/deliverables/report-package/{report_id}/json",
+    }
+
+    return {
+        "collector": "report_package_builder_v4",
+        "version": APP_VERSION,
+        "status": "completed" if not errors else "partial_completed",
+        "report_id": report_id,
+        "company_name": _rpv3_fix_text(req.company_name),
+        "report_title": _rpv3_fix_text(req.report_title),
+        "created_at": created_at,
+        "documentation_folder_name": "Documentacion",
+        "technical_folder_name": "Tecnico",
+        "local_urls": local_urls,
+        "files": files,
+        "drive": {
+            "requested": bool(req.upload_to_drive),
+            "status": "not_requested",
+            "integration": "existing_drive_webapp",
+        },
+        "quality_gate": {
+            "full_report": full_quality,
+            "executive_report": exec_quality,
+        },
+        "errors": errors,
+        "regeneration_available": True,
+        "notes": [
+            "4H.3-D: quality gate bloquea informes completos cortos o incompletos.",
+            "4H.3-D: PDF ejecutivo no genera portada ni \u00edndice separados; empieza con contenido real.",
+            "4H.3-D: renderer PDF y HTML aplican limpieza de mojibake y salida visible en espa\u00f1ol.",
+            "4H.3-D: se limita el espaciado vac\u00edo para evitar hojas al vicio."
+        ]
+    }
+
+
+_rpb_upload_package_with_existing_drive_previous_4h3d = _rpb_upload_package_with_existing_drive
+
+async def _rpb_upload_package_with_existing_drive(req, package_result):
+    if (package_result or {}).get("status") == "needs_more_content":
+        return {
+            "requested": bool(getattr(req, "upload_to_drive", False)),
+            "status": "completed",
+            "skipped": True,
+            "reason": "quality_gate_failed_no_files_generated",
+            "integration": "existing_drive_webapp",
+            "uploaded_count": 0,
+            "failed_count": 0,
+            "files": {},
+        }
+    return await _rpb_upload_package_with_existing_drive_previous_4h3d(req, package_result)
+
+# ============================================================
+# END HOTFIX 4H.3-D
+# ============================================================
+
+
+# HOTFIX 4H.3-G: report quality gate + safe PDF rendering verification marker.
+
+# HOTFIX 4H.3-I: mojibake cleanup without blocking prompt.
+
+# HOTFIX 4H.3-J: ASCII-safe source encoding guard.
