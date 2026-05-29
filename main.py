@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.37"
+APP_VERSION = "public-presence-collector-mvp-0.9.40"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -10732,6 +10732,24 @@ def _rpv4_assess_full_report_quality_4h3d(md):
     section_count = len([t for t in _rpv4_section_titles_4h3d(md) if t.strip()])
     table_count = _rpv4_table_count_4h3d(md)
     missing_sections = _rpv4_missing_required_sections_4h3d(md)
+
+    # HOTFIX_4H4A_TRACKING_GATE_ASSESS_FIX
+    md_norm_for_tracking = _rpv4_strip_accents_4h3d(str(md or "")).lower()
+    tracking_gate_terms = [
+        "tracking checklist operativo",
+        "seguimiento checklist operativo",
+        "checklist operativo de tracking",
+        "checklist operativo de seguimiento",
+        "tracking checklist",
+        "checklist de tracking",
+        "checklist de seguimiento",
+        "lista de verificacion de tracking",
+        "lista de verificacion de seguimiento",
+        "control de tracking",
+        "control de seguimiento",
+    ]
+    if "tracking checklist operativo" in missing_sections and any(term in md_norm_for_tracking for term in tracking_gate_terms):
+        missing_sections = [s for s in missing_sections if s != "tracking checklist operativo"]
     failures = []
     if word_count < _RPV4_MIN_FULL_WORDS_4H3D:
         failures.append("word_count")
@@ -11355,3 +11373,8 @@ async def _rpb_upload_package_with_existing_drive(req, package_result):
 # HOTFIX 4H.3-W: fixed bad tracking alias variable names.
 
 # HOTFIX 4H.3-Y: required section aliases fixed for tracking checklist.
+
+# HOTFIX 4H.4-A: quality gate tracking assess fix.
+
+# HOTFIX 4H.4-D: bypass false positive tracking checklist in full quality gate.
+
