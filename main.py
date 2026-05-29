@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.33"
+APP_VERSION = "public-presence-collector-mvp-0.9.34"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -288,6 +288,95 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# HOTFIX 4H.3-R: outgoing JSON mojibake cleaner.
+def _ma_runtime_clean_mojibake_text(value: str) -> str:
+    if not isinstance(value, str) or not value:
+        return value
+
+    pairs = {
+        chr(0x00C3) + chr(0x00A1): "\u00e1",
+        chr(0x00C3) + chr(0x00A9): "\u00e9",
+        chr(0x00C3) + chr(0x00AD): "\u00ed",
+        chr(0x00C3) + chr(0x00B3): "\u00f3",
+        chr(0x00C3) + chr(0x00BA): "\u00fa",
+        chr(0x00C3) + chr(0x00B1): "\u00f1",
+        chr(0x00C3) + chr(0x00BC): "\u00fc",
+        chr(0x00C3) + chr(0x0081): "\u00c1",
+        chr(0x00C3) + chr(0x0089): "\u00c9",
+        chr(0x00C3) + chr(0x008D): "\u00cd",
+        chr(0x00C3) + chr(0x0093): "\u00d3",
+        chr(0x00C3) + chr(0x009A): "\u00da",
+        chr(0x00C3) + chr(0x0091): "\u00d1",
+        chr(0x00C2) + chr(0x00BF): "\u00bf",
+        chr(0x00C2) + chr(0x00A1): "\u00a1",
+        chr(0x00C2) + chr(0x00A0): " ",
+        chr(0x00E2) + chr(0x0080) + chr(0x0099): "'",
+        chr(0x00E2) + chr(0x0080) + chr(0x0098): "'",
+        chr(0x00E2) + chr(0x0080) + chr(0x009C): '"',
+        chr(0x00E2) + chr(0x0080) + chr(0x009D): '"',
+        chr(0x00E2) + chr(0x0080) + chr(0x0093): "-",
+        chr(0x00E2) + chr(0x0080) + chr(0x0094): "-",
+        chr(0x00E2) + chr(0x0080) + chr(0x00A6): "...",
+        chr(0xFFFD): "",
+    }
+
+    out = value
+    for bad, good in pairs.items():
+        out = out.replace(bad, good)
+    return out
+
+
+def _ma_runtime_clean_json_payload(value):
+    if isinstance(value, str):
+        return _ma_runtime_clean_mojibake_text(value)
+    if isinstance(value, list):
+        return [_ma_runtime_clean_json_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_ma_runtime_clean_json_payload(item) for item in value)
+    if isinstance(value, dict):
+        return {
+            _ma_runtime_clean_json_payload(k): _ma_runtime_clean_json_payload(v)
+            for k, v in value.items()
+        }
+    return value
+
+
+@app.middleware("http")
+async def _ma_clean_json_mojibake_middleware(request, call_next):
+    response = await call_next(request)
+    content_type = response.headers.get("content-type", "")
+
+    if "application/json" not in content_type.lower():
+        return response
+
+    body = b""
+    try:
+        async for chunk in response.body_iterator:
+            body += chunk
+
+        data = json.loads(body.decode("utf-8", errors="replace"))
+        data = _ma_runtime_clean_json_payload(data)
+        new_body = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
+
+        headers = dict(response.headers)
+        headers["content-length"] = str(len(new_body))
+
+        return Response(
+            content=new_body,
+            status_code=response.status_code,
+            headers=headers,
+            media_type="application/json",
+        )
+    except Exception:
+        return Response(
+            content=body,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            media_type=content_type or "application/json",
+        )
+
 
 
 class AssetsInput(BaseModel):
