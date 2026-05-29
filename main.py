@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.35"
+APP_VERSION = "public-presence-collector-mvp-0.9.36"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -294,7 +294,12 @@ app.add_middleware(
 
 # HOTFIX 4H.3-V: tracking checklist alias for quality gate.
 def _ma_quality_gate_tracking_alias_present(markdown_text: str) -> bool:
-    text = _ma_normalize_for_quality_gate(markdown_text) if "_ma_normalize_for_quality_gate" in globals() else str(markdown_text or "").lower()
+    raw = str(markdown_text or "")
+    if "_rpv4_strip_accents_4h3d" in globals():
+        text = _rpv4_strip_accents_4h3d(raw).lower()
+    else:
+        text = raw.lower()
+
     aliases = [
         "tracking checklist operativo",
         "seguimiento checklist operativo",
@@ -10702,15 +10707,9 @@ def _rpv4_assess_full_report_quality_4h3d(md):
     table_count = _rpv4_table_count_4h3d(md)
     missing_sections = _rpv4_missing_required_sections_4h3d(md)
 
-    # HOTFIX_4H3V_TRACKING_ALIAS_APPLIED
-
-
-    if "tracking checklist operativo" in missing_required_sections and _ma_quality_gate_tracking_alias_present(markdown_report):
-
-
-        missing_required_sections = [s for s in missing_required_sections if s != "tracking checklist operativo"]
-
-
+    # HOTFIX_4H3W_TRACKING_ALIAS_APPLIED
+    if "tracking checklist operativo" in missing_sections and _ma_quality_gate_tracking_alias_present(md):
+        missing_sections = [s for s in missing_sections if s != "tracking checklist operativo"]
     failures = []
     if word_count < _RPV4_MIN_FULL_WORDS_4H3D:
         failures.append("word_count")
@@ -11330,3 +11329,5 @@ async def _rpb_upload_package_with_existing_drive(req, package_result):
 # HOTFIX 4H.3-J: ASCII-safe source encoding guard.
 
 # HOTFIX 4H.3-O: removed duplicate APP_VERSION override.
+
+# HOTFIX 4H.3-W: fixed bad tracking alias variable names.
