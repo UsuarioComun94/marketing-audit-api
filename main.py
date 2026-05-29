@@ -64,7 +64,7 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
 
-APP_VERSION = "public-presence-collector-mvp-0.9.36"
+APP_VERSION = "public-presence-collector-mvp-0.9.37"
 API_KEY = os.getenv("API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://marketing-audit-api.onrender.com").rstrip("/")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "").strip()
@@ -10687,16 +10687,42 @@ def _rpv4_section_titles_4h3d(md):
 
 
 def _rpv4_missing_required_sections_4h3d(md):
-    titles = [_rpv4_strip_accents_4h3d(t) for t in _rpv4_section_titles_4h3d(md)]
+    titles = [_rpv4_strip_accents_4h3d(t).lower() for t in _rpv4_section_titles_4h3d(md)]
+    full_text = _rpv4_strip_accents_4h3d(str(md or "")).lower()
+
+    extra_aliases = {
+        "tracking checklist operativo": [
+            "tracking checklist operativo",
+            "seguimiento checklist operativo",
+            "checklist operativo de tracking",
+            "checklist operativo de seguimiento",
+            "tracking checklist",
+            "checklist de tracking",
+            "checklist de seguimiento",
+            "lista de verificacion de tracking",
+            "lista de verificacion de seguimiento",
+            "control de tracking",
+            "control de seguimiento",
+        ]
+    }
+
     missing = []
     for canonical, aliases in _RPV4_REQUIRED_SECTIONS_4H3D:
+        merged_aliases = list(aliases) + extra_aliases.get(canonical, [])
         found = False
+
         for title in titles:
-            if any(alias in title for alias in aliases):
+            if any(alias in title for alias in merged_aliases):
                 found = True
                 break
+
+        if not found:
+            if any(alias in full_text for alias in merged_aliases):
+                found = True
+
         if not found:
             missing.append(canonical)
+
     return missing
 
 
@@ -10706,10 +10732,6 @@ def _rpv4_assess_full_report_quality_4h3d(md):
     section_count = len([t for t in _rpv4_section_titles_4h3d(md) if t.strip()])
     table_count = _rpv4_table_count_4h3d(md)
     missing_sections = _rpv4_missing_required_sections_4h3d(md)
-
-    # HOTFIX_4H3W_TRACKING_ALIAS_APPLIED
-    if "tracking checklist operativo" in missing_sections and _ma_quality_gate_tracking_alias_present(md):
-        missing_sections = [s for s in missing_sections if s != "tracking checklist operativo"]
     failures = []
     if word_count < _RPV4_MIN_FULL_WORDS_4H3D:
         failures.append("word_count")
@@ -11331,3 +11353,5 @@ async def _rpb_upload_package_with_existing_drive(req, package_result):
 # HOTFIX 4H.3-O: removed duplicate APP_VERSION override.
 
 # HOTFIX 4H.3-W: fixed bad tracking alias variable names.
+
+# HOTFIX 4H.3-Y: required section aliases fixed for tracking checklist.
